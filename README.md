@@ -13,7 +13,7 @@
     <a href="https://crates.io/crates/crypt-io"><img alt="downloads" src="https://img.shields.io/crates/d/=%230099ff"></a>
     <a href="https://docs.rs/crypt-io"><img src="https://docs.rs/crypt-io/badge.svg" alt="Documentation"></a>
     <a href="https://github.com/jamesgober/crypt-io/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/jamesgober/crypt-io/actions/workflows/ci.yml/badge.svg"></a>
-    <a href="#license"><img src="https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg" alt="License"></a>
+    <a href="https://github.com/rust-lang/rfcs/blob/master/text/2495-min-rust-version.md" title="MSRV"><img alt="MSRV" src="https://img.shields.io/badge/MSRV-1.75%2B-blue"></a>
 </p>
 
 <p align="center">
@@ -36,15 +36,7 @@
     With <strong>crypt-io</strong>, you can encrypt a piece of data in two lines, hash a stream in one, derive a key from a master in three. Algorithm selection is explicit via enums or feature flags - you choose ChaCha20-Poly1305 (the default, post-quantum-safe at 256 bits) or AES-256-GCM (when you want hardware acceleration), and the API stays the same. Stream encryption handles large files with chunked AEAD and proper framing. Argon2id is available for password hashing when you need it.
 </p>
 
----
-
-## Status
-
-**Active development.** Scaffolded and on the path to 1.0. See [.dev/ROADMAP.md](.dev/ROADMAP.md) for milestone tracking.
-
-The public API is not yet stable. Pin specific versions; expect changes pre-1.0.
-
----
+<hr>
 
 ## Features
 
@@ -100,12 +92,12 @@ The public API is not yet stable. Pin specific versions; expect changes pre-1.0.
 
 ## Quick start
 
-\\\	oml
+```toml
 [dependencies]
 crypt-io = "0.1"
-\\\
+```
 
-\\\ust
+```rust
 use crypt_io::Crypt;
 
 // Encrypt
@@ -121,7 +113,7 @@ let tag = crypt_io::mac::hmac_sha256(&key, b"data");
 
 // Derive a key from a password
 let pw_hash = crypt_io::kdf::argon2_hash(b"password", &salt)?;
-\\\
+```
 
 ---
 
@@ -192,6 +184,12 @@ at your option.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
 
----
 
-<sub>Copyright &copy; 2026 <strong>James Gober</strong>. All rights reserved.</sub>
+
+
+<!-- FOOT COPYRIGHT
+################################################# -->
+<div align="center">
+  <h2></h2>
+  <sup>COPYRIGHT <small>&copy;</small> 2026 <strong>JAMES GOBER.</strong></sup>
+</div>
