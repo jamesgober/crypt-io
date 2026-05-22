@@ -19,6 +19,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.0] - 2026-05-22
+
+### Added
+
+- **`crypt_io::kdf` module** — two algorithms for deriving keys,
+  each addressing a different threat model:
+  - **HKDF** ([RFC 5869]):
+    - `kdf::hkdf_sha256(ikm, salt, info, len) -> Result<Vec<u8>>` —
+      extract-then-expand HKDF with SHA-256 underneath. Accepts
+      an optional `salt`, an `info` context string, and an output
+      length up to `255 * 32 = 8160` bytes.
+    - `kdf::hkdf_sha512(...)` — same shape, SHA-512 digest, output
+      up to `255 * 64 = 16320` bytes.
+    - Output-length bounds enforced and surfaced as
+      [`Error::Kdf`] when exceeded.
+    - Feature: `kdf-hkdf` (default on).
+  - **Argon2id** ([RFC 9106]):
+    - `kdf::argon2_hash(password) -> Result<String>` — hashes with
+      the OWASP-recommended parameter set (~100 ms on a modern
+      CPU). Salt is generated fresh via `mod_rand::tier3::fill_bytes`
+      and embedded in the returned PHC string. No salt management
+      required from callers.
+    - `kdf::argon2_hash_with_params(password, params)` — same but
+      with caller-supplied [`Argon2Params`].
+    - `kdf::argon2_verify(phc, password) -> Result<bool>` —
+      constant-time verification against a PHC-encoded hash string.
+    - Feature: `kdf-argon2` (default on in 0.6.0+).
+- **`Argon2Params`** struct exposing `m_cost` (memory in KiB),
+  `t_cost` (iterations), `p_cost` (lanes), `output_len`. `Default`
+  matches the OWASP recommendations (19 MiB / 2 / 1 / 32 bytes).
+- **Public constants** in `crypt_io::kdf`:
+  `HKDF_MAX_OUTPUT_SHA256 = 8160`, `HKDF_MAX_OUTPUT_SHA512 = 16320`,
+  `ARGON2_DEFAULT_OUTPUT_LEN = 32`, `ARGON2_DEFAULT_SALT_LEN = 16`
+  (each feature-gated).
+- **`Error::Kdf(&'static str)`** variant for KDF-specific failures
+  (HKDF output-length overflow, Argon2 parameter validation, PHC
+  parse failures).
+- **RFC 5869 known-answer tests** — Test Case 1 (full HKDF-SHA256
+  with salt + info) and Test Case 3 (no salt, no info). Both pinned
+  as byte arrays.
+- **HKDF-SHA512 wrapper round-trip** — RFC 5869 only ships SHA-256
+  / SHA-1 vectors, so for SHA-512 we cross-check the wrapper output
+  against a direct call into the upstream `hkdf` crate. Catches any
+  wrapper-level mistake without committing to a specific vector
+  we'd have to maintain.
+- **Argon2id functional tests** (with reduced parameters so the
+  suite stays fast): round-trip hash/verify, wrong-password
+  rejection, two-hashes-of-same-password-differ (salt randomness
+  proof), unparseable-PHC rejection, tampered-PHC rejection,
+  empty-password edge case, 1 KiB-password edge case, custom
+  params honoured in the PHC string, default params match OWASP,
+  invalid-params rejected, redaction-clean error rendering
+  (passwords never appear in `Error` Display / Debug).
+
+### Changed
+
+- **Default features extended.** `default` now includes
+  `kdf-argon2` in addition to `kdf-hkdf`. A fresh `cargo add
+  crypt-io` ships with the full symmetric-crypto + KDF surface.
+- **`lib.rs` module wiring.** The `kdf` module is exposed when
+  either `kdf-hkdf` or `kdf-argon2` is enabled.
+
+### Security
+
+- **HKDF is not for passwords.** Module overview documents that
+  HKDF expects high-entropy input keying material (a master key, a
+  DH shared secret, a token). Feeding it a password is a security
+  mistake — the module points callers at Argon2id for that case.
+- **Argon2id defaults follow OWASP.** 19 MiB memory, 2 iterations,
+  1 lane, 32-byte output — sized for ~100 ms per hash on a modern
+  CPU. Reducing any parameter reduces resistance to brute force.
+- **Salt is generated, not provided.** `argon2_hash` calls
+  `mod_rand::tier3::fill_bytes` for every hash, so each PHC string
+  carries a fresh random salt. Salt reuse cannot happen through
+  the public API.
+- **No password bytes in errors.** Verified by an explicit test
+  that round-trips a known password through the unparseable-PHC
+  failure path and asserts neither `Display` nor `Debug` rendering
+  of the resulting `Error` contains the password.
+- **PHC-string parse failures surface as `Error::Kdf`.** A
+  correctly-formatted but wrong-password hash returns
+  `Ok(false)`; only malformed inputs produce an error. The
+  distinction matters because applications should log parse
+  failures differently from authentication failures.
+
+[RFC 5869]: https://datatracker.ietf.org/doc/html/rfc5869
+[RFC 9106]: https://datatracker.ietf.org/doc/html/rfc9106
+[`Error::Kdf`]: crate::Error
+[0.6.0]: https://github.com/jamesgober/crypt-io/compare/v0.5.0...v0.6.0
+
+---
+
 ## [0.5.0] - 2026-05-22
 
 ### Added
@@ -345,5 +437,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Feature flags for AEAD (chacha20, aes-gcm), hashing (blake3, sha2), MAC (hmac, blake3 keyed), KDF (hkdf, argon2), stream encryption.
 - Dependencies wired: `mod-rand` for CSPRNG, `error-forge` for errors, optional `log-io` and `metrics-lib`.
 
-[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v0.6.0...HEAD
 [0.1.0]: https://github.com/jamesgober/crypt-io/releases/tag/v0.1.0

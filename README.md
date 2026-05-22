@@ -36,7 +36,7 @@
 
 ## Status
 
-**Current version:** `0.5.0` (2026-05-22). Pre-1.0 — the public API is allowed to evolve in breaking ways through the `0.x` series; `1.0.0` freezes it.
+**Current version:** `0.6.0` (2026-05-22). Pre-1.0 — the public API is allowed to evolve in breaking ways through the `0.x` series; `1.0.0` freezes it.
 
 | Phase  | Surface                                          | Status |
 |--------|--------------------------------------------------|--------|
@@ -44,9 +44,9 @@
 | 0.2.0  | AEAD foundation — ChaCha20-Poly1305              | shipped |
 | 0.3.0  | AES-256-GCM + algorithm selection                | shipped |
 | 0.4.0  | Hashing — BLAKE3 (+ XOF), SHA-256, SHA-512       | shipped |
-| 0.5.0  | MAC — HMAC-SHA256/512, BLAKE3 keyed              | **shipped** |
-| 0.6.0  | KDF — HKDF, Argon2id                             | next |
-| 0.7.0  | Stream / file encryption                         | planned |
+| 0.5.0  | MAC — HMAC-SHA256/512, BLAKE3 keyed              | shipped |
+| 0.6.0  | KDF — HKDF-SHA256/512, Argon2id                  | **shipped** |
+| 0.7.0  | Stream / file encryption                         | next |
 | 0.8.0  | Performance verification (criterion benches)     | planned |
 | 0.9.0  | Fuzz testing                                     | planned |
 | 0.10.0 | Docs + Release Candidate                         | planned |
@@ -56,7 +56,7 @@ See [`.dev/ROADMAP.md`](.dev/ROADMAP.md) for the full milestone plan and [`CHANG
 
 <hr>
 
-## What's in 0.5.0
+## What's in 0.6.0
 
 ### Symmetric AEAD encryption — `crypt_io::aead`
 
@@ -83,6 +83,13 @@ See [`.dev/ROADMAP.md`](.dev/ROADMAP.md) for the full milestone plan and [`CHANG
 - **RFC 4231 known-answer tests** for HMAC; byte-pinned KAT for BLAKE3 keyed.
 - **Wrong-length tags are rejections, not panics.**
 
+### Key Derivation — `crypt_io::kdf`
+
+- **HKDF-SHA256 / HKDF-SHA512** — `kdf::hkdf_sha256` / `kdf::hkdf_sha512` for deriving subkeys from a master key, a Diffie-Hellman shared secret, or any other high-entropy input. Single-call extract-then-expand with optional salt and `info` domain-separator.
+- **Argon2id** — `kdf::argon2_hash` for hashing passwords with the OWASP-recommended parameter set (~100 ms per hash). Salt is generated fresh per-call via `mod-rand` Tier 3 and embedded in the returned PHC string — callers don't manage salt storage. `kdf::argon2_verify` for constant-time verification against a stored PHC string. `kdf::argon2_hash_with_params` + `Argon2Params` for callers with different cost tolerances.
+- **HKDF is not for passwords.** Module documentation explicitly distinguishes the two — HKDF assumes high-entropy input, Argon2id assumes low-entropy input that needs brute-force resistance.
+- **RFC 5869 known-answer tests** for HKDF-SHA256 (Test Cases 1 + 3); SHA-512 cross-checked against the upstream `hkdf` crate.
+
 ### Portfolio integration
 
 - **[`mod-rand`](https://crates.io/crates/mod-rand)** — Tier 3 OS-backed CSPRNG for nonces.
@@ -91,9 +98,8 @@ See [`.dev/ROADMAP.md`](.dev/ROADMAP.md) for the full milestone plan and [`CHANG
 - **[`metrics-lib`](https://crates.io/crates/metrics-lib)** *(optional)* — performance instrumentation.
 - **[`key-vault`](https://crates.io/crates/key-vault)** — peer crate; the consumer wires them together. No direct dependency.
 
-### What's *not* in 0.5.0 yet
+### What's *not* in 0.6.0 yet
 
-- **KDF** (HKDF, Argon2id) — Phase 0.6.0.
 - **Stream / file encryption** — Phase 0.7.0.
 - **Benchmark suite** — Phase 0.8.0. Performance targets are in the contract (see [`.dev/ROADMAP.md`](.dev/ROADMAP.md)); committed criterion-backed measurements land in 0.8.
 - **Fuzz testing** — Phase 0.9.0.
@@ -105,7 +111,7 @@ See [`.dev/ROADMAP.md`](.dev/ROADMAP.md) for the full milestone plan and [`CHANG
 
 ```toml
 [dependencies]
-crypt-io = "0.5"
+crypt-io = "0.6"
 ```
 
 Or:
@@ -193,6 +199,29 @@ h.update(b"second chunk");
 let digest = h.finalize();
 ```
 
+### Key derivation
+
+Deriving a subkey from a master:
+
+```rust
+use crypt_io::kdf;
+
+let master = [0x42u8; 32];
+let session_key = kdf::hkdf_sha256(&master, Some(b"salt"), b"app:session:v1", 32)?;
+assert_eq!(session_key.len(), 32);
+# Ok::<(), crypt_io::Error>(())
+```
+
+Hashing a password (Argon2id, OWASP-recommended defaults):
+
+```rust,no_run
+use crypt_io::kdf;
+
+let phc = kdf::argon2_hash(b"correct horse battery staple")?;
+assert!(kdf::argon2_verify(&phc, b"correct horse battery staple")?);
+# Ok::<(), crypt_io::Error>(())
+```
+
 See [`docs/API.md`](docs/API.md) for the full reference.
 
 <hr>
@@ -254,8 +283,8 @@ Verified by benchmarks in **Phase 0.8.0** (criterion-backed, committed baselines
 | BLAKE3 hash, 1 KiB                           | < 500 ns  |
 | SHA-256 hash, 1 KiB                          | < 2 µs    |
 | HMAC-SHA256, 1 KiB                           | < 3 µs    |
-| HKDF-SHA256, 32-byte output *(0.6.0)*        | < 5 µs    |
-| Argon2id, default params *(0.6.0)*           | < 100 ms (intentionally slow) |
+| HKDF-SHA256, 32-byte output                  | < 5 µs    |
+| Argon2id, default params                     | ~100 ms (intentionally slow) |
 | Stream encrypt throughput *(0.7.0)*          | > 1 GiB/s |
 
 <hr>

@@ -54,6 +54,12 @@ pub enum Error {
     /// exists because the upstream `Mac` trait surface is fallible by
     /// signature.
     Mac(&'static str),
+
+    /// A KDF operation could not be carried out. Surfaces HKDF
+    /// expansion-length overflows (output longer than `255 *
+    /// digest_size`), Argon2 parameter errors, and PHC-string parse
+    /// failures.
+    Kdf(&'static str),
 }
 
 /// Type alias for `core::result::Result<T, Error>`.
@@ -75,6 +81,7 @@ impl fmt::Display for Error {
             }
             Self::RandomFailure(why) => write!(f, "OS random source failed: {why}"),
             Self::Mac(why) => write!(f, "MAC operation failed: {why}"),
+            Self::Kdf(why) => write!(f, "KDF operation failed: {why}"),
         }
     }
 }
@@ -118,6 +125,7 @@ mod tests {
             Error::AlgorithmNotEnabled("none"),
             Error::RandomFailure("ENOSYS"),
             Error::Mac("init"),
+            Error::Kdf("expand"),
         ] {
             let _ = format!("{e:?}");
         }

@@ -1,6 +1,6 @@
 [package]
 name = "crypt-io"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.85"
 readme = "README.md"
@@ -44,10 +44,10 @@ path = "src/lib.rs"
 
 [features]
 # Defaults: ChaCha20-Poly1305 + AES-256-GCM (AEAD) + BLAKE3 + SHA-2
-# (hashing) + HMAC + BLAKE3 keyed (MAC) + HKDF stub. The hashing pair
-# is `hash-blake3` for speed and `hash-sha2` for ecosystem interop;
-# the MAC pair pairs `mac-hmac` (universal) with `mac-blake3` (fast).
-default = ["std", "zeroize", "aead-chacha20", "aead-aes-gcm", "hash-blake3", "hash-sha2", "mac-hmac", "mac-blake3", "kdf-hkdf"]
+# (hashing) + HMAC + BLAKE3 keyed (MAC) + HKDF + Argon2id (KDF).
+# Gives a fresh `cargo add crypt-io` the full symmetric-crypto + KDF
+# toolkit out of the box.
+default = ["std", "zeroize", "aead-chacha20", "aead-aes-gcm", "hash-blake3", "hash-sha2", "mac-hmac", "mac-blake3", "kdf-hkdf", "kdf-argon2"]
 
 # Core
 std = []                              # Standard library (default on)

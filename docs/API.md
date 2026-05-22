@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-    <i>Complete public-API reference for <code>crypt-io</code> 0.5.0.</i>
+    <i>Complete public-API reference for <code>crypt-io</code> 0.6.0.</i>
     <br>
     <i>For per-version notes see <a href="../CHANGELOG.md"><code>CHANGELOG.md</code></a>.</i>
 </p>
@@ -67,6 +67,14 @@
     - [`HmacSha512`](#hmacsha512)
     - [`Blake3Mac`](#blake3mac)
     - [Choosing a MAC](#choosing-a-mac)
+  - [`kdf` module](#kdf-module)
+    - [`kdf::hkdf_sha256`](#kdfhkdf_sha256)
+    - [`kdf::hkdf_sha512`](#kdfhkdf_sha512)
+    - [`kdf::argon2_hash`](#kdfargon2_hash)
+    - [`kdf::argon2_hash_with_params`](#kdfargon2_hash_with_params)
+    - [`kdf::argon2_verify`](#kdfargon2_verify)
+    - [`Argon2Params`](#argon2params)
+    - [Choosing a KDF](#choosing-a-kdf)
   - [`Error`](#error)
   - [`Result<T>`](#resultt)
   - [Module constants](#module-constants)
@@ -84,7 +92,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-crypt-io = "0.5"
+crypt-io = "0.6"
 ```
 
 ### Install via terminal
@@ -120,8 +128,10 @@ documented in `Cargo.toml`. The full plan ships across the 0.3 →
 | `mac-hmac` | ✅ | HMAC-SHA256 + HMAC-SHA512 + [`HmacSha256`](#hmacsha256) / [`HmacSha512`](#hmacsha512). |
 | `mac-blake3` | ✅ | BLAKE3 keyed mode + [`Blake3Mac`](#blake3mac). |
 | `mac-all` |  | Both MAC families (already in the 0.5.0+ default). |
-| `kdf-hkdf` | ✅ | Reserved for 0.6.0. No-op in 0.5.0. |
-| `stream` |  | Reserved for 0.7.0. No-op in 0.5.0. |
+| `kdf-hkdf` | ✅ | [`kdf::hkdf_sha256`](#kdfhkdf_sha256) / [`kdf::hkdf_sha512`](#kdfhkdf_sha512). |
+| `kdf-argon2` | ✅ | [`kdf::argon2_hash`](#kdfargon2_hash) / [`kdf::argon2_verify`](#kdfargon2_verify) / [`Argon2Params`](#argon2params). |
+| `kdf-all` |  | Both KDF families (already in the 0.6.0+ default). |
+| `stream` |  | Reserved for 0.7.0. No-op in 0.6.0. |
 | `preset-minimal` |  | `std` + `aead-chacha20` only — the 0.2.0 surface. |
 | `preset-all` |  | All planned features enabled. Some are inert until their phase ships. |
 
@@ -971,6 +981,241 @@ about interop and speed.
 
 ---
 
+### `kdf` module
+
+Key Derivation Functions. New in 0.6.0. Two algorithms addressing
+different threat models:
+
+| Algorithm   | Purpose                                            | Speed         | Feature       |
+|-------------|----------------------------------------------------|---------------|---------------|
+| HKDF-SHA256 | Derive one-or-many subkeys from a high-entropy IKM | Fast (µs)     | `kdf-hkdf`    |
+| HKDF-SHA512 | Same, wider underlying digest                      | Fast (µs)     | `kdf-hkdf`    |
+| Argon2id    | Derive a key from a *password* (low-entropy input) | Slow (~100ms) | `kdf-argon2`  |
+
+> **HKDF is not for passwords.** HKDF expects high-entropy input
+> keying material (master keys, DH shared secrets, secrets-manager
+> tokens). Feeding it a password makes the brute-force step
+> *faster*, not slower. Use [`kdf::argon2_hash`](#kdfargon2_hash)
+> for passwords.
+
+<a href="#top">↑ TOP</a>
+
+#### `kdf::hkdf_sha256`
+
+```rust
+#[cfg(feature = "kdf-hkdf")]
+pub fn hkdf_sha256(
+    ikm: &[u8],
+    salt: Option<&[u8]>,
+    info: &[u8],
+    len: usize,
+) -> Result<Vec<u8>>;
+```
+
+Derive `len` bytes of output keying material via HKDF-SHA256.
+`ikm` is the high-entropy input; `salt` is an optional random
+value (pass `None` if you don't have one); `info` binds the
+derived key to a purpose (pass `b""` if you don't need it).
+
+**Errors.** Returns [`Error::Kdf`](#error) if `len` exceeds
+[`HKDF_MAX_OUTPUT_SHA256`](#module-constants) (8160 bytes).
+
+```rust
+# #[cfg(feature = "kdf-hkdf")] {
+use crypt_io::kdf;
+let master = [0x42u8; 32];
+let subkey = kdf::hkdf_sha256(&master, Some(b"salt"), b"app:session:v1", 32)?;
+assert_eq!(subkey.len(), 32);
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
+**Deriving multiple uncorrelated subkeys from the same master:**
+
+```rust
+# #[cfg(feature = "kdf-hkdf")] {
+use crypt_io::kdf;
+let master = [0x42u8; 32];
+let enc_key = kdf::hkdf_sha256(&master, None, b"app:encrypt:v1", 32)?;
+let mac_key = kdf::hkdf_sha256(&master, None, b"app:mac:v1",     32)?;
+// `info` is the domain-separator. Independent outputs.
+assert_ne!(enc_key, mac_key);
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
+<a href="#top">↑ TOP</a>
+
+#### `kdf::hkdf_sha512`
+
+```rust
+#[cfg(feature = "kdf-hkdf")]
+pub fn hkdf_sha512(
+    ikm: &[u8],
+    salt: Option<&[u8]>,
+    info: &[u8],
+    len: usize,
+) -> Result<Vec<u8>>;
+```
+
+Same shape as [`kdf::hkdf_sha256`](#kdfhkdf_sha256) with a SHA-512
+digest underneath. Allows up to
+[`HKDF_MAX_OUTPUT_SHA512`](#module-constants) (16320 bytes) of
+output.
+
+**Errors.** Returns [`Error::Kdf`](#error) if `len` exceeds
+[`HKDF_MAX_OUTPUT_SHA512`](#module-constants).
+
+<a href="#top">↑ TOP</a>
+
+#### `kdf::argon2_hash`
+
+```rust
+#[cfg(feature = "kdf-argon2")]
+pub fn argon2_hash(password: &[u8]) -> Result<String>;
+```
+
+Hash `password` with Argon2id using OWASP-recommended parameters
+(~100 ms per hash on a modern CPU). Returns the standard
+PHC-encoded hash string
+(`$argon2id$v=19$m=...,t=...,p=...$salt$hash`).
+
+The salt is generated fresh via `mod_rand::tier3::fill_bytes` and
+embedded in the returned string — callers do not need to manage
+salt storage separately.
+
+**Errors.** Returns [`Error::RandomFailure`](#error) if the OS
+RNG cannot produce a salt, or [`Error::Kdf`](#error) if the
+Argon2 implementation rejects the parameters or fails to hash.
+
+```rust,no_run
+# #[cfg(feature = "kdf-argon2")] {
+use crypt_io::kdf;
+let phc = kdf::argon2_hash(b"correct horse battery staple")?;
+assert!(phc.starts_with("$argon2id$"));
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
+<a href="#top">↑ TOP</a>
+
+#### `kdf::argon2_hash_with_params`
+
+```rust
+#[cfg(feature = "kdf-argon2")]
+pub fn argon2_hash_with_params(password: &[u8], params: Argon2Params) -> Result<String>;
+```
+
+Like [`kdf::argon2_hash`](#kdfargon2_hash) but with caller-supplied
+[`Argon2Params`](#argon2params). Use this for machine-to-machine
+credentials (higher memory cost) or for tests (very low cost).
+
+**Errors.** Same as [`kdf::argon2_hash`](#kdfargon2_hash).
+
+```rust,no_run
+# #[cfg(feature = "kdf-argon2")] {
+use crypt_io::kdf::{argon2_hash_with_params, Argon2Params};
+let params = Argon2Params { m_cost: 64 * 1024, t_cost: 3, p_cost: 1, output_len: 32 };
+let phc = argon2_hash_with_params(b"service-token", params)?;
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
+<a href="#top">↑ TOP</a>
+
+#### `kdf::argon2_verify`
+
+```rust
+#[cfg(feature = "kdf-argon2")]
+pub fn argon2_verify(phc: &str, password: &[u8]) -> Result<bool>;
+```
+
+Verify `password` against a PHC-encoded Argon2 hash. Returns
+`Ok(true)` on match, `Ok(false)` on wrong password, and
+[`Error::Kdf`](#error) if `phc` is not a parseable PHC string.
+
+The distinction matters: a *malformed* PHC string indicates
+corruption or a coding mistake (log as `error`); a *correctly-
+formatted* but wrong-password hash indicates an attacker or a user
+mistyping (log as `warn`).
+
+Verification re-derives the hash under the parameters encoded in
+`phc` and compares in constant time. Cost is the same as computing
+a fresh hash with those parameters (~100 ms with the defaults).
+
+**Errors.** Returns [`Error::Kdf`](#error) only when `phc` fails
+to parse. Wrong-password returns `Ok(false)`, not an error.
+
+```rust,no_run
+# #[cfg(feature = "kdf-argon2")] {
+use crypt_io::kdf;
+let phc = kdf::argon2_hash(b"hunter2")?;
+assert!(kdf::argon2_verify(&phc, b"hunter2")?);
+assert!(!kdf::argon2_verify(&phc, b"hunter3")?);
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
+<a href="#top">↑ TOP</a>
+
+#### `Argon2Params`
+
+```rust
+#[cfg(feature = "kdf-argon2")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Argon2Params {
+    pub m_cost: u32,      // memory cost in kibibytes
+    pub t_cost: u32,      // time cost (iterations)
+    pub p_cost: u32,      // parallelism (lanes)
+    pub output_len: usize, // derived-key length in bytes
+}
+
+impl Argon2Params {
+    pub const fn new(m_cost: u32, t_cost: u32, p_cost: u32, output_len: usize) -> Self;
+}
+
+impl Default for Argon2Params {
+    /// OWASP-recommended: 19 MiB, 2 iterations, 1 lane, 32-byte output (~100 ms).
+    fn default() -> Self;
+}
+```
+
+Tuneable Argon2id parameters. The `Default` impl matches the
+OWASP "first recommended option" for interactive web-facing
+password hashing.
+
+**Cost tuning guidance:**
+
+| Use case | Suggested parameters |
+|---|---|
+| Interactive web login | `Argon2Params::default()` (~100 ms) |
+| Machine-to-machine credentials | Higher `m_cost` (e.g. 64 MiB) |
+| Low-end embedded | Reduced `m_cost` — accept the trade-off |
+| Tests | `Argon2Params { m_cost: 8, t_cost: 1, p_cost: 1, output_len: 32 }` |
+
+Reducing any parameter reduces resistance to brute force.
+
+<a href="#top">↑ TOP</a>
+
+#### Choosing a KDF
+
+| Input | Use |
+|---|---|
+| Master key (32 B+) | [`kdf::hkdf_sha256`](#kdfhkdf_sha256) |
+| Diffie-Hellman shared secret | [`kdf::hkdf_sha256`](#kdfhkdf_sha256) |
+| Token from a secrets manager | [`kdf::hkdf_sha256`](#kdfhkdf_sha256) |
+| Output of another KDF | [`kdf::hkdf_sha256`](#kdfhkdf_sha256) |
+| Password from a human | [`kdf::argon2_hash`](#kdfargon2_hash) |
+| PIN from a human | [`kdf::argon2_hash_with_params`](#kdfargon2_hash_with_params) (higher cost) |
+
+HKDF and Argon2id are not interchangeable. HKDF is fast and
+assumes high-entropy input. Argon2id is deliberately slow and
+assumes low-entropy input that needs brute-force resistance.
+
+<a href="#top">↑ TOP</a>
+
+---
+
 ### `Error`
 
 ```rust
@@ -982,6 +1227,7 @@ pub enum Error {
     AlgorithmNotEnabled(&'static str),
     RandomFailure(&'static str),
     Mac(&'static str),
+    Kdf(&'static str),
 }
 ```
 
@@ -1045,6 +1291,15 @@ From `crypt_io::mac`:
 | `HMAC_SHA512_OUTPUT_LEN` | `64` | Bytes an HMAC-SHA512 tag occupies. | `mac-hmac` |
 | `BLAKE3_MAC_OUTPUT_LEN` | `32` | Bytes a BLAKE3 keyed-mode tag occupies. | `mac-blake3` |
 | `BLAKE3_MAC_KEY_LEN` | `32` | Required key length for BLAKE3 keyed mode. | `mac-blake3` |
+
+From `crypt_io::kdf`:
+
+| Constant | Value | Meaning | Feature |
+|---|---|---|---|
+| `HKDF_MAX_OUTPUT_SHA256` | `8160` | Maximum HKDF-SHA256 output (`255 * 32`). | `kdf-hkdf` |
+| `HKDF_MAX_OUTPUT_SHA512` | `16320` | Maximum HKDF-SHA512 output (`255 * 64`). | `kdf-hkdf` |
+| `ARGON2_DEFAULT_OUTPUT_LEN` | `32` | Default Argon2id derived-key length. | `kdf-argon2` |
+| `ARGON2_DEFAULT_SALT_LEN` | `16` | Default Argon2id salt length (PHC-recommended minimum). | `kdf-argon2` |
 
 <a href="#top">↑ TOP</a>
 

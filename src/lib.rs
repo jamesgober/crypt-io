@@ -88,6 +88,9 @@ pub mod hash;
 #[cfg(any(feature = "mac-hmac", feature = "mac-blake3"))]
 pub mod mac;
 
+#[cfg(any(feature = "kdf-hkdf", feature = "kdf-argon2"))]
+pub mod kdf;
+
 pub use crate::error::{Error, Result};
 
 #[cfg(any(feature = "aead-chacha20", feature = "aead-aes-gcm"))]
