@@ -1,6 +1,6 @@
 [package]
 name = "crypt-io"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.85"
 readme = "README.md"
@@ -47,7 +47,7 @@ path = "src/lib.rs"
 # (hashing) + HMAC + BLAKE3 keyed (MAC) + HKDF + Argon2id (KDF).
 # Gives a fresh `cargo add crypt-io` the full symmetric-crypto + KDF
 # toolkit out of the box.
-default = ["std", "zeroize", "aead-chacha20", "aead-aes-gcm", "hash-blake3", "hash-sha2", "mac-hmac", "mac-blake3", "kdf-hkdf", "kdf-argon2"]
+default = ["std", "zeroize", "aead-chacha20", "aead-aes-gcm", "hash-blake3", "hash-sha2", "mac-hmac", "mac-blake3", "kdf-hkdf", "kdf-argon2", "stream"]
 
 # Core
 std = []                              # Standard library (default on)
@@ -73,8 +73,9 @@ kdf-hkdf = ["dep:hkdf", "hash-sha2"]  # HKDF (key derivation)
 kdf-argon2 = ["dep:argon2"]           # Argon2id (password hashing)
 kdf-all = ["kdf-hkdf", "kdf-argon2"]
 
-# Stream/file encryption
-stream = ["aead-chacha20"]            # Chunked AEAD for large data
+# Stream/file encryption (chunked AEAD with STREAM-construction).
+# Pulls both AEAD backends so callers can pick either at runtime.
+stream = ["aead-chacha20", "aead-aes-gcm"]
 
 # Quality-of-life
 metrics = ["dep:metrics-lib"]         # Performance instrumentation

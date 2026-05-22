@@ -91,6 +91,9 @@ pub mod mac;
 #[cfg(any(feature = "kdf-hkdf", feature = "kdf-argon2"))]
 pub mod kdf;
 
+#[cfg(feature = "stream")]
+pub mod stream;
+
 pub use crate::error::{Error, Result};
 
 #[cfg(any(feature = "aead-chacha20", feature = "aead-aes-gcm"))]

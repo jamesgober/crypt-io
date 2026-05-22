@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-    <i>Complete public-API reference for <code>crypt-io</code> 0.6.0.</i>
+    <i>Complete public-API reference for <code>crypt-io</code> 0.7.0.</i>
     <br>
     <i>For per-version notes see <a href="../CHANGELOG.md"><code>CHANGELOG.md</code></a>.</i>
 </p>
@@ -75,6 +75,12 @@
     - [`kdf::argon2_verify`](#kdfargon2_verify)
     - [`Argon2Params`](#argon2params)
     - [Choosing a KDF](#choosing-a-kdf)
+  - [`stream` module](#stream-module)
+    - [`StreamEncryptor`](#streamencryptor)
+    - [`StreamDecryptor`](#streamdecryptor)
+    - [`stream::encrypt_file`](#streamencrypt_file)
+    - [`stream::decrypt_file`](#streamdecrypt_file)
+    - [Stream wire format](#stream-wire-format)
   - [`Error`](#error)
   - [`Result<T>`](#resultt)
   - [Module constants](#module-constants)
@@ -92,7 +98,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-crypt-io = "0.6"
+crypt-io = "0.7"
 ```
 
 ### Install via terminal
@@ -131,14 +137,9 @@ documented in `Cargo.toml`. The full plan ships across the 0.3 →
 | `kdf-hkdf` | ✅ | [`kdf::hkdf_sha256`](#kdfhkdf_sha256) / [`kdf::hkdf_sha512`](#kdfhkdf_sha512). |
 | `kdf-argon2` | ✅ | [`kdf::argon2_hash`](#kdfargon2_hash) / [`kdf::argon2_verify`](#kdfargon2_verify) / [`Argon2Params`](#argon2params). |
 | `kdf-all` |  | Both KDF families (already in the 0.6.0+ default). |
-| `stream` |  | Reserved for 0.7.0. No-op in 0.6.0. |
+| `stream` | ✅ | [`StreamEncryptor`](#streamencryptor) / [`StreamDecryptor`](#streamdecryptor) + [`encrypt_file`](#streamencrypt_file) / [`decrypt_file`](#streamdecrypt_file). Pulls both AEAD backends. |
 | `preset-minimal` |  | `std` + `aead-chacha20` only — the 0.2.0 surface. |
 | `preset-all` |  | All planned features enabled. Some are inert until their phase ships. |
-
-> **Note.** Reserved features are wired in `Cargo.toml` so the
-> dependency surface is stable across the 0.x series, but they
-> activate no code in 0.2.0. Track the milestone plan in
-> [`.dev/ROADMAP.md`](../.dev/ROADMAP.md).
 
 <a href="#top">↑ TOP</a>
 
@@ -1146,7 +1147,7 @@ a fresh hash with those parameters (~100 ms with the defaults).
 **Errors.** Returns [`Error::Kdf`](#error) only when `phc` fails
 to parse. Wrong-password returns `Ok(false)`, not an error.
 
-```rust,no_run
+```rust
 # #[cfg(feature = "kdf-argon2")] {
 use crypt_io::kdf;
 let phc = kdf::argon2_hash(b"hunter2")?;
@@ -1211,6 +1212,269 @@ Reducing any parameter reduces resistance to brute force.
 HKDF and Argon2id are not interchangeable. HKDF is fast and
 assumes high-entropy input. Argon2id is deliberately slow and
 assumes low-entropy input that needs brute-force resistance.
+
+<a href="#top">↑ TOP</a>
+
+---
+
+### `stream` module
+
+Chunked AEAD for data that doesn't fit in memory. New in 0.7.0.
+Uses the [STREAM construction](https://eprint.iacr.org/2015/189.pdf)
+to defeat truncation, reordering, and chunk duplication —
+properties single-shot AEAD doesn't provide because it has no
+concept of chunks.
+
+| Surface              | Purpose                                          |
+|----------------------|--------------------------------------------------|
+| [`StreamEncryptor`](#streamencryptor) | In-memory streaming encrypt |
+| [`StreamDecryptor`](#streamdecryptor) | In-memory streaming decrypt |
+| [`encrypt_file`](#streamencrypt_file) | File-to-file encrypt (std-only) |
+| [`decrypt_file`](#streamdecrypt_file) | File-to-file decrypt (std-only) |
+
+Wire format documented in [Stream wire format](#stream-wire-format).
+
+<a href="#top">↑ TOP</a>
+
+#### `StreamEncryptor`
+
+```rust
+#[cfg(feature = "stream")]
+pub struct StreamEncryptor { /* internal */ }
+
+impl StreamEncryptor {
+    pub fn new(key: &[u8], algorithm: Algorithm) -> Result<(Self, [u8; 24])>;
+    pub fn new_with_chunk_size(
+        key: &[u8],
+        algorithm: Algorithm,
+        chunk_size_log2: u8,
+    ) -> Result<(Self, [u8; 24])>;
+
+    pub fn chunk_size(&self) -> usize;
+    pub fn chunk_size_log2(&self) -> u8;
+
+    pub fn update(&mut self, data: &[u8]) -> Result<Vec<u8>>;
+    pub fn finalize(self) -> Result<Vec<u8>>;
+}
+```
+
+Buffers caller-supplied plaintext into fixed-size chunks, encrypts
+each chunk with a STREAM-construction nonce, and emits
+`ciphertext || tag` per chunk.
+
+**Usage pattern:**
+
+1. Call `new()` (or `new_with_chunk_size()`). The constructor
+   returns the encryptor *and* the 24-byte header — write the
+   header to the output sink before any encrypted chunks.
+2. Feed plaintext via `update()`. Returns zero or more complete
+   encrypted chunks (each `chunk_size + 16` bytes) as buffer
+   fills are reached.
+3. Call `finalize()` to emit any remaining buffered data as the
+   final chunk. **Always** emitted (even if zero plaintext bytes
+   remain) and **always** strictly smaller than `chunk_size + 16`
+   bytes, so the decryptor can detect EOF unambiguously.
+
+**Defaults.** `new()` uses a 64 KiB chunk size
+(`DEFAULT_CHUNK_SIZE_LOG2 = 16`). For tuning, `new_with_chunk_size`
+accepts `chunk_size_log2` in `MIN_CHUNK_SIZE_LOG2..=MAX_CHUNK_SIZE_LOG2`
+(10..=24, i.e., 1 KiB..16 MiB).
+
+**Errors:**
+
+- [`Error::InvalidKey`](#error) — `key` is not 32 bytes.
+- [`Error::InvalidCiphertext`](#error) — `chunk_size_log2` out of range.
+- [`Error::RandomFailure`](#error) — OS RNG could not produce a nonce prefix.
+
+```rust
+# #[cfg(all(feature = "stream", feature = "aead-chacha20"))] {
+use crypt_io::Algorithm;
+use crypt_io::stream::{StreamEncryptor, StreamDecryptor};
+
+let key = [0u8; 32];
+let plaintext = b"the quick brown fox jumps over the lazy dog".repeat(1000);
+
+let (mut enc, header) = StreamEncryptor::new(&key, Algorithm::ChaCha20Poly1305)?;
+let mut wire = header.to_vec();
+wire.extend(enc.update(&plaintext)?);
+wire.extend(enc.finalize()?);
+
+let mut dec = StreamDecryptor::new(&key, &wire[..24])?;
+let mut recovered = dec.update(&wire[24..])?;
+recovered.extend(dec.finalize()?);
+assert_eq!(recovered, plaintext);
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
+<a href="#top">↑ TOP</a>
+
+#### `StreamDecryptor`
+
+```rust
+#[cfg(feature = "stream")]
+pub struct StreamDecryptor { /* internal */ }
+
+impl StreamDecryptor {
+    pub fn new(key: &[u8], header_bytes: &[u8]) -> Result<Self>;
+
+    pub fn chunk_size(&self) -> usize;
+    pub fn chunk_size_log2(&self) -> u8;
+    pub fn algorithm(&self) -> Algorithm;
+
+    pub fn update(&mut self, data: &[u8]) -> Result<Vec<u8>>;
+    pub fn finalize(self) -> Result<Vec<u8>>;
+}
+```
+
+Symmetric inverse of [`StreamEncryptor`](#streamencryptor). Construct
+with `new(key, header_bytes)` — parses the header and configures the
+decryptor for the embedded algorithm and chunk size. Feed encrypted
+bytes via `update()`, call `finalize()` when no more bytes are
+coming.
+
+Authentication failures (tampered ciphertext, wrong key, tampered
+header, truncation, reordering, chunk duplication) all surface as
+[`Error::AuthenticationFailed`](#error) — the variant is
+intentionally opaque.
+
+**Errors on `new`:**
+
+- [`Error::InvalidKey`](#error) — `key` is not 32 bytes.
+- [`Error::InvalidCiphertext`](#error) — header is malformed
+  (wrong magic, unsupported version, unknown algorithm,
+  out-of-range chunk size).
+
+**Errors on `update` / `finalize`:**
+
+- [`Error::AuthenticationFailed`](#error) for any cryptographic
+  failure.
+- [`Error::InvalidCiphertext`](#error) on `finalize` when the
+  buffered tail is impossibly small (no room for a 16-byte tag).
+
+<a href="#top">↑ TOP</a>
+
+#### `stream::encrypt_file`
+
+```rust
+#[cfg(all(feature = "stream", feature = "std"))]
+pub fn encrypt_file(
+    input_path: impl AsRef<Path>,
+    output_path: impl AsRef<Path>,
+    key: &[u8],
+    algorithm: Algorithm,
+) -> Result<()>;
+```
+
+Encrypt `input_path` into `output_path` using the default 64 KiB
+chunk size. Overwrites `output_path` if it exists.
+
+**Errors:**
+
+- [`Error::InvalidKey`](#error) — `key` is not 32 bytes.
+- [`Error::RandomFailure`](#error) — OS RNG could not produce a nonce.
+- [`Error::Mac`](#error) — I/O failure (file open, read, write,
+  flush). The variant carries a `&'static str` reason; the
+  underlying `std::io::Error` is not surfaced (would risk leaking
+  path fragments through error rendering).
+
+```rust,no_run
+# #[cfg(all(feature = "stream", feature = "aead-chacha20"))] {
+use crypt_io::Algorithm;
+use crypt_io::stream;
+
+let key = [0u8; 32];
+stream::encrypt_file("input.bin", "output.enc", &key, Algorithm::ChaCha20Poly1305)?;
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
+<a href="#top">↑ TOP</a>
+
+#### `stream::decrypt_file`
+
+```rust
+#[cfg(all(feature = "stream", feature = "std"))]
+pub fn decrypt_file(
+    input_path: impl AsRef<Path>,
+    output_path: impl AsRef<Path>,
+    key: &[u8],
+) -> Result<()>;
+```
+
+Decrypt `input_path` into `output_path`. Algorithm is read from the
+stream header — no `algorithm` argument required.
+
+> **On error, delete the output file.** `decrypt_file` writes
+> plaintext chunks to disk as they verify. If a later chunk fails
+> authentication, earlier chunks may already be on disk. **Callers
+> must remove the output file when this function returns an error**
+> — otherwise an attacker who can flip late chunks could leak
+> earlier plaintext to disk.
+
+**Errors:**
+
+- [`Error::InvalidKey`](#error) — `key` is not 32 bytes.
+- [`Error::InvalidCiphertext`](#error) — header is malformed or
+  the stream is truncated below the minimum frame.
+- [`Error::AuthenticationFailed`](#error) — any cryptographic
+  failure.
+- [`Error::Mac`](#error) — I/O failure.
+
+```rust,no_run
+# #[cfg(all(feature = "stream", feature = "aead-chacha20"))] {
+use crypt_io::stream;
+let key = [0u8; 32];
+stream::decrypt_file("input.enc", "output.bin", &key)?;
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
+<a href="#top">↑ TOP</a>
+
+#### Stream wire format
+
+```text
+Header (24 bytes):
+   [0..8]   magic = b"\x89CRYPTIO"
+   [8]      version = 0x01
+   [9]      algorithm (0x00 ChaCha20-Poly1305, 0x01 AES-256-GCM)
+   [10]     chunk_size_log2 (default 16 = 64 KiB)
+   [11..16] reserved (zero)
+   [16..23] nonce_prefix (7 random bytes)
+   [23]     reserved (zero)
+
+Body:
+   [chunk_0 (chunk_size + 16 B)]    ── non-final, last_flag = 0
+   [chunk_1 (chunk_size + 16 B)]    ── non-final, last_flag = 0
+   ...
+   [chunk_N-1 (chunk_size + 16 B)]  ── non-final, last_flag = 0
+   [chunk_N (< chunk_size + 16 B)]  ── final, last_flag = 1
+
+Per-chunk nonce (12 bytes):
+   [0..7]   nonce_prefix (from header)
+   [7..11]  counter (u32 big-endian, starts at 0)
+   [11]     last_flag (0x00 for non-final, 0x01 for final)
+```
+
+**Security properties:**
+
+- **Truncation** is detected because the `last_flag` byte is
+  part of the per-chunk nonce. A chunk encrypted as non-final
+  cannot be verified as final (and vice versa); cut the final
+  chunk off the stream and verification fails on the next-to-last.
+- **Reorder / duplicate** is detected because the 32-bit counter
+  is part of the nonce. Swap or repeat any chunk and the counter
+  mismatch breaks verification.
+- **Header tampering** (algorithm / chunk-size / nonce prefix) is
+  detected because the 24 header bytes are AAD for every chunk.
+  Tampering surfaces as authentication failure on the first chunk.
+
+**Final-chunk-always invariant.** The encryptor always emits a
+final chunk (even if zero plaintext remains), and that final chunk
+is always strictly smaller than `chunk_size + 16` bytes. This makes
+EOF detection unambiguous: short read → final chunk; full read →
+expect more.
 
 <a href="#top">↑ TOP</a>
 
@@ -1300,6 +1564,16 @@ From `crypt_io::kdf`:
 | `HKDF_MAX_OUTPUT_SHA512` | `16320` | Maximum HKDF-SHA512 output (`255 * 64`). | `kdf-hkdf` |
 | `ARGON2_DEFAULT_OUTPUT_LEN` | `32` | Default Argon2id derived-key length. | `kdf-argon2` |
 | `ARGON2_DEFAULT_SALT_LEN` | `16` | Default Argon2id salt length (PHC-recommended minimum). | `kdf-argon2` |
+
+From `crypt_io::stream`:
+
+| Constant | Value | Meaning | Feature |
+|---|---|---|---|
+| `HEADER_LEN` | `24` | Bytes of stream header prepended to every stream. | `stream` |
+| `TAG_LEN` | `16` | Bytes of authentication tag per chunk. | `stream` |
+| `DEFAULT_CHUNK_SIZE_LOG2` | `16` | Default chunk size (`1 << 16` = 64 KiB). | `stream` |
+| `MIN_CHUNK_SIZE_LOG2` | `10` | Smallest chunk size (`1 << 10` = 1 KiB). | `stream` |
+| `MAX_CHUNK_SIZE_LOG2` | `24` | Largest chunk size (`1 << 24` = 16 MiB). | `stream` |
 
 <a href="#top">↑ TOP</a>
 

@@ -36,7 +36,7 @@
 
 ## Status
 
-**Current version:** `0.6.0` (2026-05-22). Pre-1.0 — the public API is allowed to evolve in breaking ways through the `0.x` series; `1.0.0` freezes it.
+**Current version:** `0.7.0` (2026-05-22). Pre-1.0 — the public API is allowed to evolve in breaking ways through the `0.x` series; `1.0.0` freezes it.
 
 | Phase  | Surface                                          | Status |
 |--------|--------------------------------------------------|--------|
@@ -45,9 +45,9 @@
 | 0.3.0  | AES-256-GCM + algorithm selection                | shipped |
 | 0.4.0  | Hashing — BLAKE3 (+ XOF), SHA-256, SHA-512       | shipped |
 | 0.5.0  | MAC — HMAC-SHA256/512, BLAKE3 keyed              | shipped |
-| 0.6.0  | KDF — HKDF-SHA256/512, Argon2id                  | **shipped** |
-| 0.7.0  | Stream / file encryption                         | next |
-| 0.8.0  | Performance verification (criterion benches)     | planned |
+| 0.6.0  | KDF — HKDF-SHA256/512, Argon2id                  | shipped |
+| 0.7.0  | Stream / file encryption                         | **shipped** |
+| 0.8.0  | Performance verification (criterion benches)     | next |
 | 0.9.0  | Fuzz testing                                     | planned |
 | 0.10.0 | Docs + Release Candidate                         | planned |
 | 1.0.0  | Stable Release                                   | planned |
@@ -56,7 +56,7 @@ See [`.dev/ROADMAP.md`](.dev/ROADMAP.md) for the full milestone plan and [`CHANG
 
 <hr>
 
-## What's in 0.6.0
+## What's in 0.7.0
 
 ### Symmetric AEAD encryption — `crypt_io::aead`
 
@@ -90,6 +90,26 @@ See [`.dev/ROADMAP.md`](.dev/ROADMAP.md) for the full milestone plan and [`CHANG
 - **HKDF is not for passwords.** Module documentation explicitly distinguishes the two — HKDF assumes high-entropy input, Argon2id assumes low-entropy input that needs brute-force resistance.
 - **RFC 5869 known-answer tests** for HKDF-SHA256 (Test Cases 1 + 3); SHA-512 cross-checked against the upstream `hkdf` crate.
 
+### Stream / File Encryption — `crypt_io::stream`
+
+- **`StreamEncryptor` / `StreamDecryptor`** — chunked AEAD for data that doesn't fit in memory. Symmetric `update()` / `finalize()` triad on both sides; callers don't have to track chunk boundaries. Default 64 KiB chunks, tunable via `new_with_chunk_size` (1 KiB..16 MiB).
+- **`stream::encrypt_file` / `stream::decrypt_file`** — file-to-file helpers for the common workflow. Decryption reads the algorithm from the stream header — no need to track which one was used.
+- **STREAM-construction nonces** (the same shape AGE uses) defeat **truncation**, **chunk reordering**, and **chunk duplication**. Header bytes are AAD on every chunk, so header tampering (algorithm byte, nonce prefix) fails verification on the first chunk. Wire format documented in [`docs/API.md`](docs/API.md#stream-wire-format).
+- **Final-chunk-always invariant.** The encoder always emits a final chunk (even if it carries zero plaintext) so EOF detection is unambiguous — a stream that ends mid-chunk or after a non-final chunk fails to verify.
+- **25 attack-surface integration tests** in `tests/stream.rs` — wrong key, body/tag tamper, three flavours of truncation, swapped chunks, duplicated chunks, header tamper, byte-by-byte feeding, file round-trip.
+
+### Examples — `examples/`
+
+Five runnable end-to-end programs covering the major use cases:
+
+```bash
+cargo run --example aead_round_trip
+cargo run --example password_hash --release   # --release: Argon2id is intentionally slow
+cargo run --example derive_subkeys
+cargo run --example mac_authenticate
+cargo run --example encrypt_file
+```
+
 ### Portfolio integration
 
 - **[`mod-rand`](https://crates.io/crates/mod-rand)** — Tier 3 OS-backed CSPRNG for nonces.
@@ -98,11 +118,12 @@ See [`.dev/ROADMAP.md`](.dev/ROADMAP.md) for the full milestone plan and [`CHANG
 - **[`metrics-lib`](https://crates.io/crates/metrics-lib)** *(optional)* — performance instrumentation.
 - **[`key-vault`](https://crates.io/crates/key-vault)** — peer crate; the consumer wires them together. No direct dependency.
 
-### What's *not* in 0.6.0 yet
+### What's *not* in 0.7.0 yet
 
-- **Stream / file encryption** — Phase 0.7.0.
 - **Benchmark suite** — Phase 0.8.0. Performance targets are in the contract (see [`.dev/ROADMAP.md`](.dev/ROADMAP.md)); committed criterion-backed measurements land in 0.8.
 - **Fuzz testing** — Phase 0.9.0.
+- **Resumable streaming** (checkpoint encryptor state, resume after a process restart) — post-1.0.
+- **Async file helpers** — Phase 1.x.
 - **Asymmetric crypto, PGP, TLS, RNG, UUIDs, key storage** — out of scope for the lifetime of this crate. Use `mod-rand`, `key-vault`, `rustls`, `sequoia-openpgp`, etc.
 
 <hr>
@@ -111,7 +132,7 @@ See [`.dev/ROADMAP.md`](.dev/ROADMAP.md) for the full milestone plan and [`CHANG
 
 ```toml
 [dependencies]
-crypt-io = "0.6"
+crypt-io = "0.7"
 ```
 
 Or:
@@ -222,6 +243,20 @@ assert!(kdf::argon2_verify(&phc, b"correct horse battery staple")?);
 # Ok::<(), crypt_io::Error>(())
 ```
 
+### Encrypt a file
+
+```rust,no_run
+use crypt_io::Algorithm;
+use crypt_io::stream;
+
+let key = [0u8; 32];
+stream::encrypt_file("input.bin", "output.enc", &key, Algorithm::ChaCha20Poly1305)?;
+stream::decrypt_file("output.enc", "decrypted.bin", &key)?;
+# Ok::<(), crypt_io::Error>(())
+```
+
+Chunked AEAD with the STREAM construction — works for files of any size, detects tampering / truncation / reordering. For in-memory streaming (network sockets, buffered I/O), use `StreamEncryptor` / `StreamDecryptor` directly.
+
 See [`docs/API.md`](docs/API.md) for the full reference.
 
 <hr>
@@ -285,7 +320,7 @@ Verified by benchmarks in **Phase 0.8.0** (criterion-backed, committed baselines
 | HMAC-SHA256, 1 KiB                           | < 3 µs    |
 | HKDF-SHA256, 32-byte output                  | < 5 µs    |
 | Argon2id, default params                     | ~100 ms (intentionally slow) |
-| Stream encrypt throughput *(0.7.0)*          | > 1 GiB/s |
+| Stream encrypt throughput                    | > 1 GiB/s |
 
 <hr>
 

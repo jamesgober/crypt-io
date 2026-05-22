@@ -19,6 +19,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.0] - 2026-05-22
+
+### Added
+
+- **`crypt_io::stream` module** — chunked AEAD with a
+  [STREAM-construction] frame format for encrypting data that
+  doesn't fit in memory.
+  - `StreamEncryptor` — buffers plaintext, emits encrypted chunks
+    of `chunk_size + 16` bytes each. `new()` + `update()` +
+    `finalize()` triad; `new_with_chunk_size()` for tuning chunk
+    size (10..=24 log2).
+  - `StreamDecryptor` — symmetric inverse. Parses the header,
+    buffers ciphertext, emits decrypted plaintext as chunks
+    complete.
+  - `stream::encrypt_file` / `stream::decrypt_file` — file-to-file
+    helpers using `BufReader` / `BufWriter` and the streaming
+    types. Available under `std`.
+  - **Frame format** documented in [`stream::frame`]:
+    24-byte header (magic + version + algorithm + chunk_size_log2 +
+    nonce_prefix) + N-1 non-final chunks + 1 final chunk strictly
+    smaller than `chunk_size + 16` bytes. STREAM-construction
+    per-chunk nonces (`prefix || counter_u32_be || last_flag`)
+    defeat truncation, reordering, and duplication; header bytes
+    are AAD for every chunk, so header tampering surfaces as
+    authentication failure on the first chunk.
+- **Public constants** in `crypt_io::stream`: `HEADER_LEN = 24`,
+  `TAG_LEN = 16`, `DEFAULT_CHUNK_SIZE_LOG2 = 16` (64 KiB),
+  `MIN_CHUNK_SIZE_LOG2 = 10`, `MAX_CHUNK_SIZE_LOG2 = 24`.
+- **Integration test suite** `tests/stream.rs` — 25 tests
+  covering:
+  - Round-trip across both algorithms, multiple chunk sizes,
+    empty / 1-byte / exact-chunk / chunk+1 / many-chunk / 10 MiB
+    inputs, byte-by-byte feeding on both sides.
+  - Attack surface: wrong key, tampered chunk body, tampered tag,
+    truncation (to zero / mid-tag / dropped final chunk), swapped
+    chunks, duplicated chunk, tampered algorithm byte, tampered
+    nonce prefix, tampered magic, wrong key length, distinct
+    nonce prefixes per stream.
+  - File round-trip for both algorithms.
+- **`examples/` directory populated** — 5 runnable examples
+  covering the main use cases:
+  - `aead_round_trip.rs` — `Crypt::encrypt` / `decrypt`, both
+    algorithms, with-AAD variant.
+  - `password_hash.rs` — Argon2id hash + verify, custom params.
+  - `derive_subkeys.rs` — HKDF for splitting one master into many
+    purpose-specific subkeys with domain separation.
+  - `mac_authenticate.rs` — HMAC-SHA256 + verify, BLAKE3 keyed,
+    streaming MAC.
+  - `encrypt_file.rs` — `stream::encrypt_file` /
+    `stream::decrypt_file` round-trip plus a tamper-detection demo.
+
+### Changed
+
+- **Default features extended.** `default` now includes `stream`
+  alongside the AEAD / hash / MAC / KDF baselines. A fresh
+  `cargo add crypt-io` ships with the streaming surface
+  available.
+- **`stream` feature dependencies broadened** from `aead-chacha20`
+  to `aead-chacha20 + aead-aes-gcm`, so the streaming types can
+  switch algorithms at runtime without an extra feature flag.
+- **`lib.rs` module wiring.** The `stream` module is exposed when
+  the `stream` feature is enabled.
+
+### Security
+
+- **Truncation, reordering, and duplication detection.** The
+  STREAM construction's per-chunk nonces include both a counter
+  and a `last_flag` byte. Any of these attacks produces a nonce
+  mismatch on the affected chunk → `AuthenticationFailed`.
+- **Header binding.** Every encrypted chunk uses the 24-byte
+  header as AAD, so tampering with the algorithm byte, chunk
+  size, or nonce prefix shows up as authentication failure on
+  the first chunk.
+- **Final-chunk-always invariant.** The encryptor always emits a
+  final chunk (even if it carries zero plaintext bytes), so the
+  decryptor can detect end-of-stream unambiguously by length —
+  a stream that ends mid-chunk or after a non-final chunk fails
+  to verify.
+- **Opaque `AuthenticationFailed`.** Wrong key, tampered chunk,
+  tampered tag, header tampering, truncation, reordering, and
+  duplication all surface as the same single variant. The
+  classification is intentionally not exposed.
+- **File-decrypt failure cleanup.** `decrypt_file` documents that
+  callers must delete the partially-written output file on error
+  — earlier chunks may have been written to disk before a later
+  chunk failed to verify. The documentation is explicit because
+  this is a footgun in every chunked-AEAD design.
+
+[STREAM-construction]: https://eprint.iacr.org/2015/189.pdf
+[`stream::frame`]: crate::stream::frame
+[0.7.0]: https://github.com/jamesgober/crypt-io/compare/v0.6.0...v0.7.0
+
+---
+
 ## [0.6.0] - 2026-05-22
 
 ### Added
@@ -437,5 +531,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Feature flags for AEAD (chacha20, aes-gcm), hashing (blake3, sha2), MAC (hmac, blake3 keyed), KDF (hkdf, argon2), stream encryption.
 - Dependencies wired: `mod-rand` for CSPRNG, `error-forge` for errors, optional `log-io` and `metrics-lib`.
 
-[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v0.7.0...HEAD
 [0.1.0]: https://github.com/jamesgober/crypt-io/releases/tag/v0.1.0
