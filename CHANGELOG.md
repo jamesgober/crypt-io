@@ -19,6 +19,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.0] - 2026-05-22
+
+### Added
+
+- **`crypt_io::mac` module** — three message-authentication-code
+  algorithms with a consistent compute / verify / streaming
+  surface:
+  - **HMAC-SHA256** ([RFC 2104] + [RFC 4231] test vectors):
+    - `mac::hmac_sha256(key, data) -> Result<[u8; 32]>` — one-shot.
+    - `mac::hmac_sha256_verify(key, data, expected_tag) -> Result<bool>` —
+      constant-time tag comparison via the upstream `hmac` crate's
+      `verify_slice`.
+    - `HmacSha256` streaming hasher (`new` → `update` → `finalize`
+      or `verify`).
+    - Feature: `mac-hmac` (default on).
+  - **HMAC-SHA512**:
+    - `mac::hmac_sha512(key, data) -> Result<[u8; 64]>` + matching
+      `mac::hmac_sha512_verify(...)`.
+    - `HmacSha512` streaming hasher.
+    - Feature: `mac-hmac`.
+  - **BLAKE3 keyed mode**:
+    - `mac::blake3_keyed(key: &[u8; 32], data) -> [u8; 32]` —
+      infallible (typed key, no runtime length check).
+    - `mac::blake3_keyed_verify(...)` — constant-time tag comparison
+      via BLAKE3's `Hash::eq` (the upstream crate documents this as
+      constant time).
+    - `Blake3Mac` streaming MAC.
+    - Feature: `mac-blake3` (default on in 0.5.0+).
+- **Output-length and key-length constants** in `crypt_io::mac`:
+  `HMAC_SHA256_OUTPUT_LEN = 32`, `HMAC_SHA512_OUTPUT_LEN = 64`,
+  `BLAKE3_MAC_OUTPUT_LEN = 32`, `BLAKE3_MAC_KEY_LEN = 32` (each
+  feature-gated).
+- **`Error::Mac(&'static str)`** variant for MAC construction
+  failures. Unreachable in practice (HMAC accepts any key length;
+  BLAKE3 keyed takes a typed `[u8; 32]`), but the variant exists
+  because the upstream `Mac` trait surface is fallible by
+  signature.
+- **RFC 4231 known-answer tests**:
+  - HMAC-SHA256 Test Case 1 (20-byte `0x0b` key, `"Hi There"`).
+  - HMAC-SHA256 Test Case 2 (4-byte `"Jefe"` key, `"what do ya want..."`).
+  - HMAC-SHA512 Test Case 1 and Test Case 2 (same key/data inputs).
+- **BLAKE3 keyed KAT** — empty-input tag under the official 32-byte
+  ASCII key `"whats the Elvish word for friend"`, pinned as a
+  byte-array constant.
+- **Verify-rejection tests** for every algorithm: wrong-tag,
+  wrong-key, wrong-data, truncated-tag, oversized-tag (BLAKE3).
+- **Streaming-equivalence tests** for every algorithm at multiple
+  chunk boundaries.
+- **Streaming-verify tests** for every algorithm (constant-time
+  accept on match, reject on tamper).
+- **Doctests** for every public entry point in the new module.
+
+### Changed
+
+- **Default features extended.** `default` now includes `mac-blake3`
+  in addition to `mac-hmac`. A fresh `cargo add crypt-io` ships with
+  all three MACs available. Drop `mac-blake3` if you want HMAC-only.
+- **`lib.rs` module wiring.** The `mac` module is exposed when
+  either `mac-hmac` or `mac-blake3` is enabled.
+
+### Security
+
+- **Constant-time verification is the only verification path.** The
+  `*_verify` free functions and the streaming hashers' `verify`
+  methods all use upstream constant-time comparators. The module
+  documentation explicitly forbids `tag == expected` and points
+  callers at the `verify` paths.
+- **Hash-vs-MAC separation preserved.** Keyed-hash semantics live in
+  this module; the `hash` module remains key-free. The `Blake3Hasher`
+  in `hash` does **not** expose `with_key` — `Blake3Mac` in `mac`
+  is the only way to produce a BLAKE3 keyed tag through this crate.
+- **No raw key bytes in errors.** `Error::Mac` carries only a
+  `&'static str` reason — never key material.
+- **Tag-length variation is a rejection, not a panic.** All
+  `*_verify` functions return `false` when `expected_tag` is the
+  wrong length, rather than panicking on a length-mismatched compare.
+
+[RFC 2104]: https://datatracker.ietf.org/doc/html/rfc2104
+[RFC 4231]: https://datatracker.ietf.org/doc/html/rfc4231
+[0.5.0]: https://github.com/jamesgober/crypt-io/compare/v0.4.0...v0.5.0
+
+---
+
 ## [0.4.0] - 2026-05-22
 
 ### Added
@@ -262,5 +345,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Feature flags for AEAD (chacha20, aes-gcm), hashing (blake3, sha2), MAC (hmac, blake3 keyed), KDF (hkdf, argon2), stream encryption.
 - Dependencies wired: `mod-rand` for CSPRNG, `error-forge` for errors, optional `log-io` and `metrics-lib`.
 
-[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v0.5.0...HEAD
 [0.1.0]: https://github.com/jamesgober/crypt-io/releases/tag/v0.1.0

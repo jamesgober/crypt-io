@@ -10,166 +10,273 @@
 
 <p align="center">
     <a href="https://crates.io/crates/crypt-io"><img src="https://img.shields.io/crates/v/crypt-io.svg" alt="Crates.io"></a>
-    <a href="https://crates.io/crates/crypt-io"><img alt="downloads" src="https://img.shields.io/crates/d/crypt-io.svg?0099ff"></a>
+    <a href="https://crates.io/crates/crypt-io"><img alt="downloads" src="https://img.shields.io/crates/d/crypt-io.svg?color=0099ff"></a>
     <a href="https://docs.rs/crypt-io"><img src="https://docs.rs/crypt-io/badge.svg" alt="Documentation"></a>
     <a href="https://github.com/jamesgober/crypt-io/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/jamesgober/crypt-io/actions/workflows/ci.yml/badge.svg"></a>
     <a href="https://github.com/rust-lang/rfcs/blob/master/text/2495-min-rust-version.md" title="MSRV"><img alt="MSRV" src="https://img.shields.io/badge/MSRV-1.85%2B-blue"></a>
 </p>
 
 <p align="center">
-    <b>AEAD encryption, hashing, MAC, and KDF for Rust</b>
+    <b>AEAD encryption, hashing, and message authentication for Rust</b>
     <br>
-    <i>Algorithm-agile. RustCrypto-backed primitives. Simple API. Sub-microsecond throughput.</i>
+    <i>Algorithm-agile. RustCrypto-backed primitives. Simple API. REPS-disciplined.</i>
 </p>
 
 <br>
 
 <p>
-    <strong>crypt-io</strong> is a focused encryption library that wraps battle-tested cryptographic primitives (from RustCrypto and the BLAKE3 team) with a clean, ergonomic API. Built from the ground up with REPS discipline, algorithm agility, and tight integration with the portfolio (<code>mod-rand</code> for CSPRNG, <code>error-forge</code> for errors), it targets sub-microsecond throughput on common operations while keeping the API simple enough to use correctly.
+    <strong>crypt-io</strong> is a focused encryption library that wraps battle-tested cryptographic primitives (from RustCrypto and the BLAKE3 team) behind a clean, hard-to-misuse API. Built from the ground up with REPS discipline, algorithm agility, and tight portfolio integration (<code>mod-rand</code> for CSPRNG nonces, <code>error-forge</code> for error metadata), it targets the symmetric-crypto needs that <i>most</i> applications actually have: encrypt some data, hash some data, authenticate a tag, derive a key.
 </p>
 
 <p>
-    Unlike monolithic crypto crates that try to be everything, <strong>crypt-io</strong> stays focused on what most applications actually need: symmetric AEAD encryption for data, hashing for integrity, MAC for authentication, and KDF for deriving keys from passwords or master secrets. No asymmetric crypto, no PGP, no TLS - those are different problems best solved by purpose-built crates. <strong>crypt-io</strong> is the foundation primitive that handles the 95% case with a clean, hard-to-misuse API.
-</p>
-
-<p>
-    With <strong>crypt-io</strong>, you can encrypt a piece of data in two lines, hash a stream in one, derive a key from a master in three. Algorithm selection is explicit via enums or feature flags - you choose ChaCha20-Poly1305 (the default, post-quantum-safe at 256 bits) or AES-256-GCM (when you want hardware acceleration), and the API stays the same. Stream encryption handles large files with chunked AEAD and proper framing. Argon2id is available for password hashing when you need it.
+    Unlike monolithic crypto crates that try to be everything, <strong>crypt-io</strong> stays focused. No asymmetric crypto, no PGP, no TLS — those are different problems best solved by purpose-built crates. <strong>crypt-io</strong> is the foundation primitive that handles the 95% case with a clean API where the easy path is also the secure path: constant-time verification for MACs, fresh nonces per call for AEAD, redaction-clean errors, and a hash module that deliberately won't let you accidentally use a raw hash as a MAC.
 </p>
 
 <hr>
 
-## Features
+## Status
 
-### Symmetric AEAD Encryption
+**Current version:** `0.5.0` (2026-05-22). Pre-1.0 — the public API is allowed to evolve in breaking ways through the `0.x` series; `1.0.0` freezes it.
 
-- **ChaCha20-Poly1305** (default) - fast, post-quantum-safe at 256 bits
-- **AES-256-GCM** - hardware-accelerated on modern CPUs
-- **Algorithm agility** - select via enum or Cargo feature
-- **Authenticated encryption** - integrity guaranteed, tampering detected
+| Phase  | Surface                                          | Status |
+|--------|--------------------------------------------------|--------|
+| 0.1.0  | Scaffold, REPS baseline, CI                      | shipped |
+| 0.2.0  | AEAD foundation — ChaCha20-Poly1305              | shipped |
+| 0.3.0  | AES-256-GCM + algorithm selection                | shipped |
+| 0.4.0  | Hashing — BLAKE3 (+ XOF), SHA-256, SHA-512       | shipped |
+| 0.5.0  | MAC — HMAC-SHA256/512, BLAKE3 keyed              | **shipped** |
+| 0.6.0  | KDF — HKDF, Argon2id                             | next |
+| 0.7.0  | Stream / file encryption                         | planned |
+| 0.8.0  | Performance verification (criterion benches)     | planned |
+| 0.9.0  | Fuzz testing                                     | planned |
+| 0.10.0 | Docs + Release Candidate                         | planned |
+| 1.0.0  | Stable Release                                   | planned |
 
-### Stream/File Encryption
+See [`.dev/ROADMAP.md`](.dev/ROADMAP.md) for the full milestone plan and [`CHANGELOG.md`](CHANGELOG.md) for per-version detail. Per-release notes live under [`docs/release/`](docs/release).
 
-- **Chunked AEAD** with proper framing for large data
-- **Resumable** on partial reads
-- **Async-compatible** (with `async-trait` feature)
-- **Throughput target:** >1 GiB/s on modern hardware
+<hr>
 
-### Hashing
+## What's in 0.5.0
 
-- **BLAKE3** (default) - the fastest cryptographic hash
-- **SHA-256, SHA-512** - for interoperability and compliance
+### Symmetric AEAD encryption — `crypt_io::aead`
 
-### Message Authentication (MAC)
+- **`Crypt::new()`** — ChaCha20-Poly1305 (default, post-quantum-safe at 256 bits).
+- **`Crypt::aes_256_gcm()`** — AES-256-GCM (hardware-accelerated on AES-NI / ARMv8 crypto extensions, runtime-dispatched by upstream).
+- **Algorithm-agile API.** Same `encrypt` / `decrypt` surface, same wire format (`nonce || ciphertext || tag`), same 32-byte key. Switch by picking the constructor.
+- **Fresh nonces per call** via `mod-rand` Tier 3 (OS CSPRNG). Nonce reuse cannot happen through the public API.
+- **AAD support** via `encrypt_with_aad` / `decrypt_with_aad`.
+- **RFC 8439 + NIST SP 800-38D known-answer tests** verifying byte-exact output against the specs.
 
-- **HMAC-SHA256, HMAC-SHA512** - the classic, widely supported
-- **BLAKE3 keyed mode** - faster MAC when BLAKE3 is already in use
+### Hashing — `crypt_io::hash`
 
-### Key Derivation (KDF)
+- **BLAKE3** — `hash::blake3` (32-byte default) + `hash::blake3_long` (XOF, any length) + streaming `Blake3Hasher`.
+- **SHA-256 / SHA-512** — `hash::sha256` / `hash::sha512` + streaming `Sha256Hasher` / `Sha512Hasher`.
+- **NIST FIPS 180-4 known-answer tests** for SHA-2; byte-pinned KATs for BLAKE3.
+- **Streaming-equals-one-shot** verified at multiple chunk boundaries.
+- **Hash-only by design.** No `with_key`. Keyed hashing lives in `mac`.
 
-- **HKDF** - derive multiple keys from a master secret
-- **Argon2id** - password hashing, memory-hard, the modern standard
+### Message Authentication — `crypt_io::mac`
 
-### Integration
+- **HMAC-SHA256 / HMAC-SHA512** — `mac::hmac_sha256` / `mac::hmac_sha512` + streaming `HmacSha256` / `HmacSha512`.
+- **BLAKE3 keyed mode** — `mac::blake3_keyed` (typed 32-byte key, infallible) + streaming `Blake3Mac`.
+- **Constant-time verification by default.** Every algorithm exposes a `*_verify` path that compares against an expected tag via upstream constant-time comparators. **Never** `tag == expected` against a secret.
+- **RFC 4231 known-answer tests** for HMAC; byte-pinned KAT for BLAKE3 keyed.
+- **Wrong-length tags are rejections, not panics.**
 
-- **mod-rand** for CSPRNG (nonces, salts, IVs)
-- **error-forge** for error types
-- **log-io** (optional) for operation logging
-- **metrics-lib** (optional) for performance instrumentation
-- **key-vault** (consumer wires up) - works alongside but no direct dependency
+### Portfolio integration
 
-### Performance targets
+- **[`mod-rand`](https://crates.io/crates/mod-rand)** — Tier 3 OS-backed CSPRNG for nonces.
+- **[`error-forge`](https://crates.io/crates/error-forge)** — declared dependency (deeper integration in a later phase).
+- **[`log-io`](https://crates.io/crates/log-io)** *(optional)* — operation logging.
+- **[`metrics-lib`](https://crates.io/crates/metrics-lib)** *(optional)* — performance instrumentation.
+- **[`key-vault`](https://crates.io/crates/key-vault)** — peer crate; the consumer wires them together. No direct dependency.
 
-- **ChaCha20-Poly1305 encrypt, 1 KiB:** <2us
-- **AES-256-GCM encrypt, 1 KiB (HW accel):** <1us
-- **BLAKE3 hash, 1 KiB:** <500ns
-- **HMAC-SHA256, 1 KiB:** <3us
-- **HKDF-SHA256, 32-byte output:** <5us
-- **Stream encrypt throughput:** >1 GiB/s
+### What's *not* in 0.5.0 yet
 
-> **Note on benchmark numbers:** detailed criterion-backed benchmark numbers will land with **v1.0.0**. Until then, performance claims should be treated as targets, not guarantees.
+- **KDF** (HKDF, Argon2id) — Phase 0.6.0.
+- **Stream / file encryption** — Phase 0.7.0.
+- **Benchmark suite** — Phase 0.8.0. Performance targets are in the contract (see [`.dev/ROADMAP.md`](.dev/ROADMAP.md)); committed criterion-backed measurements land in 0.8.
+- **Fuzz testing** — Phase 0.9.0.
+- **Asymmetric crypto, PGP, TLS, RNG, UUIDs, key storage** — out of scope for the lifetime of this crate. Use `mod-rand`, `key-vault`, `rustls`, `sequoia-openpgp`, etc.
 
----
+<hr>
 
-## Quick start
+## Installation
 
 ```toml
 [dependencies]
-crypt-io = "0.1"
+crypt-io = "0.5"
 ```
+
+Or:
+
+```bash
+cargo add crypt-io
+```
+
+**MSRV:** Rust 1.85 (edition 2024). Older toolchains will not build.
+
+<hr>
+
+## Quick start
+
+### AEAD round-trip
 
 ```rust
 use crypt_io::Crypt;
 
-// Encrypt
-let crypt = Crypt::new();              // ChaCha20-Poly1305 by default
+let key = [0u8; 32];                  // your 256-bit key
+let crypt = Crypt::new();             // ChaCha20-Poly1305 by default
+
 let ciphertext = crypt.encrypt(&key, b"plaintext data")?;
-let plaintext  = crypt.decrypt(&key, &ciphertext)?;
-
-// Hash
-let hash = crypt_io::hash::blake3(b"data");
-
-// MAC
-let tag = crypt_io::mac::hmac_sha256(&key, b"data");
-
-// Derive a key from a password
-let pw_hash = crypt_io::kdf::argon2_hash(b"password", &salt)?;
+let recovered  = crypt.decrypt(&key, &ciphertext)?;
+assert_eq!(&*recovered, b"plaintext data");
+# Ok::<(), crypt_io::Error>(())
 ```
 
----
+### AES-256-GCM (when you want hardware acceleration)
+
+```rust
+use crypt_io::Crypt;
+
+let key = [0u8; 32];
+let crypt = Crypt::aes_256_gcm();     // requires `aead-aes-gcm` (default-on)
+
+let ciphertext = crypt.encrypt(&key, b"hello AES")?;
+let recovered  = crypt.decrypt(&key, &ciphertext)?;
+# Ok::<(), crypt_io::Error>(())
+```
+
+### Hashing
+
+```rust
+use crypt_io::hash;
+
+let digest = hash::blake3(b"the quick brown fox");   // [u8; 32]
+let sha256 = hash::sha256(b"the quick brown fox");   // [u8; 32]
+let sha512 = hash::sha512(b"the quick brown fox");   // [u8; 64]
+let xof    = hash::blake3_long(b"input", 128);       // Vec<u8>, 128 bytes
+```
+
+### MAC with constant-time verify
+
+```rust
+use crypt_io::mac;
+
+let key  = b"shared secret";
+let data = b"message to authenticate";
+
+let tag = mac::hmac_sha256(key, data)?;
+assert!(mac::hmac_sha256_verify(key, data, &tag)?);
+// Never `tag == expected_tag` against a secret — use the `*_verify` path.
+# Ok::<(), crypt_io::Error>(())
+```
+
+BLAKE3 keyed mode — typed key, infallible:
+
+```rust
+use crypt_io::mac;
+
+let key = [0x42u8; 32];
+let tag = mac::blake3_keyed(&key, b"message");
+assert!(mac::blake3_keyed_verify(&key, b"message", &tag));
+```
+
+### Streaming (large or chunked inputs)
+
+```rust
+use crypt_io::hash::Blake3Hasher;
+
+let mut h = Blake3Hasher::new();
+h.update(b"first chunk ");
+h.update(b"second chunk");
+let digest = h.finalize();
+```
+
+See [`docs/API.md`](docs/API.md) for the full reference.
+
+<hr>
 
 ## Design philosophy
 
 **crypt-io** is intentionally focused:
 
 - **One job:** symmetric crypto. Done well.
-- **No reinvention:** primitives come from RustCrypto and BLAKE3 (battle-tested).
-- **Simple API:** Encrypt in 2 lines. Hash in 1. Hard to misuse.
-- **Algorithm agility:** ChaCha20 by default, AES-GCM when you want hardware acceleration.
-- **Tight integration:** portfolio-aware (`mod-rand`, `error-forge`, optional `log-io`/`metrics-lib`).
-- **Performance verified:** sub-microsecond targets, benchmarked before claims ship.
+- **No reinvention.** Primitives come from RustCrypto and BLAKE3 (battle-tested, widely audited).
+- **Simple API.** Encrypt in two lines. Hash in one. The easy path is the secure path.
+- **Algorithm agility.** ChaCha20-Poly1305 by default, AES-256-GCM when you want hardware acceleration. Same `Crypt` API either way.
+- **Constant-time discipline.** MAC verification uses upstream constant-time comparators, never `==`. Documented in module overviews.
+- **Hash ≠ MAC.** `Blake3Hasher` has no `with_key`. The only way to produce a keyed tag is through the `mac` module. This separation is deliberate.
+- **Redaction-clean errors.** No variant of `Error` ever contains key material, plaintext, ciphertext, nonces, or tag bytes.
+- **REPS-disciplined.** Every commit passes `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all-features`, and `cargo doc` with `-D warnings`.
 
 What we explicitly do NOT do:
 
 - Implement crypto primitives from scratch (use battle-tested upstreams)
-- Asymmetric crypto (RSA, ECDSA, Ed25519) - different problem, separate crate
+- Asymmetric crypto (RSA, ECDSA, Ed25519) — different problem, separate crate
 - PGP/GPG (use `sequoia-openpgp`)
 - TLS (use `rustls`)
-- Random generation (use `mod-rand`)
+- Random number generation (use `mod-rand`)
 - UUID generation (use `id-forge`)
 - Key storage (use `key-vault`)
 
-This keeps the scope clean and the security review tractable.
-
----
+<hr>
 
 ## When to use crypt-io
 
-Good fit:
+**Good fit:**
+
 - Encrypting data for storage (databases, file systems, caches)
 - Encrypting API tokens or session data
-- File encryption for backups
-- Message-level encryption in chat (paired with a key exchange crate)
-- Database column encryption
-- Audit log signing
-- Configuration encryption
+- Authenticating messages, audit logs, signed records
+- Hashing for integrity checks, fingerprinting, content-addressed storage
+- HMAC signatures for outgoing requests (AWS SigV4, JWT HS256/HS512, webhooks)
+- Composing with `key-vault` for in-memory key handling
 
-Wrong fit:
-- TLS connections (use `rustls`)
-- OpenPGP interop (use `sequoia-openpgp`)
-- Digital signatures (use `ed25519-dalek`)
-- Key exchange (use `x25519-dalek`)
-- Random number generation (use `mod-rand`)
+**Wrong fit:**
 
----
+- TLS connections — use [`rustls`](https://crates.io/crates/rustls)
+- OpenPGP interop — use [`sequoia-openpgp`](https://crates.io/crates/sequoia-openpgp)
+- Digital signatures — use [`ed25519-dalek`](https://crates.io/crates/ed25519-dalek)
+- Key exchange — use [`x25519-dalek`](https://crates.io/crates/x25519-dalek)
+- Random number generation — use [`mod-rand`](https://crates.io/crates/mod-rand)
+
+<hr>
+
+## Performance targets
+
+Verified by benchmarks in **Phase 0.8.0** (criterion-backed, committed baselines). Until then these are documented targets, not measured numbers:
+
+| Operation                                    | Target    |
+|----------------------------------------------|-----------|
+| ChaCha20-Poly1305 encrypt, 1 KiB             | < 2 µs    |
+| AES-256-GCM encrypt, 1 KiB (HW accel)        | < 1 µs    |
+| BLAKE3 hash, 1 KiB                           | < 500 ns  |
+| SHA-256 hash, 1 KiB                          | < 2 µs    |
+| HMAC-SHA256, 1 KiB                           | < 3 µs    |
+| HKDF-SHA256, 32-byte output *(0.6.0)*        | < 5 µs    |
+| Argon2id, default params *(0.6.0)*           | < 100 ms (intentionally slow) |
+| Stream encrypt throughput *(0.7.0)*          | > 1 GiB/s |
+
+<hr>
+
+## Documentation
+
+- [`docs/API.md`](docs/API.md) — complete public-API reference for the current version.
+- [`CHANGELOG.md`](CHANGELOG.md) — per-version Added / Changed / Security entries.
+- [`docs/release/`](docs/release) — per-release notes (`v0.2.0.md`, `v0.3.0.md`, …).
+- [`.dev/ROADMAP.md`](.dev/ROADMAP.md) — milestone plan through 1.0.
+
+<hr>
 
 ## Standards
 
-- **REPS** (Rust Efficiency & Performance Standards) governs every decision. See [REPS.md](REPS.md).
-- **MSRV:** Rust 1.75.
+- **REPS** (Rust Efficiency & Performance Standards) governs every decision. See [`REPS.md`](REPS.md).
+- **MSRV:** Rust 1.85.
 - **Edition:** 2024.
-- **Cross-platform:** Linux, macOS, Windows.
+- **Cross-platform:** Linux, macOS, Windows (CI matrix on stable + MSRV).
 
----
+<hr>
 
 ## License
 
@@ -183,9 +290,6 @@ at your option.
 ### Contribution
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
-
-
-
 
 <!-- FOOT COPYRIGHT
 ################################################# -->

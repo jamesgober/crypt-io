@@ -19,11 +19,9 @@
 </p>
 
 <p align="center">
-    <i>Complete public-API reference for <code>crypt-io</code> 0.4.0.</i>
+    <i>Complete public-API reference for <code>crypt-io</code> 0.5.0.</i>
     <br>
-    <i>For the milestone plan see
-    <a href="../.dev/ROADMAP.md"><code>.dev/ROADMAP.md</code></a>.
-    For per-version notes see <a href="../CHANGELOG.md"><code>CHANGELOG.md</code></a>.</i>
+    <i>For per-version notes see <a href="../CHANGELOG.md"><code>CHANGELOG.md</code></a>.</i>
 </p>
 
 <hr>
@@ -58,6 +56,17 @@
     - [`Sha256Hasher`](#sha256hasher)
     - [`Sha512Hasher`](#sha512hasher)
     - [Choosing a hash](#choosing-a-hash)
+  - [`mac` module](#mac-module)
+    - [`mac::hmac_sha256`](#machmac_sha256)
+    - [`mac::hmac_sha256_verify`](#machmac_sha256_verify)
+    - [`mac::hmac_sha512`](#machmac_sha512)
+    - [`mac::hmac_sha512_verify`](#machmac_sha512_verify)
+    - [`mac::blake3_keyed`](#macblake3_keyed)
+    - [`mac::blake3_keyed_verify`](#macblake3_keyed_verify)
+    - [`HmacSha256`](#hmacsha256)
+    - [`HmacSha512`](#hmacsha512)
+    - [`Blake3Mac`](#blake3mac)
+    - [Choosing a MAC](#choosing-a-mac)
   - [`Error`](#error)
   - [`Result<T>`](#resultt)
   - [Module constants](#module-constants)
@@ -75,7 +84,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-crypt-io = "0.4"
+crypt-io = "0.5"
 ```
 
 ### Install via terminal
@@ -108,9 +117,11 @@ documented in `Cargo.toml`. The full plan ships across the 0.3 →
 | `hash-blake3` | ✅ | BLAKE3 hashing + [`Blake3Hasher`](#blake3hasher) + XOF. |
 | `hash-sha2` | ✅ | SHA-256 + SHA-512 hashing + matching streaming hashers. |
 | `hash-all` |  | Both hash families (already in the 0.4.0+ default). |
-| `mac-hmac` | ✅ | Reserved for 0.5.0. No-op in 0.4.0. |
-| `kdf-hkdf` | ✅ | Reserved for 0.6.0. No-op in 0.4.0. |
-| `stream` |  | Reserved for 0.7.0. No-op in 0.4.0. |
+| `mac-hmac` | ✅ | HMAC-SHA256 + HMAC-SHA512 + [`HmacSha256`](#hmacsha256) / [`HmacSha512`](#hmacsha512). |
+| `mac-blake3` | ✅ | BLAKE3 keyed mode + [`Blake3Mac`](#blake3mac). |
+| `mac-all` |  | Both MAC families (already in the 0.5.0+ default). |
+| `kdf-hkdf` | ✅ | Reserved for 0.6.0. No-op in 0.5.0. |
+| `stream` |  | Reserved for 0.7.0. No-op in 0.5.0. |
 | `preset-minimal` |  | `std` + `aead-chacha20` only — the 0.2.0 surface. |
 | `preset-all` |  | All planned features enabled. Some are inert until their phase ships. |
 
@@ -693,6 +704,268 @@ Hardware acceleration is automatic on both:
 > `subtle::ConstantTimeEq::ct_eq` so timing doesn't leak how many
 > leading bytes matched. For non-secret comparisons (file
 > integrity checks, content-addressed storage keys), `==` is fine.
+>
+> For **MAC tags** specifically, don't even reach for `subtle`
+> directly — use the [`mac`](#mac-module) module's `*_verify`
+> paths, which already wrap the constant-time comparator and
+> handle wrong-length tags as rejections rather than panics.
+
+<a href="#top">↑ TOP</a>
+
+---
+
+### `mac` module
+
+Message Authentication Codes. New in 0.5.0. Three algorithms with
+a consistent compute / verify / streaming triad — and verification
+is **always** constant-time, by design.
+
+| Algorithm        | Compute                          | Verify                                  | Streaming       | Tag    | Feature       |
+|------------------|----------------------------------|-----------------------------------------|-----------------|--------|---------------|
+| HMAC-SHA256      | [`mac::hmac_sha256`](#machmac_sha256) | [`mac::hmac_sha256_verify`](#machmac_sha256_verify) | [`HmacSha256`](#hmacsha256) | 32 B | `mac-hmac`   |
+| HMAC-SHA512      | [`mac::hmac_sha512`](#machmac_sha512) | [`mac::hmac_sha512_verify`](#machmac_sha512_verify) | [`HmacSha512`](#hmacsha512) | 64 B | `mac-hmac`   |
+| BLAKE3 keyed     | [`mac::blake3_keyed`](#macblake3_keyed) | [`mac::blake3_keyed_verify`](#macblake3_keyed_verify) | [`Blake3Mac`](#blake3mac) | 32 B | `mac-blake3` |
+
+> **Verify, don't `==`.** Comparing two MAC tags with `==` leaks
+> how many leading bytes matched via timing — that leak is enough
+> to forge tags one byte at a time. The `*_verify` functions and
+> the streaming hashers' `verify` methods all use upstream
+> constant-time comparators. **Never** compare a computed tag to
+> an expected tag with `==`.
+
+<a href="#top">↑ TOP</a>
+
+#### `mac::hmac_sha256`
+
+```rust
+#[cfg(feature = "mac-hmac")]
+pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<[u8; 32]>;
+```
+
+Compute an HMAC-SHA256 tag (RFC 2104) over `data` under `key`.
+Accepts a key of any length — short keys are zero-padded, long
+keys are hashed to block size, per RFC 2104.
+
+**Errors.** Returns [`Error::Mac`](#error) if the upstream `hmac`
+crate refuses the key. Unreachable in practice (HMAC accepts any
+key length), but the upstream API is fallible by signature so the
+wrapper preserves that.
+
+```rust
+# #[cfg(feature = "mac-hmac")] {
+use crypt_io::mac;
+let tag = mac::hmac_sha256(b"shared key", b"message")?;
+assert_eq!(tag.len(), 32);
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
+<a href="#top">↑ TOP</a>
+
+#### `mac::hmac_sha256_verify`
+
+```rust
+#[cfg(feature = "mac-hmac")]
+pub fn hmac_sha256_verify(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Result<bool>;
+```
+
+Constant-time verification of an HMAC-SHA256 tag. Computes the tag
+for `(key, data)` and compares it to `expected_tag` via the
+`hmac` crate's `verify_slice` (which routes through `subtle`).
+Returns `Ok(true)` on match, `Ok(false)` otherwise (including when
+`expected_tag` is the wrong length).
+
+**Always use this rather than `tag == expected`.**
+
+**Errors.** Same as [`mac::hmac_sha256`](#machmac_sha256).
+
+```rust
+# #[cfg(feature = "mac-hmac")] {
+use crypt_io::mac;
+let key = b"shared";
+let tag = mac::hmac_sha256(key, b"data")?;
+assert!(mac::hmac_sha256_verify(key, b"data", &tag)?);
+assert!(!mac::hmac_sha256_verify(key, b"tampered", &tag)?);
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
+<a href="#top">↑ TOP</a>
+
+#### `mac::hmac_sha512`
+
+```rust
+#[cfg(feature = "mac-hmac")]
+pub fn hmac_sha512(key: &[u8], data: &[u8]) -> Result<[u8; 64]>;
+```
+
+Compute an HMAC-SHA512 tag (RFC 2104) over `data` under `key`.
+Same shape as [`mac::hmac_sha256`](#machmac_sha256) with a 64-byte
+tag.
+
+**Errors.** Same as [`mac::hmac_sha256`](#machmac_sha256).
+
+<a href="#top">↑ TOP</a>
+
+#### `mac::hmac_sha512_verify`
+
+```rust
+#[cfg(feature = "mac-hmac")]
+pub fn hmac_sha512_verify(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Result<bool>;
+```
+
+Constant-time verification for HMAC-SHA512. Same shape as
+[`mac::hmac_sha256_verify`](#machmac_sha256_verify).
+
+<a href="#top">↑ TOP</a>
+
+#### `mac::blake3_keyed`
+
+```rust
+#[cfg(feature = "mac-blake3")]
+pub fn blake3_keyed(key: &[u8; 32], data: &[u8]) -> [u8; 32];
+```
+
+Compute a BLAKE3 keyed-mode tag over `data` under a typed
+32-byte key.
+
+Unlike HMAC, this is **infallible** — the key is type-checked as
+`&[u8; 32]`, so there is no runtime length check that could fail.
+The fixed-size key matches BLAKE3's design intent (the key is a
+fixed-size secret derived elsewhere — from `key-vault`, from an
+HKDF expansion, etc.).
+
+```rust
+# #[cfg(feature = "mac-blake3")] {
+use crypt_io::mac;
+let key = [0x42u8; 32];
+let tag = mac::blake3_keyed(&key, b"message");
+assert_eq!(tag.len(), 32);
+# }
+```
+
+<a href="#top">↑ TOP</a>
+
+#### `mac::blake3_keyed_verify`
+
+```rust
+#[cfg(feature = "mac-blake3")]
+pub fn blake3_keyed_verify(key: &[u8; 32], data: &[u8], expected_tag: &[u8]) -> bool;
+```
+
+Constant-time verification of a BLAKE3 keyed-mode tag. Computes
+the tag for `(key, data)` and compares it to `expected_tag` via
+BLAKE3's `Hash::eq` (which is documented as constant time).
+
+Returns `true` on match, `false` otherwise (including when
+`expected_tag` is not 32 bytes long).
+
+**Always use this rather than `tag == expected`.**
+
+```rust
+# #[cfg(feature = "mac-blake3")] {
+use crypt_io::mac;
+let key = [0x42u8; 32];
+let tag = mac::blake3_keyed(&key, b"message");
+assert!(mac::blake3_keyed_verify(&key, b"message", &tag));
+assert!(!mac::blake3_keyed_verify(&key, b"tampered", &tag));
+# }
+```
+
+<a href="#top">↑ TOP</a>
+
+#### `HmacSha256`
+
+```rust
+#[cfg(feature = "mac-hmac")]
+pub struct HmacSha256 { /* internal */ }
+
+impl HmacSha256 {
+    pub fn new(key: &[u8]) -> Result<Self>;
+    pub fn update(&mut self, data: &[u8]) -> &mut Self;
+    pub fn finalize(self) -> [u8; 32];
+    pub fn verify(self, expected_tag: &[u8]) -> bool;
+}
+```
+
+Streaming HMAC-SHA256. `update` is chainable; finalisation consumes
+the hasher and returns either the 32-byte tag (`finalize`) or a
+constant-time comparison against an expected tag (`verify`).
+
+```rust
+# #[cfg(feature = "mac-hmac")] {
+use crypt_io::mac::HmacSha256;
+let mut m = HmacSha256::new(b"shared key")?;
+m.update(b"first ");
+m.update(b"second");
+let tag = m.finalize();
+assert_eq!(tag.len(), 32);
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
+<a href="#top">↑ TOP</a>
+
+#### `HmacSha512`
+
+```rust
+#[cfg(feature = "mac-hmac")]
+pub struct HmacSha512 { /* internal */ }
+```
+
+Same shape as [`HmacSha256`](#hmacsha256) with a 64-byte tag.
+
+<a href="#top">↑ TOP</a>
+
+#### `Blake3Mac`
+
+```rust
+#[cfg(feature = "mac-blake3")]
+pub struct Blake3Mac { /* internal */ }
+
+impl Blake3Mac {
+    pub fn new(key: &[u8; 32]) -> Self;     // infallible
+    pub fn update(&mut self, data: &[u8]) -> &mut Self;
+    pub fn finalize(self) -> [u8; 32];
+    pub fn verify(self, expected_tag: &[u8]) -> bool;
+}
+```
+
+Streaming BLAKE3 keyed-mode MAC. Construction is infallible
+(typed 32-byte key); `update` is chainable; finalisation consumes
+the hasher.
+
+```rust
+# #[cfg(feature = "mac-blake3")] {
+use crypt_io::mac::Blake3Mac;
+let key = [0x42u8; 32];
+let mut m = Blake3Mac::new(&key);
+m.update(b"first ");
+m.update(b"second");
+let tag = m.finalize();
+assert_eq!(tag.len(), 32);
+# }
+```
+
+<a href="#top">↑ TOP</a>
+
+#### Choosing a MAC
+
+All three are safe at 256-bit symmetric strength. The choice is
+about interop and speed.
+
+| You want… | Pick |
+|---|---|
+| JWT (HS256), TLS PRF, AWS request signing, anywhere a spec names HMAC-SHA256 | `mac::hmac_sha256` |
+| 64-byte tag for spec compliance | `mac::hmac_sha512` |
+| Maximum throughput, you control both sides of the wire | `mac::blake3_keyed` |
+| Type-checked fixed-size key | `mac::blake3_keyed` (`&[u8; 32]`) |
+| Variable-length key handled internally | `mac::hmac_*` (accepts any length) |
+| Tag is being transported over the wire | Any — they're all 32 B (or 64 B for SHA-512); pick by interop |
+
+> **Use the `verify` paths.** Never compare a computed tag to an
+> expected tag with `==`. The non-constant-time leak is enough to
+> forge tags. This applies to every algorithm in this table.
 
 <a href="#top">↑ TOP</a>
 
@@ -708,6 +981,7 @@ pub enum Error {
     AuthenticationFailed,
     AlgorithmNotEnabled(&'static str),
     RandomFailure(&'static str),
+    Mac(&'static str),
 }
 ```
 
@@ -762,6 +1036,15 @@ From `crypt_io::hash`:
 | `BLAKE3_OUTPUT_LEN` | `32` | Bytes the default BLAKE3 digest produces. | `hash-blake3` |
 | `SHA256_OUTPUT_LEN` | `32` | Bytes SHA-256 produces. | `hash-sha2` |
 | `SHA512_OUTPUT_LEN` | `64` | Bytes SHA-512 produces. | `hash-sha2` |
+
+From `crypt_io::mac`:
+
+| Constant | Value | Meaning | Feature |
+|---|---|---|---|
+| `HMAC_SHA256_OUTPUT_LEN` | `32` | Bytes an HMAC-SHA256 tag occupies. | `mac-hmac` |
+| `HMAC_SHA512_OUTPUT_LEN` | `64` | Bytes an HMAC-SHA512 tag occupies. | `mac-hmac` |
+| `BLAKE3_MAC_OUTPUT_LEN` | `32` | Bytes a BLAKE3 keyed-mode tag occupies. | `mac-blake3` |
+| `BLAKE3_MAC_KEY_LEN` | `32` | Required key length for BLAKE3 keyed mode. | `mac-blake3` |
 
 <a href="#top">↑ TOP</a>
 

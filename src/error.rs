@@ -47,6 +47,13 @@ pub enum Error {
     /// almost always indicates a misconfigured sandbox or exhausted
     /// `getrandom` entropy on a freshly-booted VM.
     RandomFailure(&'static str),
+
+    /// A MAC operation could not be initialised or computed. In practice
+    /// this is unreachable for the algorithms shipped (HMAC accepts any
+    /// key length; BLAKE3 keyed takes a fixed-size key), but the variant
+    /// exists because the upstream `Mac` trait surface is fallible by
+    /// signature.
+    Mac(&'static str),
 }
 
 /// Type alias for `core::result::Result<T, Error>`.
@@ -67,6 +74,7 @@ impl fmt::Display for Error {
                 write!(f, "algorithm not enabled at compile time: {name}")
             }
             Self::RandomFailure(why) => write!(f, "OS random source failed: {why}"),
+            Self::Mac(why) => write!(f, "MAC operation failed: {why}"),
         }
     }
 }
@@ -109,6 +117,7 @@ mod tests {
             Error::AuthenticationFailed,
             Error::AlgorithmNotEnabled("none"),
             Error::RandomFailure("ENOSYS"),
+            Error::Mac("init"),
         ] {
             let _ = format!("{e:?}");
         }
