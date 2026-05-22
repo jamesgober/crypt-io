@@ -32,7 +32,7 @@ pub fn blake3(data: &[u8]) -> [u8; BLAKE3_OUTPUT_LEN] {
 /// `data` — different inputs produce uncorrelated outputs, identical inputs
 /// produce identical outputs.
 ///
-/// For the common 32-byte case prefer [`blake3`] — it skips the XOF reader
+/// For the common 32-byte case prefer [`blake3()`] — it skips the XOF reader
 /// path entirely.
 ///
 /// # Example

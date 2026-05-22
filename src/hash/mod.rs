@@ -3,12 +3,12 @@
 //! Three algorithms ship in 0.4.0, exposed through a consistent free-function
 //! API plus matching streaming hashers for inputs that don't fit in memory:
 //!
-//! | Algorithm  | One-shot           | Streaming         | Output | Feature       |
-//! |------------|--------------------|-------------------|--------|---------------|
-//! | BLAKE3     | [`blake3`]         | [`Blake3Hasher`]  | 32 B   | `hash-blake3` |
-//! | BLAKE3 XOF | [`blake3_long`]    | [`Blake3Hasher`]  | N B    | `hash-blake3` |
-//! | SHA-256    | [`sha256`]         | [`Sha256Hasher`]  | 32 B   | `hash-sha2`   |
-//! | SHA-512    | [`sha512`]         | [`Sha512Hasher`]  | 64 B   | `hash-sha2`   |
+//! | Algorithm  | One-shot              | Streaming         | Output | Feature       |
+//! |------------|-----------------------|-------------------|--------|---------------|
+//! | BLAKE3     | [`blake3()`]          | [`Blake3Hasher`]  | 32 B   | `hash-blake3` |
+//! | BLAKE3 XOF | [`blake3_long()`]     | [`Blake3Hasher`]  | N B    | `hash-blake3` |
+//! | SHA-256    | [`sha256()`]          | [`Sha256Hasher`]  | 32 B   | `hash-sha2`   |
+//! | SHA-512    | [`sha512()`]          | [`Sha512Hasher`]  | 64 B   | `hash-sha2`   |
 //!
 //! # Choosing a hash
 //!
