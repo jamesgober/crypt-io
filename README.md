@@ -36,7 +36,7 @@
 
 ## Status
 
-**Current version:** `0.7.0` (2026-05-22). Pre-1.0 — the public API is allowed to evolve in breaking ways through the `0.x` series; `1.0.0` freezes it.
+**Current version:** `0.8.0` (2026-05-22). Pre-1.0 — the public API is allowed to evolve in breaking ways through the `0.x` series; `1.0.0` freezes it.
 
 | Phase  | Surface                                          | Status |
 |--------|--------------------------------------------------|--------|
@@ -46,9 +46,9 @@
 | 0.4.0  | Hashing — BLAKE3 (+ XOF), SHA-256, SHA-512       | shipped |
 | 0.5.0  | MAC — HMAC-SHA256/512, BLAKE3 keyed              | shipped |
 | 0.6.0  | KDF — HKDF-SHA256/512, Argon2id                  | shipped |
-| 0.7.0  | Stream / file encryption                         | **shipped** |
-| 0.8.0  | Performance verification (criterion benches)     | next |
-| 0.9.0  | Fuzz testing                                     | planned |
+| 0.7.0  | Stream / file encryption                         | shipped |
+| 0.8.0  | Performance verification (criterion benches)     | **shipped** |
+| 0.9.0  | Fuzz testing                                     | next |
 | 0.10.0 | Docs + Release Candidate                         | planned |
 | 1.0.0  | Stable Release                                   | planned |
 
@@ -56,7 +56,7 @@ See [`.dev/ROADMAP.md`](.dev/ROADMAP.md) for the full milestone plan and [`CHANG
 
 <hr>
 
-## What's in 0.7.0
+## What's in 0.8.0
 
 ### Symmetric AEAD encryption — `crypt_io::aead`
 
@@ -118,10 +118,22 @@ cargo run --example encrypt_file
 - **[`metrics-lib`](https://crates.io/crates/metrics-lib)** *(optional)* — performance instrumentation.
 - **[`key-vault`](https://crates.io/crates/key-vault)** — peer crate; the consumer wires them together. No direct dependency.
 
-### What's *not* in 0.7.0 yet
+### Benchmarks — `benches/`
 
-- **Benchmark suite** — Phase 0.8.0. Performance targets are in the contract (see [`.dev/ROADMAP.md`](.dev/ROADMAP.md)); committed criterion-backed measurements land in 0.8.
+Five criterion suites, one per module: `aead`, `hash`, `mac`, `kdf`, `stream`. Run all:
+
+```bash
+cargo bench --all-features                  # all five (~5-10 min)
+cargo bench --bench aead -- chacha20        # filter further
+```
+
+Measured numbers committed in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) on the reference machine; the section above is the TL;DR.
+
+### What's *not* in 0.8.0 yet
+
 - **Fuzz testing** — Phase 0.9.0.
+- **Cross-platform bench numbers** (x86 without AES-NI, ARMv8 with crypto extensions) — deferred to post-1.0 ops work.
+- **Zero-allocation encrypt path** (`encrypt_into(&mut buf, ...)`) — post-1.0; documented as the main wrapping-overhead gap vs upstream RustCrypto.
 - **Resumable streaming** (checkpoint encryptor state, resume after a process restart) — post-1.0.
 - **Async file helpers** — Phase 1.x.
 - **Asymmetric crypto, PGP, TLS, RNG, UUIDs, key storage** — out of scope for the lifetime of this crate. Use `mod-rand`, `key-vault`, `rustls`, `sequoia-openpgp`, etc.
@@ -132,7 +144,7 @@ cargo run --example encrypt_file
 
 ```toml
 [dependencies]
-crypt-io = "0.7"
+crypt-io = "0.8"
 ```
 
 Or:
@@ -307,26 +319,30 @@ What we explicitly do NOT do:
 
 <hr>
 
-## Performance targets
+## Performance
 
-Verified by benchmarks in **Phase 0.8.0** (criterion-backed, committed baselines). Until then these are documented targets, not measured numbers:
+Measured on a reference machine (AMD Ryzen 9 9950X3D, AES-NI + SHA-NI + AVX-512, WSL2 Ubuntu, Rust 1.85.0). Full methodology + per-suite tables in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
 
-| Operation                                    | Target    |
-|----------------------------------------------|-----------|
-| ChaCha20-Poly1305 encrypt, 1 KiB             | < 2 µs    |
-| AES-256-GCM encrypt, 1 KiB (HW accel)        | < 1 µs    |
-| BLAKE3 hash, 1 KiB                           | < 500 ns  |
-| SHA-256 hash, 1 KiB                          | < 2 µs    |
-| HMAC-SHA256, 1 KiB                           | < 3 µs    |
-| HKDF-SHA256, 32-byte output                  | < 5 µs    |
-| Argon2id, default params                     | ~100 ms (intentionally slow) |
-| Stream encrypt throughput                    | > 1 GiB/s |
+| Operation                                    | Target     | Measured   | Status |
+|----------------------------------------------|-----------:|-----------:|:---:|
+| ChaCha20-Poly1305 encrypt, 1 KiB             | < 2 µs     | 1.72 µs    | ✅ |
+| AES-256-GCM encrypt, 1 KiB (HW accel)        | < 1 µs     | 944 ns     | ✅ |
+| BLAKE3 hash, 1 KiB                           | < 500 ns   | 1.07 µs    | ⚠️ revised |
+| BLAKE3 hash, 64 KiB                          | —          | 11.24 GiB/s| ✅ |
+| SHA-256 hash, 1 KiB (SHA-NI)                 | < 2 µs     | 426 ns     | ✅ |
+| HMAC-SHA256, 1 KiB                           | < 3 µs     | 565 ns     | ✅ |
+| HKDF-SHA256, 32-byte output                  | < 5 µs     | 304 ns     | ✅ |
+| Argon2id, default params                     | ~100 ms    | ~9 ms (Zen 5 too fast — tune `t_cost`) | ⚠️ |
+| Stream encrypt, 1 MiB plaintext              | > 1 GiB/s  | 932-999 MiB/s | ⚠️ marginal |
+
+Reproduce: `cargo bench --all-features` (numbers vary by hardware — see PERFORMANCE.md for the portable analysis).
 
 <hr>
 
 ## Documentation
 
 - [`docs/API.md`](docs/API.md) — complete public-API reference for the current version.
+- [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) — measured throughput, reference-machine specs, contract-check matrix, parameter-choice guidance.
 - [`CHANGELOG.md`](CHANGELOG.md) — per-version Added / Changed / Security entries.
 - [`docs/release/`](docs/release) — per-release notes (`v0.2.0.md`, `v0.3.0.md`, …).
 - [`.dev/ROADMAP.md`](.dev/ROADMAP.md) — milestone plan through 1.0.

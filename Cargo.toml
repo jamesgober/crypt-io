@@ -1,6 +1,6 @@
 [package]
 name = "crypt-io"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.85"
 readme = "README.md"
@@ -114,7 +114,23 @@ proptest = "1"
 hex = "0.4"
 
 [[bench]]
-name = "crypt_bench"
+name = "aead"
+harness = false
+
+[[bench]]
+name = "hash"
+harness = false
+
+[[bench]]
+name = "mac"
+harness = false
+
+[[bench]]
+name = "kdf"
+harness = false
+
+[[bench]]
+name = "stream"
 harness = false
 
 [profile.release]

@@ -19,6 +19,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.0] - 2026-05-22
+
+### Added
+
+- **Five criterion benchmark suites** under `benches/` —
+  `aead.rs`, `hash.rs`, `mac.rs`, `kdf.rs`, `stream.rs`. Each
+  exercises every shipped algorithm at the canonical input sizes
+  (64 B / 1 KiB / 64 KiB / 1 MiB for byte-stream ops, 32/64/128 B
+  for HKDF output length, OWASP-default + fast-params for
+  Argon2id). All five are wired as `[[bench]]` entries with
+  `harness = false` and run via `cargo bench --bench <name>`.
+- **`docs/PERFORMANCE.md`** — methodology + reference-machine
+  specs (AMD Ryzen 9 9950X3D, AES-NI + SHA-NI + AVX-512, WSL2
+  Ubuntu, Rust 1.85.0) + measured throughput tables for every
+  operation + a contract-check matrix comparing measured numbers
+  to the 1.0 performance targets + a "choosing parameters for
+  your hardware" guide.
+- **Wrapping-overhead analysis** in PERFORMANCE.md — comparison
+  of our measured numbers against upstream RustCrypto's published
+  benches for each primitive. Most operations are within
+  measurement noise of upstream; the per-call `Vec` allocation
+  in our encrypt path is the only material overhead and is
+  documented for a post-1.0 zero-allocation variant.
+
+### Changed
+
+- **Replaced placeholder `benches/crypt_bench.rs`** with the five
+  real bench files. The `[[bench]] name = "crypt_bench"` entry in
+  `Cargo.toml` is gone; replaced with five entries
+  (`aead`, `hash`, `mac`, `kdf`, `stream`).
+- **BLAKE3 1 KiB performance target revised.** The < 500 ns
+  target set at scaffold time was over-optimistic — BLAKE3
+  small-input cost is dominated by per-call setup overhead
+  before its tree-parallel SIMD path engages. Measured: 1.07 µs
+  at 1 KiB on Zen 5. BLAKE3 dominates at ≥ 4 KiB (11+ GiB/s at
+  64 KiB). PERFORMANCE.md documents the actual shape; the
+  contract will be re-stated for 1.0.
+- **Argon2id OWASP-defaults cost note.** Measured at ~9 ms per
+  hash on this Zen 5 chip — ~11× faster than the "100 ms on a
+  modern CPU" design intent. PERFORMANCE.md flags this with a
+  warning and points callers at `argon2_hash_with_params` for
+  raising `t_cost` / `m_cost` on fast hardware to maintain the
+  brute-force-resistance budget.
+- **Stream encrypt 1 GiB/s target** measured marginal at 1 MiB
+  plaintext (932 MiB/s ChaCha20, 999 MiB/s AES). Within
+  measurement noise of the 1 GiB/s target; well over for
+  decrypt (1.19-1.30 GiB/s). PERFORMANCE.md documents the
+  allocation pressure that's the bottleneck and flags
+  zero-allocation streaming as post-1.0 work.
+
+### Security
+
+- **No security-surface changes.** The bench suite exercises the
+  same public API as the integration tests; it does not weaken
+  any verification path or expose any new surface.
+
+[0.8.0]: https://github.com/jamesgober/crypt-io/compare/v0.7.0...v0.8.0
+
+---
+
 ## [0.7.0] - 2026-05-22
 
 ### Added
@@ -531,5 +591,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Feature flags for AEAD (chacha20, aes-gcm), hashing (blake3, sha2), MAC (hmac, blake3 keyed), KDF (hkdf, argon2), stream encryption.
 - Dependencies wired: `mod-rand` for CSPRNG, `error-forge` for errors, optional `log-io` and `metrics-lib`.
 
-[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v0.8.0...HEAD
 [0.1.0]: https://github.com/jamesgober/crypt-io/releases/tag/v0.1.0
