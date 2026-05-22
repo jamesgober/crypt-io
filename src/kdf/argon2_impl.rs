@@ -229,13 +229,26 @@ mod tests {
     #[test]
     fn verify_rejects_tampered_phc() {
         let phc = argon2_hash_with_params(b"hunter2", fast_params()).unwrap();
-        // Flip the last character of the hash portion (after the final $).
-        let mut chars: alloc::vec::Vec<char> = phc.chars().collect();
-        let last = chars.len() - 1;
-        chars[last] = if chars[last] == 'A' { 'B' } else { 'A' };
-        let tampered: String = chars.into_iter().collect();
-        // Verifies false (correct PHC structure, wrong hash) — not an
-        // error.
+        // Tamper a character in the **middle of the salt** portion.
+        // The salt sits between the second-to-last and the last '$'.
+        // A mid-base64 char is always a full-6-bit character — any
+        // letter swap stays in the alphabet and keeps the structure
+        // valid. We avoid the end of the hash portion: its trailing
+        // char encodes fractional bits and strict base64 decoders
+        // (e.g. `base64ct`) reject letters that introduce non-zero
+        // padding bits.
+        let last_dollar = phc.rfind('$').expect("PHC has final $");
+        let phc_prefix = &phc[..last_dollar];
+        let salt_start = phc_prefix.rfind('$').expect("PHC has salt-leading $") + 1;
+        let salt_middle = salt_start + (last_dollar - salt_start) / 2;
+        let mut bytes = phc.into_bytes();
+        let original = bytes[salt_middle];
+        bytes[salt_middle] = if original == b'A' { b'B' } else { b'A' };
+        let tampered = String::from_utf8(bytes).expect("still valid utf-8");
+        // Tampered salt → different derived hash → Ok(false), and
+        // crucially NOT a parse error. This is the contract we want
+        // to lock in: structurally-valid PHCs with the wrong hash
+        // return Ok(false), not Err(Kdf).
         assert!(!argon2_verify(&tampered, b"hunter2").unwrap());
     }
 
