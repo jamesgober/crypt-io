@@ -19,6 +19,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.0] - 2026-05-21
+
+### Added
+
+- **`Algorithm::Aes256Gcm` variant** — AES-256-GCM ([NIST SP 800-38D])
+  joins ChaCha20-Poly1305 as a peer in the `Algorithm` enum. Same
+  32-byte key, same 12-byte nonce, same 16-byte tag, same wire
+  layout (`nonce || ciphertext || tag`) — only the primitive
+  changes. The enum is still `#[non_exhaustive]`.
+- **`Crypt::aes_256_gcm()`** — feature-gated convenience constructor.
+  Equivalent to `Crypt::with_algorithm(Algorithm::Aes256Gcm)`; the
+  separate constructor makes call sites read like deliberate
+  choices, which they should be.
+- **AES-256-GCM dispatch path** in `Crypt::encrypt_with_aad` /
+  `decrypt_with_aad`. When the `aead-aes-gcm` feature is enabled,
+  selecting `Algorithm::Aes256Gcm` routes through the new
+  `aes_gcm` backend module; when the feature is disabled, an
+  `Error::AlgorithmNotEnabled("aead-aes-gcm")` is returned.
+- **NIST GCM Test Cases 14 + 15 known-answer tests** verifying the
+  upstream `aes-gcm` primitive produces the spec-mandated ciphertext
+  and tag bytes for known inputs. Mirrors the RFC 8439 KAT shipped
+  for ChaCha20-Poly1305 in 0.2.0.
+- **AES-256-GCM end-to-end tests** through the `Crypt` surface:
+  algorithm metadata, constructor, round-trip (empty / short /
+  1 MiB), nonce-uniqueness, wrong-key, body tamper, tag tamper,
+  truncation rejection, AAD round-trip, AAD mismatch, invalid key
+  length. 13 new `Crypt`-level tests.
+- **Cross-algorithm integration tests** (active when both
+  `aead-chacha20` and `aead-aes-gcm` features are enabled):
+  - Ciphertext from one algorithm fails authentication when
+    decrypted with the other.
+  - `Algorithm::name()` values are distinct across all shipped
+    variants.
+- **Public constants** `AES_GCM_NONCE_LEN = 12` and
+  `AES_GCM_TAG_LEN = 16` in `crypt_io::aead` for callers
+  pre-sizing buffers without conditional compilation.
+
+### Changed
+
+- **Default features extended.** The crate's default feature set now
+  includes `aead-aes-gcm` so a vanilla `cargo add crypt-io` ships
+  with both AEADs available. Drop the default and select
+  `["std", "zeroize", "aead-chacha20", "hash-blake3", "mac-hmac", "kdf-hkdf"]`
+  if you want the 0.2.0 surface (ChaCha20-Poly1305 only).
+- **`Algorithm` accessors** (`name`, `key_len`, `nonce_len`,
+  `tag_len`) now handle the new `Aes256Gcm` variant. Behaviour for
+  `ChaCha20Poly1305` is unchanged.
+- **`aead/mod.rs` doc-comment header** updated to introduce both
+  algorithms and document the "when to pick which" decision tree
+  (ChaCha20 is the default; AES-256-GCM is the deliberate choice
+  for AES-NI hardware or for spec interop).
+- **`clippy.toml` `doc-valid-idents` whitelist** extended with
+  `ARMv8`, `AArch64`, `CLMUL`, `Graviton`, `GHASH`, `JWE`,
+  `A256GCM`, `x86_64`, `Silicon`, `SoCs`. These appear in the new
+  AES-GCM doc comments and need to be on the whitelist so pedantic
+  `clippy::doc_markdown` doesn't trip them.
+
+### Security
+
+- **`AuthenticationFailed` opacity preserved across algorithms.**
+  AES-256-GCM and ChaCha20-Poly1305 both surface every cryptographic
+  failure mode (wrong key, tampered ciphertext, tampered tag, AAD
+  mismatch) as the single `Error::AuthenticationFailed` variant.
+  Switching algorithms does not change the error-classification
+  surface an attacker can observe.
+- **Constant-time tag verification** preserved by deferring to the
+  upstream `aes-gcm` crate — no equality comparisons on tag bytes
+  in this wrapper.
+- **Nonce policy is per-call**, identical to the ChaCha20 path. AES-GCM
+  is *especially* sensitive to nonce reuse — repeating a `(key,
+  nonce)` pair leaks the XOR of the two plaintexts and the GHASH
+  authentication key, which is catastrophic. This API draws a fresh
+  nonce from `mod-rand::tier3::fill_bytes` for every encrypt call,
+  so the failure mode cannot happen through the public surface.
+- **No bytes in errors.** `aes_gcm.rs` follows the same redaction
+  contract as `chacha20.rs`: no plaintext, ciphertext, nonces, or
+  key material appears in any `Error` variant.
+
+[NIST SP 800-38D]: https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-38d.pdf
+[0.3.0]: https://github.com/jamesgober/crypt-io/compare/v0.2.0...v0.3.0
+
+---
+
 ## [0.2.0] - 2026-05-21
 
 ### Added
@@ -108,5 +191,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Feature flags for AEAD (chacha20, aes-gcm), hashing (blake3, sha2), MAC (hmac, blake3 keyed), KDF (hkdf, argon2), stream encryption.
 - Dependencies wired: `mod-rand` for CSPRNG, `error-forge` for errors, optional `log-io` and `metrics-lib`.
 
-[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v0.3.0...HEAD
 [0.1.0]: https://github.com/jamesgober/crypt-io/releases/tag/v0.1.0

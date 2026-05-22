@@ -1,6 +1,6 @@
 [package]
 name = "crypt-io"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
 readme = "README.md"
@@ -43,8 +43,9 @@ name = "crypt_io"
 path = "src/lib.rs"
 
 [features]
-# Defaults: ChaCha20-Poly1305 + BLAKE3 (the fast post-quantum-safe stack)
-default = ["std", "zeroize", "aead-chacha20", "hash-blake3", "mac-hmac", "kdf-hkdf"]
+# Defaults: ChaCha20-Poly1305 + AES-256-GCM + BLAKE3 (the fast
+# post-quantum-safe stack, plus the hardware-accelerated interop choice)
+default = ["std", "zeroize", "aead-chacha20", "aead-aes-gcm", "hash-blake3", "mac-hmac", "kdf-hkdf"]
 
 # Core
 std = []                              # Standard library (default on)

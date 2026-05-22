@@ -1,7 +1,7 @@
 # clippy configuration for crypt-io
 avoid-breaking-exported-api = true
 msrv = "1.85"
-doc-valid-idents = ["RustCrypto", "BLAKE3", "ChaCha20", "ChaCha20-Poly1305", "Poly1305", "AES-256-GCM", "AES-NI", "SHA-NI", "SHA-256", "SHA-512", "HMAC-SHA256", "HMAC-SHA512", "RFC8439", "TrustZone", "BCryptGenRandom", ".."]
+doc-valid-idents = ["RustCrypto", "BLAKE3", "ChaCha20", "ChaCha20-Poly1305", "Poly1305", "AES-256-GCM", "AES-NI", "SHA-NI", "SHA-256", "SHA-512", "HMAC-SHA256", "HMAC-SHA512", "RFC8439", "TrustZone", "BCryptGenRandom", "ARMv8", "AArch64", "CLMUL", "Graviton", "GHASH", "JWE", "A256GCM", "x86_64", "Silicon", "SoCs", ".."]
 cognitive-complexity-threshold = 30
 type-complexity-threshold = 250
 too-many-arguments-threshold = 7

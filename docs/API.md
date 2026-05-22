@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-    <i>Complete public-API reference for <code>crypt-io</code> 0.2.0.</i>
+    <i>Complete public-API reference for <code>crypt-io</code> 0.3.0.</i>
     <br>
     <i>For the milestone plan see
     <a href="../.dev/ROADMAP.md"><code>.dev/ROADMAP.md</code></a>.
@@ -37,6 +37,7 @@
   - [`Crypt`](#crypt)
     - [`Crypt::new`](#cryptnew)
     - [`Crypt::with_algorithm`](#cryptwith_algorithm)
+    - [`Crypt::aes_256_gcm`](#cryptaes_256_gcm)
     - [`Crypt::algorithm`](#cryptalgorithm)
     - [`Crypt::encrypt`](#cryptencrypt)
     - [`Crypt::encrypt_with_aad`](#cryptencrypt_with_aad)
@@ -47,6 +48,7 @@
     - [`Algorithm::key_len`](#algorithmkey_len)
     - [`Algorithm::nonce_len`](#algorithmnonce_len)
     - [`Algorithm::tag_len`](#algorithmtag_len)
+  - [Choosing an algorithm](#choosing-an-algorithm)
   - [`Error`](#error)
   - [`Result<T>`](#resultt)
   - [Module constants](#module-constants)
@@ -64,7 +66,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-crypt-io = "0.2"
+crypt-io = "0.3"
 ```
 
 ### Install via terminal
@@ -91,13 +93,14 @@ documented in `Cargo.toml`. The full plan ships across the 0.3 →
 |---|---|---|
 | `std` | ✅ | Standard-library types. Required by the current implementation. |
 | `zeroize` | ✅ | `zeroize` integration on supporting types. |
-| `aead-chacha20` | ✅ | `Crypt` + ChaCha20-Poly1305 backend. Disabling this hides the entire AEAD surface. |
-| `aead-aes-gcm` |  | Reserved for 0.3.0 (AES-256-GCM). No-op in 0.2.0. |
-| `hash-blake3` | ✅ | Reserved for 0.4.0. No-op in 0.2.0. |
-| `mac-hmac` | ✅ | Reserved for 0.5.0. No-op in 0.2.0. |
-| `kdf-hkdf` | ✅ | Reserved for 0.6.0. No-op in 0.2.0. |
-| `stream` |  | Reserved for 0.7.0. No-op in 0.2.0. |
-| `preset-minimal` |  | `std` + `aead-chacha20` only. |
+| `aead-chacha20` | ✅ | ChaCha20-Poly1305 backend + [`Crypt::new`](#cryptnew). |
+| `aead-aes-gcm` | ✅ | AES-256-GCM backend + [`Crypt::aes_256_gcm`](#cryptaes_256_gcm). |
+| `aead-all` |  | Both AEADs (already the 0.3.0 default). |
+| `hash-blake3` | ✅ | Reserved for 0.4.0. No-op in 0.3.0. |
+| `mac-hmac` | ✅ | Reserved for 0.5.0. No-op in 0.3.0. |
+| `kdf-hkdf` | ✅ | Reserved for 0.6.0. No-op in 0.3.0. |
+| `stream` |  | Reserved for 0.7.0. No-op in 0.3.0. |
+| `preset-minimal` |  | `std` + `aead-chacha20` only — the 0.2.0 surface. |
 | `preset-all` |  | All planned features enabled. Some are inert until their phase ships. |
 
 > **Note.** Reserved features are wired in `Cargo.toml` so the
@@ -145,8 +148,14 @@ Explicit algorithm selection:
 ```rust
 use crypt_io::{Algorithm, Crypt};
 
-let crypt = Crypt::with_algorithm(Algorithm::ChaCha20Poly1305);
-assert_eq!(crypt.algorithm(), Algorithm::ChaCha20Poly1305);
+// ChaCha20-Poly1305 (default).
+let chacha = Crypt::with_algorithm(Algorithm::ChaCha20Poly1305);
+assert_eq!(chacha.algorithm(), Algorithm::ChaCha20Poly1305);
+
+// AES-256-GCM — via either the convenience constructor or the agile surface.
+let aes_a = Crypt::aes_256_gcm();
+let aes_b = Crypt::with_algorithm(Algorithm::Aes256Gcm);
+assert_eq!(aes_a, aes_b);
 ```
 
 <a href="#top">↑ TOP</a>
@@ -197,6 +206,32 @@ Construct a handle with an explicit algorithm choice.
 ```rust
 use crypt_io::{Algorithm, Crypt};
 let crypt = Crypt::with_algorithm(Algorithm::ChaCha20Poly1305);
+```
+
+<a href="#top">↑ TOP</a>
+
+#### `Crypt::aes_256_gcm`
+
+```rust
+#[cfg(feature = "aead-aes-gcm")]
+pub const fn aes_256_gcm() -> Crypt;
+```
+
+Convenience constructor for [`Algorithm::Aes256Gcm`](#algorithm).
+Available only when the `aead-aes-gcm` Cargo feature is enabled
+(it is in the 0.3.0 default set).
+
+Equivalent to `Crypt::with_algorithm(Algorithm::Aes256Gcm)` — the
+separate constructor exists because picking AES-GCM is a deliberate
+choice (interop requirement, or a target with AES-NI / ARMv8
+crypto extensions) and call sites read cleaner when they say so.
+
+```rust
+# #[cfg(feature = "aead-aes-gcm")] {
+use crypt_io::{Algorithm, Crypt};
+let crypt = Crypt::aes_256_gcm();
+assert_eq!(crypt.algorithm(), Algorithm::Aes256Gcm);
+# }
 ```
 
 <a href="#top">↑ TOP</a>
@@ -368,15 +403,18 @@ returns [`Error::AuthenticationFailed`](#error).
 #[non_exhaustive]
 pub enum Algorithm {
     ChaCha20Poly1305,
-    // future variants in 0.3.0+
+    Aes256Gcm,
+    // future variants
 }
 ```
 
 The supported AEAD algorithms. `#[non_exhaustive]` — `match` sites
-must include a wildcard arm so future minor releases (notably
-0.3.0's `Aes256Gcm`) do not break downstream code.
+must include a wildcard arm so future minor releases do not break
+downstream code.
 
-`Default` selects `ChaCha20Poly1305`.
+`Default` selects `ChaCha20Poly1305`. See
+[Choosing an algorithm](#choosing-an-algorithm) for guidance on
+when to pick which.
 
 #### `Algorithm::name`
 
@@ -384,7 +422,7 @@ must include a wildcard arm so future minor releases (notably
 pub const fn name(self) -> &'static str;
 ```
 
-Human-readable name. For `ChaCha20Poly1305` returns `"ChaCha20-Poly1305"`.
+Human-readable name. Returns `"ChaCha20-Poly1305"` or `"AES-256-GCM"`.
 
 #### `Algorithm::key_len`
 
@@ -392,8 +430,8 @@ Human-readable name. For `ChaCha20Poly1305` returns `"ChaCha20-Poly1305"`.
 pub const fn key_len(self) -> usize;
 ```
 
-Required key length in bytes. Returns `32` for the algorithms
-shipped in 0.2.0.
+Required key length in bytes. Returns `32` for every algorithm
+shipped in 0.3.0.
 
 #### `Algorithm::nonce_len`
 
@@ -402,7 +440,7 @@ pub const fn nonce_len(self) -> usize;
 ```
 
 Nonce length in bytes that the algorithm consumes. Returns `12`
-for `ChaCha20Poly1305`.
+for both `ChaCha20Poly1305` and `Aes256Gcm`.
 
 #### `Algorithm::tag_len`
 
@@ -411,7 +449,35 @@ pub const fn tag_len(self) -> usize;
 ```
 
 Authentication tag length in bytes the algorithm produces. Returns
-`16` for `ChaCha20Poly1305`.
+`16` for both algorithms.
+
+<a href="#top">↑ TOP</a>
+
+---
+
+### Choosing an algorithm
+
+Both algorithms shipped in 0.3.0 are safe at 256-bit symmetric
+strength. The choice is about hardware utilisation and interop, not
+about cryptographic strength.
+
+| You want… | Pick |
+|---|---|
+| The safe default with no thinking required | `ChaCha20Poly1305` |
+| Maximum throughput on AES-NI / ARMv8 hardware | `Aes256Gcm` |
+| Interop with TLS, JWE A256GCM, FIPS-spec'd protocols | `Aes256Gcm` |
+| A target without hardware AES (older ARM, embedded, RISC-V) | `ChaCha20Poly1305` |
+| Constant-time guarantee without depending on hardware AES | `ChaCha20Poly1305` |
+
+The hardware-acceleration dispatch is handled by the upstream
+`aes-gcm` crate at runtime — no `cfg` gates required on the
+consumer side.
+
+> **Note on storage.** The algorithm choice is **not** stored in
+> the [wire format](#wire-format). Routing stored ciphertexts back
+> to the correct algorithm on decrypt is the caller's
+> responsibility — keep an external association (algorithm-id,
+> key-id, or both) alongside the buffer.
 
 <a href="#top">↑ TOP</a>
 
