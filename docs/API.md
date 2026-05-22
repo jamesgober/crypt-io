@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-    <i>Complete public-API reference for <code>crypt-io</code> 0.3.0.</i>
+    <i>Complete public-API reference for <code>crypt-io</code> 0.4.0.</i>
     <br>
     <i>For the milestone plan see
     <a href="../.dev/ROADMAP.md"><code>.dev/ROADMAP.md</code></a>.
@@ -49,6 +49,15 @@
     - [`Algorithm::nonce_len`](#algorithmnonce_len)
     - [`Algorithm::tag_len`](#algorithmtag_len)
   - [Choosing an algorithm](#choosing-an-algorithm)
+  - [`hash` module](#hash-module)
+    - [`hash::blake3`](#hashblake3)
+    - [`hash::blake3_long`](#hashblake3_long)
+    - [`hash::sha256`](#hashsha256)
+    - [`hash::sha512`](#hashsha512)
+    - [`Blake3Hasher`](#blake3hasher)
+    - [`Sha256Hasher`](#sha256hasher)
+    - [`Sha512Hasher`](#sha512hasher)
+    - [Choosing a hash](#choosing-a-hash)
   - [`Error`](#error)
   - [`Result<T>`](#resultt)
   - [Module constants](#module-constants)
@@ -66,7 +75,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-crypt-io = "0.3"
+crypt-io = "0.4"
 ```
 
 ### Install via terminal
@@ -95,11 +104,13 @@ documented in `Cargo.toml`. The full plan ships across the 0.3 →
 | `zeroize` | ✅ | `zeroize` integration on supporting types. |
 | `aead-chacha20` | ✅ | ChaCha20-Poly1305 backend + [`Crypt::new`](#cryptnew). |
 | `aead-aes-gcm` | ✅ | AES-256-GCM backend + [`Crypt::aes_256_gcm`](#cryptaes_256_gcm). |
-| `aead-all` |  | Both AEADs (already the 0.3.0 default). |
-| `hash-blake3` | ✅ | Reserved for 0.4.0. No-op in 0.3.0. |
-| `mac-hmac` | ✅ | Reserved for 0.5.0. No-op in 0.3.0. |
-| `kdf-hkdf` | ✅ | Reserved for 0.6.0. No-op in 0.3.0. |
-| `stream` |  | Reserved for 0.7.0. No-op in 0.3.0. |
+| `aead-all` |  | Both AEADs (already in the 0.3.0+ default). |
+| `hash-blake3` | ✅ | BLAKE3 hashing + [`Blake3Hasher`](#blake3hasher) + XOF. |
+| `hash-sha2` | ✅ | SHA-256 + SHA-512 hashing + matching streaming hashers. |
+| `hash-all` |  | Both hash families (already in the 0.4.0+ default). |
+| `mac-hmac` | ✅ | Reserved for 0.5.0. No-op in 0.4.0. |
+| `kdf-hkdf` | ✅ | Reserved for 0.6.0. No-op in 0.4.0. |
+| `stream` |  | Reserved for 0.7.0. No-op in 0.4.0. |
 | `preset-minimal` |  | `std` + `aead-chacha20` only — the 0.2.0 surface. |
 | `preset-all` |  | All planned features enabled. Some are inert until their phase ships. |
 
@@ -483,6 +494,210 @@ consumer side.
 
 ---
 
+### `hash` module
+
+Cryptographic hash functions. New in 0.4.0. Three algorithms
+exposed through a consistent free-function API plus matching
+streaming hashers:
+
+| Algorithm  | One-shot                          | Streaming        | Output | Feature       |
+|------------|-----------------------------------|------------------|--------|---------------|
+| BLAKE3     | [`hash::blake3`](#hashblake3)     | [`Blake3Hasher`](#blake3hasher) | 32 B | `hash-blake3` |
+| BLAKE3 XOF | [`hash::blake3_long`](#hashblake3_long) | `Blake3Hasher::finalize_xof` | N B | `hash-blake3` |
+| SHA-256    | [`hash::sha256`](#hashsha256)     | [`Sha256Hasher`](#sha256hasher) | 32 B | `hash-sha2`   |
+| SHA-512    | [`hash::sha512`](#hashsha512)     | [`Sha512Hasher`](#sha512hasher) | 64 B | `hash-sha2`   |
+
+> **Hash-only, no MAC.** This module does not expose keyed hashing.
+> For HMAC-SHA2 and BLAKE3 keyed mode, see the upcoming `mac`
+> module (Phase 0.5.0). Using a raw hash as a MAC is a security
+> mistake; the missing `with_key` is deliberate.
+
+<a href="#top">↑ TOP</a>
+
+#### `hash::blake3`
+
+```rust
+#[cfg(feature = "hash-blake3")]
+pub fn blake3(data: &[u8]) -> [u8; 32];
+```
+
+One-shot BLAKE3 hash. Returns a fixed 32-byte digest.
+
+```rust
+# #[cfg(feature = "hash-blake3")] {
+use crypt_io::hash;
+let d = hash::blake3(b"the quick brown fox");
+assert_eq!(d.len(), 32);
+# }
+```
+
+<a href="#top">↑ TOP</a>
+
+#### `hash::blake3_long`
+
+```rust
+#[cfg(feature = "hash-blake3")]
+pub fn blake3_long(data: &[u8], len: usize) -> Vec<u8>;
+```
+
+One-shot BLAKE3 hash with arbitrary output length via the
+extendable-output (XOF) mode. `len` may be any value including
+zero. The first 32 bytes of the output equal
+[`hash::blake3(data)`](#hashblake3) — XOF is a superset of the
+default hash.
+
+For the common 32-byte case prefer the fixed [`hash::blake3`](#hashblake3) —
+it skips the XOF reader path.
+
+```rust
+# #[cfg(feature = "hash-blake3")] {
+use crypt_io::hash;
+let d = hash::blake3_long(b"input", 128);
+assert_eq!(d.len(), 128);
+# }
+```
+
+<a href="#top">↑ TOP</a>
+
+#### `hash::sha256`
+
+```rust
+#[cfg(feature = "hash-sha2")]
+pub fn sha256(data: &[u8]) -> [u8; 32];
+```
+
+One-shot SHA-256 hash (NIST FIPS 180-4). Returns a fixed 32-byte
+digest.
+
+```rust
+# #[cfg(feature = "hash-sha2")] {
+use crypt_io::hash;
+let d = hash::sha256(b"abc");
+assert_eq!(d.len(), 32);
+# }
+```
+
+<a href="#top">↑ TOP</a>
+
+#### `hash::sha512`
+
+```rust
+#[cfg(feature = "hash-sha2")]
+pub fn sha512(data: &[u8]) -> [u8; 64];
+```
+
+One-shot SHA-512 hash (NIST FIPS 180-4). Returns a fixed 64-byte
+digest.
+
+```rust
+# #[cfg(feature = "hash-sha2")] {
+use crypt_io::hash;
+let d = hash::sha512(b"abc");
+assert_eq!(d.len(), 64);
+# }
+```
+
+<a href="#top">↑ TOP</a>
+
+#### `Blake3Hasher`
+
+```rust
+#[cfg(feature = "hash-blake3")]
+pub struct Blake3Hasher { /* internal */ }
+
+impl Blake3Hasher {
+    pub fn new() -> Self;
+    pub fn update(&mut self, data: &[u8]) -> &mut Self;
+    pub fn finalize(self) -> [u8; 32];
+    pub fn finalize_xof(self, len: usize) -> Vec<u8>;
+}
+```
+
+Streaming BLAKE3 hasher. `update` is chainable; finalisation
+consumes the hasher and returns either the default 32-byte digest
+or an arbitrary-length XOF buffer.
+
+```rust
+# #[cfg(feature = "hash-blake3")] {
+use crypt_io::hash::Blake3Hasher;
+let mut h = Blake3Hasher::new();
+h.update(b"first ");
+h.update(b"second");
+let d = h.finalize();
+assert_eq!(d.len(), 32);
+# }
+```
+
+<a href="#top">↑ TOP</a>
+
+#### `Sha256Hasher`
+
+```rust
+#[cfg(feature = "hash-sha2")]
+pub struct Sha256Hasher { /* internal */ }
+
+impl Sha256Hasher {
+    pub fn new() -> Self;
+    pub fn update(&mut self, data: &[u8]) -> &mut Self;
+    pub fn finalize(self) -> [u8; 32];
+}
+```
+
+Streaming SHA-256 hasher. Same shape as
+[`Blake3Hasher`](#blake3hasher) minus the XOF mode (which is
+BLAKE3-specific).
+
+<a href="#top">↑ TOP</a>
+
+#### `Sha512Hasher`
+
+```rust
+#[cfg(feature = "hash-sha2")]
+pub struct Sha512Hasher { /* internal */ }
+
+impl Sha512Hasher {
+    pub fn new() -> Self;
+    pub fn update(&mut self, data: &[u8]) -> &mut Self;
+    pub fn finalize(self) -> [u8; 64];
+}
+```
+
+Streaming SHA-512 hasher.
+
+<a href="#top">↑ TOP</a>
+
+#### Choosing a hash
+
+Both BLAKE3 and SHA-2 are safe at 256-bit cryptographic strength.
+The choice is about speed and ecosystem interop.
+
+| You want… | Pick |
+|---|---|
+| Maximum throughput on modern hardware | `BLAKE3` |
+| Variable-length output (KDF, fingerprinting, MGF) | `BLAKE3` (XOF) |
+| TLS / JWT / certificate fingerprint interop | `SHA-256` |
+| 64-byte output for spec compliance | `SHA-512` |
+| Tree-hashing for very large inputs | `BLAKE3` |
+| FIPS-certified algorithm (via a downstream FIPS-validated build) | `SHA-256` / `SHA-512` |
+
+Hardware acceleration is automatic on both:
+
+- **BLAKE3** uses `AVX2` / `AVX-512` on x86 and `NEON` on ARM via
+  upstream dispatch.
+- **SHA-2** uses `SHA-NI` on supporting x86 chips and ARMv8 crypto
+  extensions on AArch64 — also runtime-dispatched.
+
+> **Comparing digests.** Don't use `==` to compare two digests
+> when one of them is secret-equivalent (an authentication token,
+> a session key fingerprint, etc.). Use
+> `subtle::ConstantTimeEq::ct_eq` so timing doesn't leak how many
+> leading bytes matched. For non-secret comparisons (file
+> integrity checks, content-addressed storage keys), `==` is fine.
+
+<a href="#top">↑ TOP</a>
+
+---
+
 ### `Error`
 
 ```rust
@@ -530,13 +745,23 @@ Alias for the crate's `Result` shape.
 
 ### Module constants
 
-Re-exported from `crypt_io::aead`:
+From `crypt_io::aead`:
 
 | Constant | Value | Meaning |
 |---|---|---|
 | `CHACHA20_NONCE_LEN` | `12` | Bytes of nonce ChaCha20-Poly1305 consumes. |
-| `CHACHA20_TAG_LEN` | `16` | Bytes of authentication tag the AEAD produces. |
-| `KEY_LEN` | `32` | Required key length for all 0.2.0 algorithms. |
+| `CHACHA20_TAG_LEN` | `16` | Bytes of authentication tag ChaCha20-Poly1305 produces. |
+| `AES_GCM_NONCE_LEN` | `12` | Bytes of nonce AES-256-GCM consumes (the NIST default). |
+| `AES_GCM_TAG_LEN` | `16` | Bytes of authentication tag AES-256-GCM produces. |
+| `KEY_LEN` | `32` | Required key length for every AEAD shipped in 0.3.0+. |
+
+From `crypt_io::hash`:
+
+| Constant | Value | Meaning | Feature |
+|---|---|---|---|
+| `BLAKE3_OUTPUT_LEN` | `32` | Bytes the default BLAKE3 digest produces. | `hash-blake3` |
+| `SHA256_OUTPUT_LEN` | `32` | Bytes SHA-256 produces. | `hash-sha2` |
+| `SHA512_OUTPUT_LEN` | `64` | Bytes SHA-512 produces. | `hash-sha2` |
 
 <a href="#top">↑ TOP</a>
 

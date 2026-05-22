@@ -1,6 +1,6 @@
 [package]
 name = "crypt-io"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.85"
 readme = "README.md"
@@ -43,9 +43,10 @@ name = "crypt_io"
 path = "src/lib.rs"
 
 [features]
-# Defaults: ChaCha20-Poly1305 + AES-256-GCM + BLAKE3 (the fast
-# post-quantum-safe stack, plus the hardware-accelerated interop choice)
-default = ["std", "zeroize", "aead-chacha20", "aead-aes-gcm", "hash-blake3", "mac-hmac", "kdf-hkdf"]
+# Defaults: ChaCha20-Poly1305 + AES-256-GCM (AEAD) + BLAKE3 + SHA-2
+# (hashing) + HMAC stub + HKDF stub. The hashing pair is `hash-blake3`
+# for speed and `hash-sha2` for ecosystem interop.
+default = ["std", "zeroize", "aead-chacha20", "aead-aes-gcm", "hash-blake3", "hash-sha2", "mac-hmac", "kdf-hkdf"]
 
 # Core
 std = []                              # Standard library (default on)
@@ -57,7 +58,7 @@ aead-aes-gcm = ["dep:aes-gcm"]            # AES-256-GCM (hw-accel)
 aead-all = ["aead-chacha20", "aead-aes-gcm"]
 
 # Hashing algorithms
-hash-blake3 = ["dep:blake3"]          # BLAKE3 (default - fastest)
+hash-blake3 = ["dep:blake3"]          # BLAKE3 (default - fastest; 32-byte + XOF)
 hash-sha2 = ["dep:sha2"]              # SHA-256, SHA-512 (interop)
 hash-all = ["hash-blake3", "hash-sha2"]
 

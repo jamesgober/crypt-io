@@ -79,12 +79,15 @@ extern crate alloc;
 
 mod error;
 
-#[cfg(feature = "aead-chacha20")]
+#[cfg(any(feature = "aead-chacha20", feature = "aead-aes-gcm"))]
 pub mod aead;
+
+#[cfg(any(feature = "hash-blake3", feature = "hash-sha2"))]
+pub mod hash;
 
 pub use crate::error::{Error, Result};
 
-#[cfg(feature = "aead-chacha20")]
+#[cfg(any(feature = "aead-chacha20", feature = "aead-aes-gcm"))]
 pub use crate::aead::{Algorithm, Crypt};
 
 /// Crate version string, populated by Cargo at build time.

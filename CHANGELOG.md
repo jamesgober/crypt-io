@@ -19,6 +19,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.0] - 2026-05-22
+
+### Added
+
+- **`crypt_io::hash` module** — three cryptographic hash functions
+  exposed through a consistent free-function API plus matching
+  streaming hashers:
+  - **BLAKE3** ([`blake3::hash`](https://github.com/BLAKE3-team/BLAKE3)):
+    - `hash::blake3(data) -> [u8; 32]` — one-shot, 32-byte digest.
+    - `hash::blake3_long(data, len) -> Vec<u8>` — one-shot, any
+      output length via the extendable-output (XOF) mode.
+    - `Blake3Hasher` — streaming, with `update` / `finalize` /
+      `finalize_xof`.
+    - Feature: `hash-blake3` (default on).
+  - **SHA-256** (NIST FIPS 180-4):
+    - `hash::sha256(data) -> [u8; 32]`.
+    - `Sha256Hasher` — streaming, with `update` / `finalize`.
+    - Feature: `hash-sha2` (default on).
+  - **SHA-512** (NIST FIPS 180-4):
+    - `hash::sha512(data) -> [u8; 64]`.
+    - `Sha512Hasher` — streaming, with `update` / `finalize`.
+    - Feature: `hash-sha2` (default on).
+- **Output-length constants** in `crypt_io::hash`:
+  `BLAKE3_OUTPUT_LEN = 32`, `SHA256_OUTPUT_LEN = 32`,
+  `SHA512_OUTPUT_LEN = 64` (each feature-gated).
+- **Known-answer tests** verifying byte-exact output against the
+  spec references:
+  - SHA-256: FIPS 180-4 B.1 (`abc`), B.2 (the 56-byte two-block
+    input), empty-input.
+  - SHA-512: FIPS 180-4 C.1 (`abc`), C.2 (the 112-byte two-block
+    input), empty-input.
+  - BLAKE3: empty-input + `"IETF"` against the upstream crate's
+    output. Both pinned as byte-array constants so any future
+    wrapper-level mistake (wrong endianness, wrong slicing) is
+    caught immediately.
+- **Streaming-equivalence tests** for every algorithm: feeding the
+  same data in three different chunk boundaries to the streaming
+  hasher produces a bit-identical digest to the one-shot path.
+- **BLAKE3 XOF tests** verifying:
+  - Output length always matches the requested `len`.
+  - Output is deterministic in the input.
+  - The first 32 bytes of an extended-output digest equal the
+    default 32-byte digest of the same input.
+- **Doctests** for the module overview, all six entry points, and
+  both streaming-hasher constructors.
+
+### Changed
+
+- **Default features extended.** `default` now includes `hash-sha2`
+  in addition to `hash-blake3`, so a fresh `cargo add crypt-io`
+  ships with all three hash functions available. Drop
+  `hash-sha2` if you want BLAKE3-only.
+- **`lib.rs` module wiring.** The `hash` module is exposed when
+  either `hash-blake3` or `hash-sha2` is enabled (or both).
+- **`aead` module gate** widened to fire when either AEAD feature
+  is enabled (was: only `aead-chacha20`); makes the module reachable
+  in AES-only configurations.
+
+### Security
+
+- **No key/MAC surface.** This module is hash-only. Keyed BLAKE3 and
+  HMAC-SHA2 live in the upcoming `crypt_io::mac` module (Phase
+  0.5.0) where the authentication-tag semantics get their own,
+  separate API. Using a raw hash function as a MAC is a security
+  mistake; the absence of `with_key` on `Blake3Hasher` /
+  `Sha256Hasher` / `Sha512Hasher` is deliberate.
+
+[0.4.0]: https://github.com/jamesgober/crypt-io/compare/v0.3.0...v0.4.0
+
+---
+
 ## [0.3.0] - 2026-05-21
 
 ### Added
@@ -191,5 +262,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Feature flags for AEAD (chacha20, aes-gcm), hashing (blake3, sha2), MAC (hmac, blake3 keyed), KDF (hkdf, argon2), stream encryption.
 - Dependencies wired: `mod-rand` for CSPRNG, `error-forge` for errors, optional `log-io` and `metrics-lib`.
 
-[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v0.4.0...HEAD
 [0.1.0]: https://github.com/jamesgober/crypt-io/releases/tag/v0.1.0
