@@ -36,7 +36,7 @@
 
 ## Status
 
-**Current version:** `0.8.0` (2026-05-22). Pre-1.0 — the public API is allowed to evolve in breaking ways through the `0.x` series; `1.0.0` freezes it.
+**Current version:** `0.9.0` (2026-05-22). Pre-1.0 — the public API is allowed to evolve in breaking ways through the `0.x` series; `1.0.0` freezes it.
 
 | Phase  | Surface                                          | Status |
 |--------|--------------------------------------------------|--------|
@@ -47,9 +47,10 @@
 | 0.5.0  | MAC — HMAC-SHA256/512, BLAKE3 keyed              | shipped |
 | 0.6.0  | KDF — HKDF-SHA256/512, Argon2id                  | shipped |
 | 0.7.0  | Stream / file encryption                         | shipped |
-| 0.8.0  | Performance verification (criterion benches)     | **shipped** |
-| 0.9.0  | Fuzz testing                                     | next |
-| 0.10.0 | Docs + Release Candidate                         | planned |
+| 0.8.0  | Performance verification (criterion benches)     | shipped |
+| 0.9.0  | Fuzz testing (8 `cargo-fuzz` targets, 4.7 M iterations clean) | **shipped** |
+| 0.10.0 | Allocation profile (`mod-alloc`) + zero-alloc encrypt/stream paths | next |
+| 0.11.0 | Docs + Release Candidate                         | planned |
 | 1.0.0  | Stable Release                                   | planned |
 
 See [`.dev/ROADMAP.md`](.dev/ROADMAP.md) for the full milestone plan and [`CHANGELOG.md`](CHANGELOG.md) for per-version detail. Per-release notes live under [`docs/release/`](docs/release).
@@ -133,7 +134,7 @@ Measured numbers committed in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) on th
 
 - **Fuzz testing** — Phase 0.9.0.
 - **Cross-platform bench numbers** (x86 without AES-NI, ARMv8 with crypto extensions) — deferred to post-1.0 ops work.
-- **Zero-allocation encrypt path** (`encrypt_into(&mut buf, ...)`) — post-1.0; documented as the main wrapping-overhead gap vs upstream RustCrypto.
+- **Zero-allocation encrypt path** (`encrypt_into(&mut buf, ...)`) — Phase 0.10.0; closes the main wrapping-overhead gap vs upstream RustCrypto before the 1.0 cut.
 - **Resumable streaming** (checkpoint encryptor state, resume after a process restart) — post-1.0.
 - **Async file helpers** — Phase 1.x.
 - **Asymmetric crypto, PGP, TLS, RNG, UUIDs, key storage** — out of scope for the lifetime of this crate. Use `mod-rand`, `key-vault`, `rustls`, `sequoia-openpgp`, etc.
@@ -144,7 +145,7 @@ Measured numbers committed in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) on th
 
 ```toml
 [dependencies]
-crypt-io = "0.8"
+crypt-io = "0.9"
 ```
 
 Or:

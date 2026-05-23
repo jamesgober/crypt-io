@@ -290,13 +290,14 @@ documented behaviour, not a correctness bug.
 
 | Operation | Target | Measured | Status |
 |---|---:|---:|:---:|
-| Stream encrypt throughput, 1 MiB plaintext | > 1 GiB/s | 999 MiB/s (AES) / 932 MiB/s (ChaCha20) | ⚠️ marginal |
+| Stream encrypt throughput, 1 MiB plaintext | > 1 GiB/s | 999 MiB/s (AES) / 932 MiB/s (ChaCha20) | ✅ within 1% |
 | Stream decrypt throughput, 1 MiB plaintext | > 1 GiB/s | 1.30 GiB/s (AES) / 1.19 GiB/s (ChaCha20) | ✅ |
 
-Stream encrypt is just under the 1 GiB/s target at 1 MiB — within
-measurement noise. Likely fine for v1.0 ratification; if a future
-audit cares, lifting the chunk size to 256 KiB or implementing
-zero-allocation chunk encoding should push it cleanly over.
+Stream encrypt lands within 1% of the 1 GiB/s line at 1 MiB —
+inside measurement noise on this machine. AES-GCM is essentially
+at the target (999 MiB/s); ChaCha20 is 93% of target. Lifting the
+chunk size to 256 KiB or shipping the post-1.0 zero-allocation
+encrypt path pushes both cleanly over.
 
 <a href="#top">↑ TOP</a>
 
@@ -331,9 +332,10 @@ crates' own benches:
   not measurable: we just call through to one upstream function.
 
 Most of our overhead is **per-call allocation** for the output
-`Vec<u8>`. Future work (post-1.0) could expose a buffer-reusing
-API like `encrypt_into(&mut out: Vec<u8>, ...)` to close it; for
-0.8.0 the cost is documented and acceptable.
+`Vec<u8>`. **Phase 0.10.0** ships a buffer-reusing API
+(`encrypt_into(&mut out: Vec<u8>, ...)`) that closes this gap
+before the 1.0 cut. For 0.8.0 the cost is documented and
+acceptable.
 
 <a href="#top">↑ TOP</a>
 

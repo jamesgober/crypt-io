@@ -1,0 +1,102 @@
+[package]
+name = "crypt-io-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.85"
+
+# This crate is a libfuzzer harness only. It is NOT part of the
+# main `crypt-io` workspace — keep it as a standalone Cargo
+# project so `cargo +nightly fuzz run <target>` can be invoked
+# without dragging nightly toolchain requirements onto the
+# crypt-io library or its consumers.
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+[dependencies.crypt-io]
+path = ".."
+# Pull every algorithm so each fuzz target can exercise the
+# full surface area. Disable default features explicitly so the
+# fuzz workspace doesn't pick up `proc-macro` dev-deps.
+default-features = false
+features = [
+    "std",
+    "zeroize",
+    "aead-chacha20",
+    "aead-aes-gcm",
+    "hash-blake3",
+    "hash-sha2",
+    "mac-hmac",
+    "mac-blake3",
+    "kdf-hkdf",
+    "kdf-argon2",
+    "stream",
+]
+
+# Prevent `cargo` from picking up the main workspace's lockfile.
+[workspace]
+members = ["."]
+
+[profile.release]
+# libfuzzer-sys requires the release profile to keep debug symbols
+# so AddressSanitizer / UBSan can map back to source. opt-level=3
+# stays for realistic crash coverage.
+opt-level = 3
+debug = true
+lto = false           # libfuzzer-sys ships its own LTO setup
+codegen-units = 1
+
+# --- Fuzz targets ---
+
+[[bin]]
+name = "aead_decrypt"
+path = "fuzz_targets/aead_decrypt.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "aead_encrypt"
+path = "fuzz_targets/aead_encrypt.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "hash_blake3"
+path = "fuzz_targets/hash_blake3.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "hash_sha2"
+path = "fuzz_targets/hash_sha2.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "mac"
+path = "fuzz_targets/mac.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "hkdf"
+path = "fuzz_targets/hkdf.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "argon2_parse"
+path = "fuzz_targets/argon2_parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "stream_decrypt"
+path = "fuzz_targets/stream_decrypt.rs"
+test = false
+doc = false

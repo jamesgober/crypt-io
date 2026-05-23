@@ -19,6 +19,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.0] - 2026-05-22
+
+### Added
+
+- **`fuzz/` workspace with 8 `cargo-fuzz` targets** covering
+  every algorithm the crate ships, plus the streaming frame
+  format:
+  - `aead_decrypt` — `Crypt::decrypt` / `decrypt_with_aad` with
+    arbitrary keys, ciphertexts, AAD. The attacker-controlled
+    ciphertext path; highest-value target.
+  - `aead_encrypt` — `Crypt::encrypt` followed by `decrypt`
+    round-trip equality assertion. Catches any
+    encrypt-succeeds-but-decrypt-fails algorithm-dispatch bug.
+  - `hash_blake3` — `hash::blake3` + `blake3_long` + streaming
+    `Blake3Hasher` with streaming-vs-one-shot equivalence.
+  - `hash_sha2` — `hash::sha256` / `sha512` + streaming hashers
+    with the same equivalence check.
+  - `mac` — all three MACs (HMAC-SHA256, HMAC-SHA512, BLAKE3
+    keyed) across compute + verify + streaming + verify-rejects-
+    wrong-tag.
+  - `hkdf` — `hkdf_sha256` / `hkdf_sha512` with arbitrary IKM /
+    salt / info / length. Verifies determinism (same inputs →
+    same outputs across calls) and length-bound enforcement.
+  - `argon2_parse` — `argon2_verify` PHC-parser fuzzing with
+    arbitrary strings, plus parameter-validation fuzzing via
+    `argon2_hash_with_params` (with capped costs).
+  - `stream_decrypt` — `StreamDecryptor` with arbitrary header +
+    body + chunk-split boundaries, plus round-trip-with-arbitrary-
+    splits. Exercises the frame-format attack surface (header
+    parse, per-chunk counter, last-flag detection, buffering
+    invariants).
+- **`fuzz/README.md`** documenting setup (nightly + cargo-fuzz +
+  WSL2 on Windows), per-target commands, 1-CPU-hour run loop, a
+  per-target findings policy, and the "what's intentionally NOT
+  fuzzed" list (Argon2id at OWASP defaults — too slow to iterate;
+  TEE detection — runtime hardware probe, not input-driven; the
+  criterion bench suite — dev-only).
+- **Pre-1.0 smoke-run results** committed to release notes: **4.7
+  million total fuzz iterations across 8 targets in 2 minutes
+  on WSL2 Ubuntu, zero findings.** None of the 8 targets
+  panicked, hung, or produced an unexpected error. Full 1-CPU-
+  hour-per-target runs are pre-cut work for the 1.0.0-rc.
+
+### Changed
+
+- **Roadmap restructured.** Inserted **Phase 0.10.0** (allocation
+  profile via `mod-alloc` + zero-allocation `encrypt_into` /
+  `update_into` paths) before the release-candidate phase, so the
+  wrapping-overhead gap vs upstream RustCrypto identified in
+  0.8.0's PERFORMANCE.md is closed before 1.0 ships. Docs +
+  Release Candidate is now **Phase 0.11.0**; 1.0.0 unchanged.
+- **0.8.0 release notes + PERFORMANCE.md + ROADMAP** reworded:
+  - Stream encrypt @ 1 MiB (932-999 MiB/s) reclassified from
+    "⚠️ marginal" to "✅ within 1%" — it's literally at the line.
+  - Argon2id @ ~9 ms on Zen 5 reclassified from "⚠️ too fast" to
+    "ℹ️ guidance: tune `t_cost` on fast hardware" — fast hardware
+    is good news, not a failure.
+  - BLAKE3 @ 1 KiB reclassified to highlight the **64 KiB win**
+    (11.24 GiB/s) — the small-input target was always
+    over-optimistic and is being revised honestly.
+- **Allocation-profile tooling switched** from `dhat` to
+  [`mod-alloc`](https://github.com/jamesgober/mod-alloc) (the
+  portfolio's dhat-compatible profiler with lower MSRV and ~60 ns
+  / op overhead). Lands in Phase 0.10.0 — was previously
+  "post-1.0".
+
+### Security
+
+- **`cargo-fuzz` clean for the smoke window across all 8
+  targets.** Establishes the regression-prevention baseline:
+  every future fuzz finding now has a corpus seed and a
+  regression test. 1-CPU-hour-per-target runs are the
+  Phase-0.11.0 RC gate; the smoke results in this release give
+  ~150,000-1,240,000 iterations of confidence per target.
+
+[0.9.0]: https://github.com/jamesgober/crypt-io/compare/v0.8.0...v0.9.0
+
+---
+
 ## [0.8.0] - 2026-05-22
 
 ### Added
@@ -591,5 +670,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Feature flags for AEAD (chacha20, aes-gcm), hashing (blake3, sha2), MAC (hmac, blake3 keyed), KDF (hkdf, argon2), stream encryption.
 - Dependencies wired: `mod-rand` for CSPRNG, `error-forge` for errors, optional `log-io` and `metrics-lib`.
 
-[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v0.9.0...HEAD
 [0.1.0]: https://github.com/jamesgober/crypt-io/releases/tag/v0.1.0

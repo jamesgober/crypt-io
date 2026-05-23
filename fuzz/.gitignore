@@ -1,0 +1,7 @@
+# cargo-fuzz generated artifacts
+target/
+artifacts/
+
+# Crash inputs land here when a target finds something.
+# Move proven-interesting inputs into `corpus/<target>/` so they
+# get committed and re-used across runs; everything else is junk.
