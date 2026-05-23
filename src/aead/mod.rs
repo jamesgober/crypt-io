@@ -364,6 +364,153 @@ impl Crypt {
             }
         }
     }
+
+    /// Zero-allocation encrypt — writes `nonce || ciphertext || tag`
+    /// into the caller-supplied `out` buffer. The buffer is cleared
+    /// first and then grown as needed. Reusing the same buffer across
+    /// calls amortises the allocation cost away entirely.
+    ///
+    /// Equivalent to [`encrypt`](Self::encrypt) but does not allocate
+    /// a fresh `Vec` per call. New in 0.10.0.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`encrypt`](Self::encrypt).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[cfg(feature = "aead-chacha20")] {
+    /// use crypt_io::Crypt;
+    /// let crypt = Crypt::new();
+    /// let key = [0u8; 32];
+    /// let mut out = Vec::new();
+    ///
+    /// // First call grows `out` to capacity.
+    /// crypt.encrypt_into(&key, b"hello", &mut out)?;
+    ///
+    /// // Subsequent calls reuse the capacity — no allocation.
+    /// crypt.encrypt_into(&key, b"world", &mut out)?;
+    /// # }
+    /// # Ok::<(), crypt_io::Error>(())
+    /// ```
+    pub fn encrypt_into(&self, key: &[u8], plaintext: &[u8], out: &mut Vec<u8>) -> Result<()> {
+        self.encrypt_with_aad_into(key, plaintext, &[], out)
+    }
+
+    /// Zero-allocation encrypt with associated data. See
+    /// [`encrypt_into`](Self::encrypt_into).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`encrypt`](Self::encrypt).
+    pub fn encrypt_with_aad_into(
+        &self,
+        key: &[u8],
+        plaintext: &[u8],
+        aad: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<()> {
+        match self.algorithm {
+            Algorithm::ChaCha20Poly1305 => {
+                #[cfg(feature = "aead-chacha20")]
+                {
+                    chacha20::encrypt_into(key, plaintext, aad, out)
+                }
+                #[cfg(not(feature = "aead-chacha20"))]
+                {
+                    let _ = (key, plaintext, aad, out);
+                    Err(Error::AlgorithmNotEnabled("aead-chacha20"))
+                }
+            }
+            Algorithm::Aes256Gcm => {
+                #[cfg(feature = "aead-aes-gcm")]
+                {
+                    aes_gcm::encrypt_into(key, plaintext, aad, out)
+                }
+                #[cfg(not(feature = "aead-aes-gcm"))]
+                {
+                    let _ = (key, plaintext, aad, out);
+                    Err(Error::AlgorithmNotEnabled("aead-aes-gcm"))
+                }
+            }
+        }
+    }
+
+    /// Zero-allocation decrypt — writes the recovered plaintext into
+    /// the caller-supplied `out` buffer. The buffer is cleared first
+    /// and then grown as needed.
+    ///
+    /// On authentication failure the buffer is cleared (any
+    /// partially-decrypted bytes are scrubbed before returning) so
+    /// callers can't accidentally observe unverified plaintext.
+    ///
+    /// Equivalent to [`decrypt`](Self::decrypt) but does not allocate
+    /// a fresh `Vec` per call. New in 0.10.0.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`decrypt`](Self::decrypt).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[cfg(feature = "aead-chacha20")] {
+    /// use crypt_io::Crypt;
+    /// let crypt = Crypt::new();
+    /// let key = [0u8; 32];
+    ///
+    /// let mut ciphertext = Vec::new();
+    /// crypt.encrypt_into(&key, b"hello", &mut ciphertext)?;
+    ///
+    /// let mut plaintext = Vec::new();
+    /// crypt.decrypt_into(&key, &ciphertext, &mut plaintext)?;
+    /// assert_eq!(&plaintext[..], b"hello");
+    /// # }
+    /// # Ok::<(), crypt_io::Error>(())
+    /// ```
+    pub fn decrypt_into(&self, key: &[u8], ciphertext: &[u8], out: &mut Vec<u8>) -> Result<()> {
+        self.decrypt_with_aad_into(key, ciphertext, &[], out)
+    }
+
+    /// Zero-allocation decrypt with associated data. See
+    /// [`decrypt_into`](Self::decrypt_into).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`decrypt`](Self::decrypt).
+    pub fn decrypt_with_aad_into(
+        &self,
+        key: &[u8],
+        ciphertext: &[u8],
+        aad: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<()> {
+        match self.algorithm {
+            Algorithm::ChaCha20Poly1305 => {
+                #[cfg(feature = "aead-chacha20")]
+                {
+                    chacha20::decrypt_into(key, ciphertext, aad, out)
+                }
+                #[cfg(not(feature = "aead-chacha20"))]
+                {
+                    let _ = (key, ciphertext, aad, out);
+                    Err(Error::AlgorithmNotEnabled("aead-chacha20"))
+                }
+            }
+            Algorithm::Aes256Gcm => {
+                #[cfg(feature = "aead-aes-gcm")]
+                {
+                    aes_gcm::decrypt_into(key, ciphertext, aad, out)
+                }
+                #[cfg(not(feature = "aead-aes-gcm"))]
+                {
+                    let _ = (key, ciphertext, aad, out);
+                    Err(Error::AlgorithmNotEnabled("aead-aes-gcm"))
+                }
+            }
+        }
+    }
 }
 
 impl Default for Crypt {

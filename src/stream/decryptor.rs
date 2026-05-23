@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use crate::aead::Algorithm;
 use crate::error::{Error, Result};
 
-use super::aead::decrypt_chunk;
+use super::aead::{decrypt_chunk, decrypt_chunk_into};
 use super::frame::{HEADER_LEN, NONCE_PREFIX_LEN, build_nonce, chunk_size_from_log2, parse_header};
 
 /// Streaming AEAD decryptor — the inverse of [`super::StreamEncryptor`].
@@ -167,5 +167,81 @@ impl StreamDecryptor {
 
         let nonce = build_nonce(&self.nonce_prefix, self.counter, true);
         decrypt_chunk(self.algorithm, &self.key, &nonce, &self.buffer, &self.aad)
+    }
+
+    /// Zero-allocation [`update`](Self::update) — appends decrypted
+    /// plaintext to `out` instead of returning a new `Vec`. Reusing
+    /// the same `out` buffer across calls amortises the allocation
+    /// cost away.
+    ///
+    /// New in 0.10.0.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`update`](Self::update).
+    pub fn update_into(&mut self, data: &[u8], out: &mut Vec<u8>) -> Result<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
+
+        self.buffer.extend_from_slice(data);
+
+        let chunk_frame = self.chunk_size + 16;
+        let mut scratch: Vec<u8> = Vec::with_capacity(self.chunk_size);
+
+        while self.buffer.len() > chunk_frame {
+            let chunk_bytes: Vec<u8> = self.buffer.drain(..chunk_frame).collect();
+            let nonce = build_nonce(&self.nonce_prefix, self.counter, false);
+            decrypt_chunk_into(
+                self.algorithm,
+                &self.key,
+                &nonce,
+                &chunk_bytes,
+                &self.aad,
+                &mut scratch,
+            )?;
+            out.extend_from_slice(&scratch);
+            self.counter = self.counter.checked_add(1).ok_or(Error::InvalidCiphertext(
+                alloc::string::String::from("stream chunk counter overflow"),
+            ))?;
+        }
+
+        Ok(())
+    }
+
+    /// Zero-allocation [`finalize`](Self::finalize) — appends the
+    /// final decrypted plaintext to `out` instead of returning a new
+    /// `Vec`. See [`update_into`](Self::update_into).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`finalize`](Self::finalize).
+    pub fn finalize_into(self, out: &mut Vec<u8>) -> Result<()> {
+        let chunk_frame = self.chunk_size + 16;
+        if self.buffer.len() > chunk_frame {
+            return Err(Error::InvalidCiphertext(alloc::format!(
+                "stream finalize buffer too large ({} bytes, max {chunk_frame})",
+                self.buffer.len()
+            )));
+        }
+        if self.buffer.len() < 16 {
+            return Err(Error::InvalidCiphertext(alloc::format!(
+                "stream finalize buffer too short ({} bytes, need at least 16 for tag)",
+                self.buffer.len()
+            )));
+        }
+
+        let mut scratch: Vec<u8> = Vec::with_capacity(self.chunk_size);
+        let nonce = build_nonce(&self.nonce_prefix, self.counter, true);
+        decrypt_chunk_into(
+            self.algorithm,
+            &self.key,
+            &nonce,
+            &self.buffer,
+            &self.aad,
+            &mut scratch,
+        )?;
+        out.extend_from_slice(&scratch);
+        Ok(())
     }
 }

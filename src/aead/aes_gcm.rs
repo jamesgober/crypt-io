@@ -26,7 +26,7 @@
 
 use alloc::vec::Vec;
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
+use aes_gcm::aead::{Aead, AeadInPlace, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 
 use super::{AES_GCM_NONCE_LEN, AES_GCM_TAG_LEN, KEY_LEN};
@@ -65,6 +65,35 @@ pub(super) fn encrypt(key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8
     Ok(out)
 }
 
+/// Encrypt into a caller-supplied buffer. Buffer is cleared and grown to
+/// hold `nonce_len + plaintext.len() + tag_len` bytes. Reusing the same
+/// buffer across calls amortises the allocation away.
+pub(super) fn encrypt_into(
+    key: &[u8],
+    plaintext: &[u8],
+    aad: &[u8],
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    check_key_len(key)?;
+
+    let mut nonce_bytes = [0u8; AES_GCM_NONCE_LEN];
+    mod_rand::tier3::fill_bytes(&mut nonce_bytes)
+        .map_err(|_| Error::RandomFailure("mod_rand::tier3::fill_bytes"))?;
+
+    out.clear();
+    out.reserve(AES_GCM_NONCE_LEN + plaintext.len() + AES_GCM_TAG_LEN);
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(plaintext);
+
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let tag = cipher
+        .encrypt_in_place_detached(nonce, aad, &mut out[AES_GCM_NONCE_LEN..])
+        .map_err(|_| Error::AuthenticationFailed)?;
+    out.extend_from_slice(&tag);
+    Ok(())
+}
+
 /// Decrypt a `nonce || ciphertext || tag` buffer with associated data `aad`
 /// under `key`.
 pub(super) fn decrypt(key: &[u8], wire: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
@@ -90,6 +119,39 @@ pub(super) fn decrypt(key: &[u8], wire: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
             },
         )
         .map_err(|_| Error::AuthenticationFailed)
+}
+
+/// Decrypt into a caller-supplied buffer. Buffer is cleared and grown to
+/// hold `wire.len() - nonce_len - tag_len` bytes (the recovered plaintext).
+pub(super) fn decrypt_into(key: &[u8], wire: &[u8], aad: &[u8], out: &mut Vec<u8>) -> Result<()> {
+    check_key_len(key)?;
+
+    if wire.len() < AES_GCM_NONCE_LEN + AES_GCM_TAG_LEN {
+        return Err(Error::InvalidCiphertext(alloc::format!(
+            "buffer too short ({} bytes, need at least {})",
+            wire.len(),
+            AES_GCM_NONCE_LEN + AES_GCM_TAG_LEN
+        )));
+    }
+
+    let (nonce_bytes, ct_and_tag) = wire.split_at(AES_GCM_NONCE_LEN);
+    let (ct, tag_bytes) = ct_and_tag.split_at(ct_and_tag.len() - AES_GCM_TAG_LEN);
+
+    out.clear();
+    out.reserve(ct.len());
+    out.extend_from_slice(ct);
+
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    let nonce = Nonce::from_slice(nonce_bytes);
+    let tag = aes_gcm::Tag::from_slice(tag_bytes);
+    cipher
+        .decrypt_in_place_detached(nonce, aad, out, tag)
+        .map_err(|_| {
+            // Scrub on auth failure — see chacha20.rs for rationale.
+            out.clear();
+            Error::AuthenticationFailed
+        })?;
+    Ok(())
 }
 
 #[inline]

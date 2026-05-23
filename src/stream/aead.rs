@@ -57,6 +57,101 @@ pub(super) fn encrypt_chunk(
     }
 }
 
+/// Encrypt one chunk into a caller-supplied buffer. Buffer is cleared
+/// and grown to `plaintext.len() + tag_len` bytes. The 16-byte tag is
+/// appended after the in-place ciphertext.
+pub(super) fn encrypt_chunk_into(
+    algorithm: Algorithm,
+    key: &[u8; 32],
+    nonce: &[u8; NONCE_LEN],
+    plaintext: &[u8],
+    aad: &[u8],
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    out.clear();
+    out.reserve(plaintext.len() + 16);
+    out.extend_from_slice(plaintext);
+
+    match algorithm {
+        Algorithm::ChaCha20Poly1305 => {
+            use chacha20poly1305::aead::{AeadInPlace, KeyInit};
+            use chacha20poly1305::{ChaCha20Poly1305, Key as ChaKey, Nonce as ChaNonce};
+
+            let cipher = ChaCha20Poly1305::new(ChaKey::from_slice(key));
+            let tag = cipher
+                .encrypt_in_place_detached(ChaNonce::from_slice(nonce), aad, out)
+                .map_err(|_| Error::AuthenticationFailed)?;
+            out.extend_from_slice(&tag);
+        }
+        Algorithm::Aes256Gcm => {
+            use aes_gcm::aead::{AeadInPlace, KeyInit};
+            use aes_gcm::{Aes256Gcm, Key as AesKey, Nonce as AesNonce};
+
+            let cipher = Aes256Gcm::new(AesKey::<Aes256Gcm>::from_slice(key));
+            let tag = cipher
+                .encrypt_in_place_detached(AesNonce::from_slice(nonce), aad, out)
+                .map_err(|_| Error::AuthenticationFailed)?;
+            out.extend_from_slice(&tag);
+        }
+    }
+    Ok(())
+}
+
+/// Decrypt one chunk into a caller-supplied buffer. Buffer is cleared
+/// and grown to `ciphertext_and_tag.len() - tag_len` bytes (the
+/// recovered plaintext). On authentication failure the buffer is
+/// scrubbed before returning.
+pub(super) fn decrypt_chunk_into(
+    algorithm: Algorithm,
+    key: &[u8; 32],
+    nonce: &[u8; NONCE_LEN],
+    ciphertext_and_tag: &[u8],
+    aad: &[u8],
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    if ciphertext_and_tag.len() < 16 {
+        return Err(Error::InvalidCiphertext(alloc::format!(
+            "chunk too short ({} bytes, need at least 16 for tag)",
+            ciphertext_and_tag.len()
+        )));
+    }
+    let (ct, tag_bytes) = ciphertext_and_tag.split_at(ciphertext_and_tag.len() - 16);
+
+    out.clear();
+    out.reserve(ct.len());
+    out.extend_from_slice(ct);
+
+    match algorithm {
+        Algorithm::ChaCha20Poly1305 => {
+            use chacha20poly1305::aead::{AeadInPlace, KeyInit};
+            use chacha20poly1305::{ChaCha20Poly1305, Key as ChaKey, Nonce as ChaNonce};
+
+            let cipher = ChaCha20Poly1305::new(ChaKey::from_slice(key));
+            let tag = chacha20poly1305::Tag::from_slice(tag_bytes);
+            cipher
+                .decrypt_in_place_detached(ChaNonce::from_slice(nonce), aad, out, tag)
+                .map_err(|_| {
+                    out.clear();
+                    Error::AuthenticationFailed
+                })?;
+        }
+        Algorithm::Aes256Gcm => {
+            use aes_gcm::aead::{AeadInPlace, KeyInit};
+            use aes_gcm::{Aes256Gcm, Key as AesKey, Nonce as AesNonce};
+
+            let cipher = Aes256Gcm::new(AesKey::<Aes256Gcm>::from_slice(key));
+            let tag = aes_gcm::Tag::from_slice(tag_bytes);
+            cipher
+                .decrypt_in_place_detached(AesNonce::from_slice(nonce), aad, out, tag)
+                .map_err(|_| {
+                    out.clear();
+                    Error::AuthenticationFailed
+                })?;
+        }
+    }
+    Ok(())
+}
+
 /// Decrypt one chunk under `key` with the supplied 12-byte `nonce` and
 /// `aad`. `ciphertext_and_tag` is `ciphertext || tag`.
 pub(super) fn decrypt_chunk(

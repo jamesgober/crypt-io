@@ -89,11 +89,55 @@ fn bench_aes_gcm_decrypt(c: &mut Criterion) {
     group.finish();
 }
 
+// --- Zero-allocation `_into` variants (0.10.0). Compare against
+// the allocating paths above at the same input sizes to measure the
+// wrapping-overhead close. ---
+
+fn bench_chacha20_encrypt_into(c: &mut Criterion) {
+    let crypt = Crypt::new();
+    let key = [0u8; 32];
+    let mut group = c.benchmark_group("chacha20_poly1305_encrypt_into");
+    for &size in SIZES {
+        let plaintext = vec![0xa5u8; size];
+        let mut out = Vec::with_capacity(size + 28);
+        group.throughput(Throughput::Bytes(size as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(size), &plaintext, |b, pt| {
+            b.iter(|| {
+                crypt
+                    .encrypt_into(black_box(&key), black_box(pt), black_box(&mut out))
+                    .unwrap();
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_aes_gcm_encrypt_into(c: &mut Criterion) {
+    let crypt = Crypt::aes_256_gcm();
+    let key = [0u8; 32];
+    let mut group = c.benchmark_group("aes_256_gcm_encrypt_into");
+    for &size in SIZES {
+        let plaintext = vec![0xa5u8; size];
+        let mut out = Vec::with_capacity(size + 28);
+        group.throughput(Throughput::Bytes(size as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(size), &plaintext, |b, pt| {
+            b.iter(|| {
+                crypt
+                    .encrypt_into(black_box(&key), black_box(pt), black_box(&mut out))
+                    .unwrap();
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_chacha20_encrypt,
     bench_chacha20_decrypt,
     bench_aes_gcm_encrypt,
     bench_aes_gcm_decrypt,
+    bench_chacha20_encrypt_into,
+    bench_aes_gcm_encrypt_into,
 );
 criterion_main!(benches);

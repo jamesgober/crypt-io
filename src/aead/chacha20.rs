@@ -16,7 +16,7 @@
 
 use alloc::vec::Vec;
 
-use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+use chacha20poly1305::aead::{Aead, AeadInPlace, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 
 use super::{CHACHA20_NONCE_LEN, CHACHA20_TAG_LEN, KEY_LEN};
@@ -55,6 +55,35 @@ pub(super) fn encrypt(key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8
     Ok(out)
 }
 
+/// Encrypt into a caller-supplied buffer. Buffer is cleared and grown to
+/// hold `nonce_len + plaintext.len() + tag_len` bytes. Reusing the same
+/// buffer across calls amortises the allocation away.
+pub(super) fn encrypt_into(
+    key: &[u8],
+    plaintext: &[u8],
+    aad: &[u8],
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    check_key_len(key)?;
+
+    let mut nonce_bytes = [0u8; CHACHA20_NONCE_LEN];
+    mod_rand::tier3::fill_bytes(&mut nonce_bytes)
+        .map_err(|_| Error::RandomFailure("mod_rand::tier3::fill_bytes"))?;
+
+    out.clear();
+    out.reserve(CHACHA20_NONCE_LEN + plaintext.len() + CHACHA20_TAG_LEN);
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(plaintext);
+
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let tag = cipher
+        .encrypt_in_place_detached(nonce, aad, &mut out[CHACHA20_NONCE_LEN..])
+        .map_err(|_| Error::AuthenticationFailed)?;
+    out.extend_from_slice(&tag);
+    Ok(())
+}
+
 /// Decrypt a `nonce || ciphertext || tag` buffer with associated data `aad`
 /// under `key`.
 pub(super) fn decrypt(key: &[u8], wire: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
@@ -80,6 +109,42 @@ pub(super) fn decrypt(key: &[u8], wire: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
             },
         )
         .map_err(|_| Error::AuthenticationFailed)
+}
+
+/// Decrypt into a caller-supplied buffer. Buffer is cleared and grown to
+/// hold `wire.len() - nonce_len - tag_len` bytes (the recovered plaintext).
+pub(super) fn decrypt_into(key: &[u8], wire: &[u8], aad: &[u8], out: &mut Vec<u8>) -> Result<()> {
+    check_key_len(key)?;
+
+    if wire.len() < CHACHA20_NONCE_LEN + CHACHA20_TAG_LEN {
+        return Err(Error::InvalidCiphertext(alloc::format!(
+            "buffer too short ({} bytes, need at least {})",
+            wire.len(),
+            CHACHA20_NONCE_LEN + CHACHA20_TAG_LEN
+        )));
+    }
+
+    let (nonce_bytes, ct_and_tag) = wire.split_at(CHACHA20_NONCE_LEN);
+    let (ct, tag_bytes) = ct_and_tag.split_at(ct_and_tag.len() - CHACHA20_TAG_LEN);
+
+    out.clear();
+    out.reserve(ct.len());
+    out.extend_from_slice(ct);
+
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
+    let nonce = Nonce::from_slice(nonce_bytes);
+    let tag = chacha20poly1305::Tag::from_slice(tag_bytes);
+    cipher
+        .decrypt_in_place_detached(nonce, aad, out, tag)
+        .map_err(|_| {
+            // On auth failure the in-place buffer may contain
+            // partially-decrypted plaintext. Scrub it so the failure
+            // path doesn't leave secret-ish bytes in the caller's
+            // buffer.
+            out.clear();
+            Error::AuthenticationFailed
+        })?;
+    Ok(())
 }
 
 #[inline]

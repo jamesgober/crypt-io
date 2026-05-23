@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use crate::aead::Algorithm;
 use crate::error::{Error, Result};
 
-use super::aead::encrypt_chunk;
+use super::aead::{encrypt_chunk, encrypt_chunk_into};
 use super::frame::{
     DEFAULT_CHUNK_SIZE_LOG2, HEADER_LEN, MAX_CHUNK_SIZE_LOG2, MIN_CHUNK_SIZE_LOG2,
     NONCE_PREFIX_LEN, build_header, build_nonce, chunk_size_from_log2,
@@ -204,6 +204,93 @@ impl StreamEncryptor {
             encrypt_chunk(self.algorithm, &self.key, &nonce, &self.buffer, &self.aad)?;
         out.extend_from_slice(&final_chunk);
         Ok(out)
+    }
+
+    /// Zero-allocation [`update`](Self::update) — appends complete
+    /// encrypted chunks to `out` instead of returning a new `Vec`.
+    /// Reusing the same `out` buffer across calls amortises the
+    /// allocation cost away.
+    ///
+    /// New in 0.10.0.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`update`](Self::update).
+    pub fn update_into(&mut self, data: &[u8], out: &mut Vec<u8>) -> Result<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
+
+        // Scratch buffer reused across all chunks emitted by this call.
+        // Pre-sized for one full encrypted chunk.
+        let mut scratch: Vec<u8> = Vec::with_capacity(self.chunk_size + 16);
+
+        let mut cursor = 0usize;
+        while cursor < data.len() {
+            let needed = self.chunk_size - self.buffer.len();
+            let take = needed.min(data.len() - cursor);
+            self.buffer.extend_from_slice(&data[cursor..cursor + take]);
+            cursor += take;
+
+            if self.buffer.len() == self.chunk_size {
+                let nonce = build_nonce(&self.nonce_prefix, self.counter, false);
+                encrypt_chunk_into(
+                    self.algorithm,
+                    &self.key,
+                    &nonce,
+                    &self.buffer,
+                    &self.aad,
+                    &mut scratch,
+                )?;
+                out.extend_from_slice(&scratch);
+                self.counter = self.counter.checked_add(1).ok_or(Error::InvalidCiphertext(
+                    alloc::string::String::from("stream chunk counter overflow"),
+                ))?;
+                self.buffer.clear();
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Zero-allocation [`finalize`](Self::finalize) — appends the
+    /// final chunk to `out` instead of returning a new `Vec`. See
+    /// [`update_into`](Self::update_into).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`finalize`](Self::finalize).
+    pub fn finalize_into(mut self, out: &mut Vec<u8>) -> Result<()> {
+        let mut scratch: Vec<u8> = Vec::with_capacity(self.chunk_size + 16);
+
+        if self.buffer.len() == self.chunk_size {
+            let nonce = build_nonce(&self.nonce_prefix, self.counter, false);
+            encrypt_chunk_into(
+                self.algorithm,
+                &self.key,
+                &nonce,
+                &self.buffer,
+                &self.aad,
+                &mut scratch,
+            )?;
+            out.extend_from_slice(&scratch);
+            self.counter = self.counter.checked_add(1).ok_or(Error::InvalidCiphertext(
+                alloc::string::String::from("stream chunk counter overflow"),
+            ))?;
+            self.buffer.clear();
+        }
+
+        let nonce = build_nonce(&self.nonce_prefix, self.counter, true);
+        encrypt_chunk_into(
+            self.algorithm,
+            &self.key,
+            &nonce,
+            &self.buffer,
+            &self.aad,
+            &mut scratch,
+        )?;
+        out.extend_from_slice(&scratch);
+        Ok(())
     }
 }
 

@@ -19,6 +19,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.0] - 2026-05-23
+
+### Added
+
+- **Zero-allocation `_into` API family** — caller-supplied output
+  buffers throughout the encrypt / streaming surface. After a
+  one-time grow, subsequent calls reuse capacity and run with
+  **zero steady-state allocations** (verified by `mod-alloc`
+  profile in [`examples/profile_alloc.rs`](examples/profile_alloc.rs)).
+  - `Crypt::encrypt_into(&self, key, plaintext, &mut Vec<u8>) -> Result<()>`
+  - `Crypt::encrypt_with_aad_into(&self, key, plaintext, aad, &mut Vec<u8>) -> Result<()>`
+  - `Crypt::decrypt_into(&self, key, ciphertext, &mut Vec<u8>) -> Result<()>`
+  - `Crypt::decrypt_with_aad_into(&self, key, ciphertext, aad, &mut Vec<u8>) -> Result<()>`
+  - `StreamEncryptor::update_into(&mut self, data, &mut Vec<u8>) -> Result<()>`
+  - `StreamEncryptor::finalize_into(self, &mut Vec<u8>) -> Result<()>`
+  - `StreamDecryptor::update_into(&mut self, data, &mut Vec<u8>) -> Result<()>`
+  - `StreamDecryptor::finalize_into(self, &mut Vec<u8>) -> Result<()>`
+- **`examples/profile_alloc.rs`** — global-allocator swap using
+  [`mod-alloc`](https://github.com/jamesgober/mod-alloc) (the
+  portfolio's dhat-compatible heap profiler, ~60 ns / op
+  overhead, lower MSRV alignment than dhat). Loops
+  `Crypt::encrypt` vs `Crypt::encrypt_into` for 10 000 iterations
+  per (algorithm × size) and prints the allocation count + total
+  bytes from `mod_alloc::Profiler`. Confirms the `_into` path is
+  zero-allocation in the steady state.
+- **`_into`-variant benchmarks** — `benches/aead.rs` and
+  `benches/stream.rs` now ship matching benches for
+  `chacha20_poly1305_encrypt_into`, `aes_256_gcm_encrypt_into`,
+  and `stream_encrypt_into` so the side-by-side throughput
+  improvement is reproducible from `cargo bench`.
+- **12 new `_into` integration tests** under
+  `tests/into_apis.rs` covering:
+  - Round-trip equality with the `Vec`-returning paths
+  - **Capacity reuse** assertion (`Vec::capacity()` unchanged
+    across a second call with same-size input → no realloc)
+  - **Auth-failure buffer scrub** assertion (`decrypt_into` /
+    `decrypt_chunk_into` clear the output buffer on
+    `AuthenticationFailed` so partially-decrypted plaintext
+    can't leak)
+  - AAD round-trip + AAD-mismatch rejection through the `_into`
+    surface
+  - Both algorithms through the same harness
+  - Stream `_into` round-trip across multiple chunk boundaries
+  - Empty-plaintext edge case
+- **`mod-alloc` dev-dep + `[[example]] name = "profile_alloc"`**
+  in `Cargo.toml`.
+
+### Changed
+
+- **Measured wrapping-overhead close.** Side-by-side numbers on
+  the same Zen 5 reference machine documented in 0.8.0:
+  | Operation @ 1 MiB | 0.9.0 allocating | 0.10.0 `_into` | Δ |
+  |---|---:|---:|---:|
+  | `Crypt::encrypt` ChaCha20-Poly1305 | 1.05 GiB/s | **1.45 GiB/s** | **+38%** |
+  | `Crypt::encrypt` AES-256-GCM       | 1.08 GiB/s | **1.59 GiB/s** | **+47%** |
+  | `StreamEncryptor` ChaCha20-Poly1305 | 932 MiB/s | **1.40 GiB/s** | **+54%** |
+  | `StreamEncryptor` AES-256-GCM       | 999 MiB/s | **1.54 GiB/s** | **+55%** |
+  Stream encrypt now cleanly clears the 1 GiB/s contract target
+  for both algorithms; the marginal ⚠️ in 0.8.0's contract check
+  becomes a clean ✅ when the `_into` path is used.
+- **Backwards compatible.** The existing `encrypt` / `decrypt` /
+  `update` / `finalize` methods keep their current signatures
+  and behavior unchanged — `_into` is purely additive.
+- **`docs/PERFORMANCE.md`** — TL;DR table reworked to lead with
+  `_into` numbers (the recommended path for any high-throughput
+  caller). Added "wrapping-overhead close" table showing
+  before/after at 1 MiB for all four encrypt paths plus an
+  allocation-count table from the `mod-alloc` profile.
+
+### Security
+
+- **Auth-failure scrub on decrypt.** `decrypt_into` and
+  `decrypt_chunk_into` clear the caller-supplied output buffer
+  before returning `AuthenticationFailed`, so partially-decrypted
+  plaintext bytes never reach the caller. Verified by the
+  `decrypt_into_scrubs_on_auth_failure` test (writes sentinel
+  bytes into the buffer, asserts they're gone after the failed
+  decrypt).
+- **No new attack surface.** The `_into` paths route through the
+  same upstream RustCrypto primitives as the allocating paths;
+  they just avoid the per-call `Vec::with_capacity` + extend
+  sequence. AEAD verification, nonce generation, header binding,
+  and STREAM-construction nonces all unchanged.
+
+[0.10.0]: https://github.com/jamesgober/crypt-io/compare/v0.9.0...v0.10.0
+
+---
+
 ## [0.9.0] - 2026-05-22
 
 ### Added
@@ -670,5 +758,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Feature flags for AEAD (chacha20, aes-gcm), hashing (blake3, sha2), MAC (hmac, blake3 keyed), KDF (hkdf, argon2), stream encryption.
 - Dependencies wired: `mod-rand` for CSPRNG, `error-forge` for errors, optional `log-io` and `metrics-lib`.
 
-[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v0.10.0...HEAD
 [0.1.0]: https://github.com/jamesgober/crypt-io/releases/tag/v0.1.0

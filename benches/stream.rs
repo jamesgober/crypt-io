@@ -68,5 +68,46 @@ fn bench_stream_decrypt(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_stream_encrypt, bench_stream_decrypt);
+// --- Zero-allocation `_into` variant (0.10.0). Same per-iteration
+// work as `bench_stream_encrypt` but writes into a reused buffer. ---
+
+fn stream_encrypt_into(algorithm: Algorithm, plaintext: &[u8], wire: &mut Vec<u8>) {
+    let key = [0u8; 32];
+    let (mut enc, header) = StreamEncryptor::new(&key, algorithm).unwrap();
+    wire.clear();
+    wire.extend_from_slice(&header);
+    enc.update_into(plaintext, wire).unwrap();
+    enc.finalize_into(wire).unwrap();
+}
+
+fn bench_stream_encrypt_into(c: &mut Criterion) {
+    let mut group = c.benchmark_group("stream_encrypt_into");
+    for &(size, label) in SIZES {
+        let plaintext = vec![0xa5u8; size];
+        let mut wire = Vec::with_capacity(size + 4096);
+        group.throughput(Throughput::Bytes(size as u64));
+        group.bench_with_input(format!("chacha20_{label}"), &plaintext, |b, pt| {
+            b.iter(|| {
+                stream_encrypt_into(
+                    Algorithm::ChaCha20Poly1305,
+                    black_box(pt),
+                    black_box(&mut wire),
+                );
+            });
+        });
+        group.bench_with_input(format!("aes_gcm_{label}"), &plaintext, |b, pt| {
+            b.iter(|| {
+                stream_encrypt_into(Algorithm::Aes256Gcm, black_box(pt), black_box(&mut wire));
+            });
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_stream_encrypt,
+    bench_stream_decrypt,
+    bench_stream_encrypt_into,
+);
 criterion_main!(benches);

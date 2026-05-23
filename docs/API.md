@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-    <i>Complete public-API reference for <code>crypt-io</code> 0.7.0.</i>
+    <i>Complete public-API reference for <code>crypt-io</code> 0.10.0.</i>
     <br>
     <i>For per-version notes see <a href="../CHANGELOG.md"><code>CHANGELOG.md</code></a>.</i>
 </p>
@@ -41,6 +41,7 @@
     - [`Crypt::encrypt_with_aad`](#cryptencrypt_with_aad)
     - [`Crypt::decrypt`](#cryptdecrypt)
     - [`Crypt::decrypt_with_aad`](#cryptdecrypt_with_aad)
+    - [`Crypt::encrypt_into` / `decrypt_into` (zero-alloc, 0.10.0)](#zero-alloc-into-paths)
   - [`Algorithm`](#algorithm)
     - [`Algorithm::name`](#algorithmname)
     - [`Algorithm::key_len`](#algorithmkey_len)
@@ -425,6 +426,59 @@ Decrypt with associated data. `aad` must match what was passed to
 returns [`Error::AuthenticationFailed`](#error).
 
 **Errors:** same as [`decrypt`](#cryptdecrypt).
+
+<a href="#top">↑ TOP</a>
+
+#### Zero-alloc `_into` paths
+
+```rust
+impl Crypt {
+    pub fn encrypt_into(&self, key: &[u8], plaintext: &[u8], out: &mut Vec<u8>) -> Result<()>;
+    pub fn encrypt_with_aad_into(&self, key: &[u8], plaintext: &[u8], aad: &[u8], out: &mut Vec<u8>) -> Result<()>;
+    pub fn decrypt_into(&self, key: &[u8], ciphertext: &[u8], out: &mut Vec<u8>) -> Result<()>;
+    pub fn decrypt_with_aad_into(&self, key: &[u8], ciphertext: &[u8], aad: &[u8], out: &mut Vec<u8>) -> Result<()>;
+}
+```
+
+New in 0.10.0. Same semantics as the `Vec`-returning methods,
+but the caller supplies the output buffer. The buffer is cleared
+on entry; capacity is reserved if needed; ciphertext (or
+recovered plaintext) is appended in place.
+
+**Zero steady-state allocations.** After a one-time grow, every
+subsequent call reuses the buffer's capacity. Verified by
+[`examples/profile_alloc.rs`](../examples/profile_alloc.rs)
+which runs 10,000 iterations under `mod-alloc` and prints
+allocation counts.
+
+**`decrypt_*_into` auth-failure scrub.** On
+`Error::AuthenticationFailed` the output buffer is cleared
+before returning, so partially-decrypted plaintext from the
+upstream `decrypt_in_place_detached` call can't leak to the
+caller.
+
+**When to use:** any hot-path encrypt loop. The `Vec`-returning
+methods are kept for ergonomics — use them when you'd discard
+the returned `Vec` immediately anyway.
+
+```rust
+# #[cfg(feature = "aead-chacha20")] {
+use crypt_io::Crypt;
+let crypt = Crypt::new();
+let key = [0u8; 32];
+
+// Construct the buffer once, reuse forever.
+let mut ct = Vec::new();
+crypt.encrypt_into(&key, b"first message",  &mut ct)?;
+crypt.encrypt_into(&key, b"second message", &mut ct)?;  // no allocation
+crypt.encrypt_into(&key, b"third message",  &mut ct)?;  // no allocation
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
+Stream `_into` variants are documented in [the `stream` module
+section](#stream-module) — same shape: `update_into(&mut self,
+data, out)` and `finalize_into(self, out)`.
 
 <a href="#top">↑ TOP</a>
 

@@ -14,24 +14,52 @@
 
 ## TL;DR
 
-| Operation | Algorithm | Throughput @ 1 KiB | Throughput @ 64 KiB |
-|---|---|---|---|
-| AEAD encrypt | ChaCha20-Poly1305 | 566 MiB/s | **1.45 GiB/s** |
-| AEAD encrypt | AES-256-GCM       | 1.01 GiB/s | **1.55 GiB/s** |
-| AEAD decrypt | ChaCha20-Poly1305 | 627 MiB/s | **1.48 GiB/s** |
-| AEAD decrypt | AES-256-GCM       | 1.27 GiB/s | **1.59 GiB/s** |
-| Hash         | BLAKE3            | 914 MiB/s | **11.24 GiB/s** |
-| Hash         | SHA-256 (SHA-NI)  | 2.24 GiB/s | **2.49 GiB/s** |
-| Hash         | SHA-512           | 968 MiB/s | **1.11 GiB/s** |
-| MAC          | HMAC-SHA256       | 1.69 GiB/s | 2.43 GiB/s |
-| MAC          | HMAC-SHA512       | 709 MiB/s | 1.02 GiB/s |
-| MAC          | BLAKE3 keyed      | 990 MiB/s | **11.74 GiB/s** |
-| KDF          | HKDF-SHA256 (32 B output) | 304 ns | n/a |
-| KDF          | HKDF-SHA512 (32 B output) | 1.06 µs | n/a |
-| KDF          | Argon2id (OWASP defaults) | ~9 ms / hash | n/a |
-| KDF          | Argon2id (test params) | 8.2 µs / hash | n/a |
-| Stream       | ChaCha20-Poly1305 (1 MiB) | 932 MiB/s | n/a |
-| Stream       | AES-256-GCM (1 MiB) | 999 MiB/s | n/a |
+Numbers below are for the **`_into` zero-allocation paths** introduced
+in 0.10.0 where they apply (AEAD encrypt, stream encrypt). The
+allocating paths (`encrypt`, `update`) are slower at large sizes
+because of the per-call `Vec` allocation; the 0.10.0 `_into`
+variants take a caller-supplied buffer and run with zero
+steady-state allocations.
+
+| Operation | Algorithm | Throughput @ 1 KiB | Throughput @ 64 KiB | @ 1 MiB |
+|---|---|---|---|---|
+| AEAD `encrypt_into` | ChaCha20-Poly1305 | 590 MiB/s | **1.51 GiB/s** | **1.45 GiB/s** |
+| AEAD `encrypt_into` | AES-256-GCM       | 1.18 GiB/s | **1.63 GiB/s** | **1.59 GiB/s** |
+| AEAD decrypt | ChaCha20-Poly1305 | 627 MiB/s | **1.48 GiB/s** | 1.49 GiB/s |
+| AEAD decrypt | AES-256-GCM       | 1.27 GiB/s | **1.59 GiB/s** | 1.60 GiB/s |
+| Hash         | BLAKE3            | 914 MiB/s | **11.24 GiB/s** | 11.83 GiB/s |
+| Hash         | SHA-256 (SHA-NI)  | 2.24 GiB/s | 2.49 GiB/s | 2.45 GiB/s |
+| Hash         | SHA-512           | 968 MiB/s | 1.11 GiB/s | 1.05 GiB/s |
+| MAC          | HMAC-SHA256       | 1.69 GiB/s | 2.43 GiB/s | 2.50 GiB/s |
+| MAC          | HMAC-SHA512       | 709 MiB/s | 1.02 GiB/s | 1.03 GiB/s |
+| MAC          | BLAKE3 keyed      | 990 MiB/s | **11.74 GiB/s** | 11.57 GiB/s |
+| KDF          | HKDF-SHA256 (32 B output) | 304 ns | — | — |
+| KDF          | HKDF-SHA512 (32 B output) | 1.06 µs | — | — |
+| KDF          | Argon2id (OWASP defaults) | ~9 ms / hash | — | — |
+| KDF          | Argon2id (test params) | 8.2 µs / hash | — | — |
+| Stream `_into` | ChaCha20-Poly1305 | — | — | **1.40 GiB/s** |
+| Stream `_into` | AES-256-GCM | — | — | **1.54 GiB/s** |
+
+### 0.10.0 wrapping-overhead close: allocating vs `_into`
+
+| Operation @ 1 MiB | Allocating (0.9.0) | `_into` (0.10.0) | Speedup |
+|---|---:|---:|---:|
+| `Crypt::encrypt` ChaCha20-Poly1305 | 1.05 GiB/s | **1.45 GiB/s** | **+38%** |
+| `Crypt::encrypt` AES-256-GCM       | 1.08 GiB/s | **1.59 GiB/s** | **+47%** |
+| `StreamEncryptor` ChaCha20-Poly1305 | 932 MiB/s | **1.40 GiB/s** | **+54%** |
+| `StreamEncryptor` AES-256-GCM       | 999 MiB/s | **1.54 GiB/s** | **+55%** |
+
+**Allocation count, measured via `mod-alloc` over 10,000 iterations:**
+
+| Operation | Allocations / 10k iters | Per-call |
+|---|---:|---:|
+| `Crypt::encrypt` (any algo, any size) | 20 000 | 2 |
+| `Crypt::encrypt_into` (any algo, any size) | **0** | **0 steady-state** |
+
+The `_into` path is **zero-allocation in the steady state**:
+caller-supplied buffer grows once on first call, every subsequent
+call reuses the capacity. Stream encrypt now lands cleanly over
+the 1 GiB/s contract target for both algorithms at 1 MiB plaintext.
 
 > **Single reference machine.** AES-NI machines without SHA-NI will
 > see SHA-256 ~3-5× slower; CPUs without AES-NI fall back to a
@@ -288,16 +316,15 @@ documented behaviour, not a correctness bug.
 
 ### Contract check
 
-| Operation | Target | Measured | Status |
-|---|---:|---:|:---:|
-| Stream encrypt throughput, 1 MiB plaintext | > 1 GiB/s | 999 MiB/s (AES) / 932 MiB/s (ChaCha20) | ✅ within 1% |
-| Stream decrypt throughput, 1 MiB plaintext | > 1 GiB/s | 1.30 GiB/s (AES) / 1.19 GiB/s (ChaCha20) | ✅ |
+| Operation | Target | Measured (0.9 allocating) | Measured (0.10 `_into`) | Status |
+|---|---:|---:|---:|:---:|
+| Stream encrypt throughput, 1 MiB plaintext | > 1 GiB/s | 999 MiB/s (AES) / 932 MiB/s (ChaCha20) | **1.54 GiB/s (AES) / 1.40 GiB/s (ChaCha20)** | ✅ over target |
+| Stream decrypt throughput, 1 MiB plaintext | > 1 GiB/s | 1.30 GiB/s (AES) / 1.19 GiB/s (ChaCha20) | (decrypt path unchanged) | ✅ |
 
-Stream encrypt lands within 1% of the 1 GiB/s line at 1 MiB —
-inside measurement noise on this machine. AES-GCM is essentially
-at the target (999 MiB/s); ChaCha20 is 93% of target. Lifting the
-chunk size to 256 KiB or shipping the post-1.0 zero-allocation
-encrypt path pushes both cleanly over.
+**0.10.0 closes the stream-encrypt gap.** The `_into` path takes a
+caller-supplied buffer, removes the per-call `Vec` allocation, and
+pushes throughput **+54% / +55%** over the allocating path at 1 MiB
+— well over the 1 GiB/s contract target for both algorithms.
 
 <a href="#top">↑ TOP</a>
 
@@ -331,11 +358,15 @@ crates' own benches:
   [`argon2`](https://crates.io/crates/argon2) — wrapping overhead
   not measurable: we just call through to one upstream function.
 
-Most of our overhead is **per-call allocation** for the output
-`Vec<u8>`. **Phase 0.10.0** ships a buffer-reusing API
-(`encrypt_into(&mut out: Vec<u8>, ...)`) that closes this gap
-before the 1.0 cut. For 0.8.0 the cost is documented and
-acceptable.
+Most of our overhead in 0.9.0 and earlier was **per-call
+allocation** for the output `Vec<u8>`. **0.10.0 closes this gap**
+with the `_into` API family — `Crypt::encrypt_into`,
+`Crypt::decrypt_into`, `StreamEncryptor::update_into` /
+`finalize_into`, `StreamDecryptor::update_into` / `finalize_into`.
+Each writes into a caller-supplied `Vec<u8>` and runs with **zero
+steady-state allocations** (verified by `mod-alloc` profile in
+`examples/profile_alloc.rs`). Wall-clock impact: +38-55% on the
+encrypt paths at 1 MiB.
 
 <a href="#top">↑ TOP</a>
 

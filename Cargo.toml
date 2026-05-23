@@ -1,6 +1,6 @@
 [package]
 name = "crypt-io"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2024"
 rust-version = "1.85"
 readme = "README.md"
@@ -112,6 +112,13 @@ async-trait = { version = "0.1", optional = true }
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1"
 hex = "0.4"
+# Portfolio heap profiler — drives `examples/profile_alloc.rs`.
+# Lower MSRV than `dhat`, ~60 ns/op overhead, dhat-compatible JSON
+# output. Only pulled in for the example binary.
+mod-alloc = "1"
+
+[[example]]
+name = "profile_alloc"
 
 [[bench]]
 name = "aead"
