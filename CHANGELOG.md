@@ -19,6 +19,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.0] - 2026-05-23
+
+The final pre-1.0 release. Ships the complete 1.0 documentation
+set. Source-level surface is unchanged from 0.10.0 — this is the
+phase that writes down the 1.0 contract so 1.0.0 itself can be
+the deliberate stable cut.
+
+### Added
+
+- **`docs/STABILITY-1.0.md`** — the 1.0 stability contract.
+  Lists every item that will be frozen at 1.0, the MSRV policy,
+  what can change in 1.x minor releases, what requires a 2.0,
+  and the migration policy for 1.x → 2.x.
+- **`docs/ARCHITECTURE.md`** — module layout, algorithm
+  dispatch pattern, trust boundaries, dependency rationale,
+  build profiles, what's intentionally out of scope.
+- **`docs/SECURITY.md`** — threat model (in/out of scope),
+  algorithm-choice rationale, vulnerability reporting
+  (`security@hivedb.com`), verification posture (test / fuzz /
+  KAT counts), and known caveats (Argon2id parameters age with
+  hardware; no nonce-misuse resistance in 1.0).
+- **`docs/PLATFORM-NOTES.md`** — per-platform hardware-
+  acceleration availability (AES-NI / SHA-NI / ARMv8 crypto
+  extensions / AVX-512), OS specifics for nonce sourcing, a
+  cross-compile guide, and the "pick this algorithm on this
+  platform" cheatsheet.
+- **`docs/FILE_FORMAT.md`** — full normative spec of the stream
+  wire format: header layout, per-chunk nonce derivation,
+  final-chunk-always invariant, validation rules, worked
+  examples, counter overflow handling, and the 1.x
+  compatibility commitment.
+
+### Changed
+
+- **Documentation set is now complete for 1.0.** Every doc the
+  ROADMAP listed as a 1.0 prerequisite is in place; the README
+  documentation index links all of them.
+- **README documentation section reorganised** to expose all
+  seven `docs/` files (API + STABILITY-1.0 + SECURITY +
+  ARCHITECTURE + PLATFORM-NOTES + PERFORMANCE + FILE_FORMAT)
+  plus CHANGELOG and per-release notes.
+
+### Security
+
+- **No security-surface changes.** All guarantees from 0.10.0
+  carry forward:
+  - Constant-time MAC verification via upstream comparators
+  - `decrypt_into` auth-failure scrub
+  - Redaction-clean errors (no key / plaintext / ciphertext bytes)
+  - STREAM-construction defeats truncation / reorder / duplicate
+  - Header AAD binding defeats header tampering
+
+### Phase-1.0 prerequisites still pending
+
+- **1 CPU-hour per `cargo-fuzz` target** (8 hours unattended) —
+  the last RC-style gate before 1.0.0 final. Smoke results from
+  0.9.0 (4.7 M iterations across 8 targets, 0 findings) carry
+  forward; the long soak validates stability under extended
+  pressure. Run loop documented in [`fuzz/README.md`](fuzz/README.md).
+- **External review window.** Open issues on
+  [github.com/jamesgober/crypt-io](https://github.com/jamesgober/crypt-io)
+  or email `security@hivedb.com` for crypto-sensitive findings.
+
+[0.11.0]: https://github.com/jamesgober/crypt-io/compare/v0.10.0...v0.11.0
+
+---
+
 ## [0.10.0] - 2026-05-23
 
 ### Added
@@ -758,5 +825,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Feature flags for AEAD (chacha20, aes-gcm), hashing (blake3, sha2), MAC (hmac, blake3 keyed), KDF (hkdf, argon2), stream encryption.
 - Dependencies wired: `mod-rand` for CSPRNG, `error-forge` for errors, optional `log-io` and `metrics-lib`.
 
-[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v0.11.0...HEAD
 [0.1.0]: https://github.com/jamesgober/crypt-io/releases/tag/v0.1.0

@@ -6,7 +6,7 @@
     <sub>
         <sup>ENCRYPTION SUITE FOR RUST</sup>
     </sub>
-</h1>
+</h1> 
 
 <p align="center">
     <a href="https://crates.io/crates/crypt-io"><img src="https://img.shields.io/crates/v/crypt-io.svg" alt="Crates.io"></a>
@@ -36,7 +36,7 @@
 
 ## Status
 
-**Current version:** `0.10.0` (2026-05-23). Pre-1.0 — the public API is allowed to evolve in breaking ways through the `0.x` series; `1.0.0` freezes it.
+**Current version:** `0.11.0` (2026-05-23). The final pre-1.0 release — ships the complete 1.0 documentation set (see [`docs/STABILITY-1.0.md`](docs/STABILITY-1.0.md)). 1.0.0 ships after the fuzz soak. Pre-1.0 — the public API is allowed to evolve in breaking ways through the `0.x` series; `1.0.0` freezes it.
 
 | Phase  | Surface                                          | Status |
 |--------|--------------------------------------------------|--------|
@@ -49,15 +49,15 @@
 | 0.7.0  | Stream / file encryption                         | shipped |
 | 0.8.0  | Performance verification (criterion benches)     | shipped |
 | 0.9.0  | Fuzz testing (8 `cargo-fuzz` targets, 4.7 M iterations clean) | shipped |
-| 0.10.0 | Allocation profile (`mod-alloc`) + zero-alloc `_into` paths (+38-55%) | **shipped** |
-| 0.11.0 | Docs + Release Candidate                         | next |
-| 1.0.0  | Stable Release                                   | planned |
+| 0.10.0 | Allocation profile (`mod-alloc`) + zero-alloc `_into` paths (+38-55%) | shipped |
+| 0.11.0 | 1.0 Documentation Set (STABILITY / ARCHITECTURE / SECURITY / PLATFORM-NOTES / FILE_FORMAT) | **shipped** |
+| 1.0.0  | Stable Release (after fuzz soak)            | next |
 
 See [`.dev/ROADMAP.md`](.dev/ROADMAP.md) for the full milestone plan and [`CHANGELOG.md`](CHANGELOG.md) for per-version detail. Per-release notes live under [`docs/release/`](docs/release).
 
 <hr>
 
-## What's in 0.8.0
+## What's in 0.11.0
 
 ### Symmetric AEAD encryption — `crypt_io::aead`
 
@@ -145,7 +145,7 @@ Measured numbers committed in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) on th
 
 ```toml
 [dependencies]
-crypt-io = "0.10"
+crypt-io = "0.11"
 ```
 
 Or:
@@ -342,11 +342,16 @@ Reproduce: `cargo bench --all-features` (numbers vary by hardware — see PERFOR
 
 ## Documentation
 
-- [`docs/API.md`](docs/API.md) — complete public-API reference for the current version.
-- [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) — measured throughput, reference-machine specs, contract-check matrix, parameter-choice guidance.
+- [`docs/API.md`](docs/API.md) — complete public-API reference.
+- [`docs/STABILITY-1.0.md`](docs/STABILITY-1.0.md) — what the 1.0 contract freezes, the MSRV policy, what can change in 1.x vs 2.0.
+- [`docs/SECURITY.md`](docs/SECURITY.md) — threat model, algorithm rationale, vulnerability reporting.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — module layout, algorithm dispatch, dependency rationale.
+- [`docs/PLATFORM-NOTES.md`](docs/PLATFORM-NOTES.md) — hardware acceleration per platform + cross-compile guide.
+- [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) — measured throughput, contract-check matrix, parameter-choice guidance.
+- [`docs/FILE_FORMAT.md`](docs/FILE_FORMAT.md) — stream wire format spec (frozen for the 1.x series).
 - [`CHANGELOG.md`](CHANGELOG.md) — per-version Added / Changed / Security entries.
-- [`docs/release/`](docs/release) — per-release notes (`v0.2.0.md`, `v0.3.0.md`, …).
-- [`.dev/ROADMAP.md`](.dev/ROADMAP.md) — milestone plan through 1.0.
+- [`docs/release/`](docs/release) — per-release notes (`v0.2.0.md`, `v0.3.0.md`, …, `v1.0.0-rc.1.md`).
+- [`.dev/ROADMAP.md`](.dev/ROADMAP.md) — milestone plan through 1.0 and beyond.
 
 <hr>
 
