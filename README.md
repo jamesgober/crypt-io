@@ -38,7 +38,7 @@
 
 ```toml
 [dependencies]
-crypt-io = "0.11"
+crypt-io = "1"
 ```
 
 Or:
@@ -243,7 +243,7 @@ Reproduce: `cargo bench --all-features` (numbers vary by hardware — see PERFOR
 - [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) — measured throughput, contract-check matrix, parameter-choice guidance.
 - [`docs/FILE_FORMAT.md`](docs/FILE_FORMAT.md) — stream wire format spec (frozen for the 1.x series).
 - [`CHANGELOG.md`](CHANGELOG.md) — per-version Added / Changed / Security entries.
-- [`docs/release/`](docs/release) — per-release notes (`v0.2.0.md`, `v0.3.0.md`, …, `v1.0.0-rc.1.md`).
+- [`docs/release/`](docs/release) — per-release notes (`v0.2.0.md`, `v0.3.0.md`, …, `v1.0.0.md`).
 - [`.dev/ROADMAP.md`](.dev/ROADMAP.md) — milestone plan through 1.0 and beyond.
 
 <hr>

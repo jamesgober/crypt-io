@@ -19,6 +19,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.0] - 2026-05-24
+
+**Stable release.** The 1.0 contract in
+[`docs/STABILITY-1.0.md`](docs/STABILITY-1.0.md) takes effect at
+this tag. Every item listed there keeps its signature and
+behaviour for the lifetime of the 1.x series; breaking changes
+from this point forward require a 2.0.
+
+Consolidated release notes at
+[`docs/release/v1.0.0.md`](docs/release/v1.0.0.md).
+
+### Added
+
+- **`docs/release/v1.0.0.md`** — consolidated 0.x → 1.0
+  release notes for first-time crates.io readers. Covers the
+  full surface, the 1.0 promise, performance numbers,
+  verification posture, the eleven-phase journey from
+  scaffold to stable, the acknowledgements, and the post-1.0
+  candidate list.
+
+### Changed
+
+- **Version bumped to `1.0.0`.** Cargo manifest +
+  README + ROADMAP all updated to reflect stable status.
+  Source-level surface is unchanged from 0.11.0 — this is
+  the promotion of an unchanged surface to stable, not a
+  feature release.
+- **Pre-1.0 framing dropped.** README no longer flags the API
+  as evolving; the [stability contract](docs/STABILITY-1.0.md)
+  is in force.
+
+### Security
+
+- **No security-surface changes.** All guarantees from the
+  0.x series carry forward to 1.0:
+  - Constant-time MAC verification via upstream comparators
+  - `decrypt_into` auth-failure scrub
+  - Redaction-clean errors (no key / plaintext / ciphertext / nonce / tag bytes)
+  - STREAM-construction defeats truncation / reorder / duplicate
+  - Header AAD binding defeats header tampering
+  - Fresh nonce per AEAD call (nonce reuse impossible through the public API)
+
+### Stability commitment
+
+- **The 1.x public API surface is frozen.** Match sites on
+  `Algorithm` and `Error` (both `#[non_exhaustive]`) MUST
+  include a wildcard arm to remain compatible across 1.x
+  minor releases.
+- **Wire formats are frozen** for the 1.x series — single-shot
+  AEAD output (`nonce || ciphertext || tag`) and the stream
+  frame format ([`docs/FILE_FORMAT.md`](docs/FILE_FORMAT.md)).
+- **MSRV is frozen** at Rust 1.85 for 1.x.
+- **Default features are frozen.** Removing a default feature
+  requires a 2.0.
+
+[1.0.0]: https://github.com/jamesgober/crypt-io/compare/v0.11.0...v1.0.0
+
+---
+
 ## [0.11.0] - 2026-05-23
 
 The final pre-1.0 release. Ships the complete 1.0 documentation
@@ -825,5 +884,5 @@ the deliberate stable cut.
 - Feature flags for AEAD (chacha20, aes-gcm), hashing (blake3, sha2), MAC (hmac, blake3 keyed), KDF (hkdf, argon2), stream encryption.
 - Dependencies wired: `mod-rand` for CSPRNG, `error-forge` for errors, optional `log-io` and `metrics-lib`.
 
-[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v1.0.0...HEAD
 [0.1.0]: https://github.com/jamesgober/crypt-io/releases/tag/v0.1.0
