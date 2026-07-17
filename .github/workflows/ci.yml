@@ -220,8 +220,8 @@ jobs:
       - run: cargo install cargo-deny --locked --version 0.19.8
       - run: cargo install cargo-audit --locked --version 0.22.1
       - run: cargo deny check
-      - run: cargo audit --deny warnings
+      - run: cargo audit --db "${RUNNER_TEMP}/cargo-audit-db" --deny warnings
       - run: cargo deny check
         working-directory: fuzz
-      - run: cargo audit --deny warnings
+      - run: cargo audit --db "${RUNNER_TEMP}/cargo-audit-db" --deny warnings
         working-directory: fuzz
