@@ -137,10 +137,9 @@ pub(super) fn decrypt_into(key: &[u8], wire: &[u8], aad: &[u8], out: &mut Vec<u8
     cipher
         .decrypt_in_place_detached(nonce, aad, out, tag)
         .map_err(|_| {
-            // On auth failure the in-place buffer may contain
-            // partially-decrypted plaintext. Scrub it so the failure
-            // path doesn't leave secret-ish bytes in the caller's
-            // buffer.
+            // This backend authenticates before decrypting, so `out` still
+            // contains ciphertext. Clear its caller-visible length anyway to
+            // keep the auth-failure output contract explicit.
             out.clear();
             Error::AuthenticationFailed
         })?;

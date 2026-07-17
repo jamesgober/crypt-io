@@ -1,7 +1,7 @@
 # crypt-io fuzz harness
 
-Eight `cargo-fuzz` targets covering every algorithm in `crypt-io`,
-plus the streaming frame format. Each target is a libfuzzer
+Thirteen `cargo-fuzz` targets cover every established algorithm, both
+authenticated storage formats, and strict Ed25519 verification. Each target is a libfuzzer
 harness that exercises the public API with arbitrary input bytes
 and asserts only that the library never panics, never enters an
 infinite loop, and never produces an unrecoverable failure.
@@ -18,6 +18,11 @@ infinite loop, and never produces an unrecoverable failure.
 | `hkdf` | `kdf::hkdf_sha256` / `hkdf_sha512` | Panic at boundary lengths, non-determinism |
 | `argon2_parse` | `kdf::argon2_verify` PHC parser + `argon2_hash_with_params` | Panic on malformed PHC, parameter rejection |
 | `stream_decrypt` | `StreamDecryptor` + round-trip | Frame-parse panic, chunk-boundary buffering bug |
+| `sealed_record_hostile` | `RecordCodec::open` | Panic, oversized allocation, unauthenticated plaintext on hostile bytes |
+| `sealed_record_mutation` | Authenticated `SealedRecord` mutations | Accepted ciphertext/header/context mutation |
+| `encrypted_stream_hostile` | `EncryptedStreamCodec::open` | Frame parser panic, missing-final acceptance, oversized allocation |
+| `encrypted_stream_mutation` | Authenticated stream mutations | Accepted reorder, truncation, chain, or final-frame mutation |
+| `ed25519_verify` | Strict detached Ed25519 verification | Parser panic or malformed key/signature acceptance |
 
 ## Requirements
 
@@ -52,7 +57,7 @@ cargo +nightly fuzz run aead_decrypt -- -max_total_time=60
 cargo +nightly fuzz run aead_decrypt -- -max_total_time=3600
 
 # All targets, ~5 minutes each
-for t in aead_decrypt aead_encrypt hash_blake3 hash_sha2 mac hkdf argon2_parse stream_decrypt; do
+for t in aead_decrypt aead_encrypt hash_blake3 hash_sha2 mac hkdf argon2_parse stream_decrypt sealed_record_hostile sealed_record_mutation encrypted_stream_hostile encrypted_stream_mutation ed25519_verify; do
     cargo +nightly fuzz run "$t" -- -max_total_time=300
 done
 

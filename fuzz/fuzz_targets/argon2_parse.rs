@@ -38,10 +38,10 @@ fuzz_target!(|input: Input| {
     // fuzzer can iterate fast; the real OWASP-default params are
     // not the interesting target here — `Params::new` is.
     let params = Argon2Params {
-        m_cost: (input.m_cost as u32).max(8).min(256),
-        t_cost: (input.t_cost as u32).max(1).min(2),
+        m_cost: (input.m_cost as u32).clamp(8, 256),
+        t_cost: (input.t_cost as u32).clamp(1, 2),
         p_cost: input.p_cost.max(1) as u32,
-        output_len: ((input.output_len as usize).max(4)).min(64),
+        output_len: (input.output_len as usize).clamp(4, 64),
     };
     if let Ok(phc) = argon2_hash_with_params(&input.password, params) {
         assert!(argon2_verify(&phc, &input.password).unwrap_or(false));

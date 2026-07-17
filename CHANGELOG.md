@@ -11,11 +11,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the opt-in `storage-v1` feature and `crypt_io::storage` module with
+  bounded, versioned authenticated record and stream formats, external key
+  providers, key rotation, scope migration, and incremental I/O.
+- Added the non-default, `no_std`-compatible `signature-ed25519` feature with a
+  strict detached-verification-only API over caller-supplied exact bytes. It
+  intentionally includes no signing, key generation, trust policy, format
+  parsing, canonicalization, or network surface.
+
 ### Changed
+
+- Upgraded the private RustCrypto AES-GCM, SHA-2, HMAC, and HKDF generations
+  used behind the frozen 1.0 API so storage key material and expanded cipher
+  state use the upstream zeroization implementations. Existing public APIs,
+  default features, and 1.0 wire formats are unchanged.
 
 ### Fixed
 
 ### Security
+
+- Storage headers, context, sequence, frame chain, and final-frame totals are
+  authenticated. Safe APIs generate nonce material internally, reject input
+  over format limits before allocation, and return no unauthenticated
+  plaintext. Caller-context constructors reject metadata above 64 KiB before
+  hashing, bounding pre-authentication CPU work.
+- Ed25519 verification uses the upstream strict path and collapses malformed
+  keys, weak points, malleability, wrong messages, and invalid signatures into
+  one opaque failure. RFC 8032 vectors and all 150 pinned C2SP/Wycheproof
+  Ed25519 cases pass through the public boundary.
 
 ---
 

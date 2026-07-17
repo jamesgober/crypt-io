@@ -203,11 +203,12 @@ Frozen free functions and types (feature-gated as documented in
 
 ## How this contract is enforced
 
-- **`cargo-public-api`** runs in CI on every PR. Any unintended
-  surface change blocks merge.
-- **`cargo-msrv`** verifies the MSRV declared in
-  `rust-toolchain.toml` actually builds the crate. Bumping MSRV
-  without bumping the minor version is a CI failure.
+- **`cargo-semver-checks`** compares every PR with the frozen `v1.0.0`
+  baseline. Any unintended public-surface incompatibility blocks merge.
+- **Rust 1.85.0 CI lanes** build, lint, and test the declared MSRV across the
+  feature profiles, while `rust-toolchain.toml` independently pins the
+  reproducible project build compiler. Bumping MSRV without bumping the minor
+  version is a CI failure.
 - **The `tests/into_apis.rs` and `tests/stream.rs` suites** lock
   in the wire-format invariants — any change that breaks
   cross-version decrypt fails the gate.

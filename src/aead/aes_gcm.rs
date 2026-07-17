@@ -26,8 +26,8 @@
 
 use alloc::vec::Vec;
 
-use aes_gcm::aead::{Aead, AeadInPlace, KeyInit, Payload};
-use aes_gcm::{Aes256Gcm, Key, Nonce};
+use aes_gcm::Aes256Gcm;
+use aes_gcm::aead::{Aead, AeadInOut, KeyInit, Nonce, Payload, Tag};
 
 use super::{AES_GCM_NONCE_LEN, AES_GCM_TAG_LEN, KEY_LEN};
 use crate::error::{Error, Result};
@@ -44,11 +44,11 @@ pub(super) fn encrypt(key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8
     mod_rand::tier3::fill_bytes(&mut nonce_bytes)
         .map_err(|_| Error::RandomFailure("mod_rand::tier3::fill_bytes"))?;
 
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let cipher = new_cipher(key)?;
+    let nonce = nonce_from_slice(&nonce_bytes)?;
     let ct_and_tag = cipher
         .encrypt(
-            nonce,
+            &nonce,
             Payload {
                 msg: plaintext,
                 aad,
@@ -85,10 +85,10 @@ pub(super) fn encrypt_into(
     out.extend_from_slice(&nonce_bytes);
     out.extend_from_slice(plaintext);
 
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let cipher = new_cipher(key)?;
+    let nonce = nonce_from_slice(&nonce_bytes)?;
     let tag = cipher
-        .encrypt_in_place_detached(nonce, aad, &mut out[AES_GCM_NONCE_LEN..])
+        .encrypt_inout_detached(&nonce, aad, (&mut out[AES_GCM_NONCE_LEN..]).into())
         .map_err(|_| Error::AuthenticationFailed)?;
     out.extend_from_slice(&tag);
     Ok(())
@@ -108,11 +108,11 @@ pub(super) fn decrypt(key: &[u8], wire: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
     }
 
     let (nonce_bytes, ct_and_tag) = wire.split_at(AES_GCM_NONCE_LEN);
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let cipher = new_cipher(key)?;
+    let nonce = nonce_from_slice(nonce_bytes)?;
     cipher
         .decrypt(
-            nonce,
+            &nonce,
             Payload {
                 msg: ct_and_tag,
                 aad,
@@ -141,13 +141,15 @@ pub(super) fn decrypt_into(key: &[u8], wire: &[u8], aad: &[u8], out: &mut Vec<u8
     out.reserve(ct.len());
     out.extend_from_slice(ct);
 
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    let nonce = Nonce::from_slice(nonce_bytes);
-    let tag = aes_gcm::Tag::from_slice(tag_bytes);
+    let cipher = new_cipher(key)?;
+    let nonce = nonce_from_slice(nonce_bytes)?;
+    let tag = Tag::<Aes256Gcm>::try_from(tag_bytes)
+        .map_err(|_| Error::InvalidCiphertext("tag length mismatch".into()))?;
     cipher
-        .decrypt_in_place_detached(nonce, aad, out, tag)
+        .decrypt_inout_detached(&nonce, aad, out.as_mut_slice().into(), &tag)
         .map_err(|_| {
-            // Scrub on auth failure — see chacha20.rs for rationale.
+            // Authentication precedes decryption; clear the caller-visible
+            // output length defensively to match the public contract.
             out.clear();
             Error::AuthenticationFailed
         })?;
@@ -164,6 +166,20 @@ fn check_key_len(key: &[u8]) -> Result<()> {
             actual: key.len(),
         })
     }
+}
+
+#[inline]
+fn new_cipher(key: &[u8]) -> Result<Aes256Gcm> {
+    Aes256Gcm::new_from_slice(key).map_err(|_| Error::InvalidKey {
+        expected: KEY_LEN,
+        actual: key.len(),
+    })
+}
+
+#[inline]
+fn nonce_from_slice(bytes: &[u8]) -> Result<Nonce<Aes256Gcm>> {
+    Nonce::<Aes256Gcm>::try_from(bytes)
+        .map_err(|_| Error::InvalidCiphertext("nonce length mismatch".into()))
 }
 
 #[cfg(test)]
@@ -192,11 +208,11 @@ mod tests {
         let expected_ct = hex_to_bytes("cea7403d4d606b6e074ec5d3baf39d18");
         let expected_tag = hex_to_bytes("d0d1c8a799996bf0265b98b5d48ab919");
 
-        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
-        let n = Nonce::from_slice(&nonce);
+        let cipher = new_cipher(&key).unwrap();
+        let n = nonce_from_slice(&nonce).unwrap();
         let got = cipher
             .encrypt(
-                n,
+                &n,
                 Payload {
                     msg: &plaintext,
                     aad: &[],
@@ -210,7 +226,7 @@ mod tests {
 
         let recovered = cipher
             .decrypt(
-                n,
+                &n,
                 Payload {
                     msg: &got,
                     aad: &[],
@@ -237,11 +253,11 @@ mod tests {
         );
         let expected_tag = hex_to_bytes("b094dac5d93471bdec1a502270e3cc6c");
 
-        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
-        let n = Nonce::from_slice(&nonce);
+        let cipher = new_cipher(&key).unwrap();
+        let n = nonce_from_slice(&nonce).unwrap();
         let got = cipher
             .encrypt(
-                n,
+                &n,
                 Payload {
                     msg: &plaintext,
                     aad: &[],
@@ -254,7 +270,7 @@ mod tests {
 
         let recovered = cipher
             .decrypt(
-                n,
+                &n,
                 Payload {
                     msg: &got,
                     aad: &[],

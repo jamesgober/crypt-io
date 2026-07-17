@@ -136,6 +136,21 @@ fn try_decrypt(key: &[u8; 32], wire: &[u8]) -> Result<Vec<u8>, Error> {
 }
 
 #[test]
+fn legacy_v1_aes_wire_decrypts_after_private_rustcrypto_upgrade() {
+    // Produced by the exact public v1.0.0 tag with key 0x42, AES-256-GCM,
+    // 1 KiB chunks, and plaintext `legacy-aes-v1`.
+    let wire = hex::decode(
+        "894352595054494f01010a0000000000f8c6f0625909d9008a8a86034d6d645a420108fe488fa80277761ee21be964519e2703aabe",
+    )
+    .unwrap();
+
+    assert_eq!(
+        try_decrypt(&[0x42_u8; 32], &wire).unwrap(),
+        b"legacy-aes-v1"
+    );
+}
+
+#[test]
 fn wrong_key_fails_authentication() {
     let (_key, wire) = encrypt_for_attack(Algorithm::ChaCha20Poly1305, b"sensitive payload");
     let wrong = [0xffu8; 32];

@@ -225,6 +225,18 @@ mod tests {
     }
 
     #[test]
+    fn legacy_v1_aes_header_matches_frozen_bytes() {
+        let header = build_header(Algorithm::Aes256Gcm, 12, &[1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(
+            header,
+            [
+                0x89, b'C', b'R', b'Y', b'P', b'T', b'I', b'O', 0x01, 0x01, 0x0c, 0, 0, 0, 0, 0, 1,
+                2, 3, 4, 5, 6, 7, 0,
+            ]
+        );
+    }
+
+    #[test]
     fn header_rejects_wrong_magic() {
         let mut h = build_header(Algorithm::ChaCha20Poly1305, 16, &[0u8; 7]);
         h[0] = b'X';

@@ -15,16 +15,17 @@
 
 `crypt-io` builds and tests on:
 
-| OS | Architectures | CI matrix |
+| OS | Architectures | Current CI evidence |
 |---|---|---|
-| Linux | x86_64, aarch64 | ubuntu-latest × stable + 1.85 (MSRV) |
-| macOS | x86_64, aarch64 | macos-latest × stable + 1.85 |
-| Windows | x86_64 | windows-latest × stable + 1.85 |
+| Linux | x86_64 native; x86_64 + aarch64 cross-check | `ubuntu-latest` × Rust 1.95.0 + 1.85.0; both targets at 1.85.0; Ubuntu forward lane at 1.97.1 |
+| macOS | runner-native; x86_64 + aarch64 cross-check | `macos-latest` × Rust 1.95.0 + 1.85.0; both targets at 1.85.0 |
+| Windows | runner-native; x86_64 + aarch64 cross-check | `windows-latest` × Rust 1.95.0 + 1.85.0; both targets at 1.85.0 |
 
-WSL2 is the canonical pre-CI gate (matches the Linux CI
-environment). All 0.x and 1.0 releases pass `cargo fmt` +
-`cargo clippy --all-features` + `cargo test --all-features` +
-`cargo doc --all-features` on every cell of the matrix.
+The native GitHub-hosted matrix runs `cargo fmt`, both default and all-feature
+Clippy/tests, and all-feature docs. A separate six-target MSRV matrix catches
+architecture-specific compilation failures. WSL2 results in historical release
+notes and performance reports are local evidence; WSL2 is not the current
+GitHub Actions Linux runner.
 
 <hr>
 

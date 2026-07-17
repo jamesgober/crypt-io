@@ -4,6 +4,7 @@ version = "0.0.0"
 publish = false
 edition = "2024"
 rust-version = "1.85"
+license = "Apache-2.0 OR MIT"
 
 # This crate is a libfuzzer harness only. It is NOT part of the
 # main `crypt-io` workspace — keep it as a standalone Cargo
@@ -20,6 +21,7 @@ arbitrary = { version = "1", features = ["derive"] }
 
 [dependencies.crypt-io]
 path = ".."
+version = "=1.1.0"
 # Pull every algorithm so each fuzz target can exercise the
 # full surface area. Disable default features explicitly so the
 # fuzz workspace doesn't pick up `proc-macro` dev-deps.
@@ -36,6 +38,8 @@ features = [
     "kdf-hkdf",
     "kdf-argon2",
     "stream",
+    "storage-v1",
+    "signature-ed25519",
 ]
 
 # Prevent `cargo` from picking up the main workspace's lockfile.
@@ -100,3 +104,38 @@ name = "stream_decrypt"
 path = "fuzz_targets/stream_decrypt.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "sealed_record_hostile"
+path = "fuzz_targets/sealed_record_hostile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sealed_record_mutation"
+path = "fuzz_targets/sealed_record_mutation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "encrypted_stream_hostile"
+path = "fuzz_targets/encrypted_stream_hostile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "encrypted_stream_mutation"
+path = "fuzz_targets/encrypted_stream_mutation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ed25519_verify"
+path = "fuzz_targets/ed25519_verify.rs"
+test = false
+doc = false
+bench = false

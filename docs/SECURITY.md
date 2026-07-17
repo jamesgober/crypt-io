@@ -73,17 +73,31 @@ The module documentation for `mac` and the digest comparison
 note in `hash` both explicitly forbid `tag == expected` /
 `digest == expected` against secret-equivalent values.
 
+### Detached signature integrity
+
+- The optional `signature-ed25519` boundary verifies the exact message bytes
+  supplied by the caller. It performs no implicit hashing, canonicalization,
+  or format conversion.
+- Verification uses the upstream strict Ed25519 path. Non-canonical scalars
+  and points, weak public keys, malformed encodings, wrong keys, changed
+  messages, and invalid signatures are rejected.
+- All cryptographic rejection reasons collapse into one opaque
+  `VerificationFailed` result. Fixed-width key and signature length errors are
+  rejected before curve decoding.
+- Public-key trust, revocation, expiry, rollback protection, and the definition
+  of the signed byte sequence remain caller-owned policy. See
+  [`SIGNATURES.md`](SIGNATURES.md).
+
 ### Memory hygiene
 
 - **No key bytes in errors.** Every `Error` variant carries
   lengths, names, or `&'static str` reasons only — never key
   material, plaintext, ciphertext, nonces, or tag bytes.
   Verified by `kdf::argon2_impl::tests::error_messages_redact_password`.
-- **`decrypt_into` scrubs on auth failure.** The upstream
-  `decrypt_in_place_detached` writes decrypted bytes to the
-  buffer *first* and then verifies the tag; on tag mismatch the
-  wrapper clears the buffer before returning so partially-
-  decrypted plaintext can't leak. Verified by
+- **`decrypt_into` clears on auth failure.** The pinned RustCrypto AES-GCM and
+  ChaCha20-Poly1305 backends authenticate before decrypting, so a tag failure
+  returns no decrypted plaintext. The wrapper also clears the caller-visible
+  output length defensively before returning. Verified by
   `tests/into_apis.rs::decrypt_into_scrubs_on_auth_failure`.
 - **`zeroize`** (default feature) zeros internal scratch buffers
   on drop where they hold key-equivalent or plaintext material.
@@ -131,6 +145,14 @@ note in `hash` both explicitly forbid `tag == expected` /
   recommended parameter set by default; tuneable via
   `Argon2Params` for callers with different cost targets.
 
+### Detached verification: Ed25519 (opt-in)
+
+- **Ed25519** (RFC 8032) is available only as strict detached verification.
+  The exact-pinned upstream implementation is compiled without its default or
+  signing-adjacent convenience features.
+- The boundary intentionally provides no signing keys, key generation, format
+  parsing, trust policy, downloads, or canonicalization.
+
 ### Explicitly NOT shipped
 
 - **No SHA-1, MD5** — broken.
@@ -157,6 +179,8 @@ and confidentiality against:
 - Mass / drag-net surveillance
 - An attacker who flips bits in a ciphertext stream and
   observes the receiver's response
+- An attacker who changes a message, public key, or detached Ed25519 signature
+  before it crosses the strict optional verification boundary
 
 ### Out of scope
 
@@ -177,7 +201,10 @@ and confidentiality against:
   effective work). Not currently a threat; not in scope for
   1.0.
 - **Post-quantum asymmetric** algorithms (Kyber, Dilithium) —
-  this is a symmetric-only library. Use a focused PQ crate.
+  not provided. Use a focused PQ crate.
+- **Signature trust policy and signing** — the optional Ed25519 boundary only
+  verifies exact bytes against the caller-selected key. It does not establish
+  whether that key should be trusted or create signatures.
 
 ### Trust boundaries
 
@@ -189,27 +216,30 @@ and confidentiality against:
   encrypt it; we don't sanitize it.
 - **The `ciphertext` you pass to `decrypt` is attacker-controlled
   in the threat model.** We must never panic on it, must always
-  surface tag failures as `AuthenticationFailed`, must scrub
-  partial decryptions from the output buffer on failure (the
-  `_into` paths do this).
-- **The OS RNG (`mod_rand::tier3`) is trusted.** Failure to
-  produce randomness is a `RandomFailure` error — we don't
-  fall back to a non-CSPRNG.
+  surface tag failures as `AuthenticationFailed`, and must not expose
+  unauthenticated plaintext. The pinned backends authenticate before
+  decrypting; the `_into` paths also clear caller-visible output on failure.
+- **The OS RNG is trusted.** Frozen 1.0 APIs obtain entropy through
+  `mod_rand::tier3` and report `Error::RandomFailure`; the additive storage
+  formats call exact-pinned `getrandom` 0.4.3 directly and report
+  `CryptError::EntropyUnavailable`. Neither boundary falls back to a
+  non-CSPRNG.
 
 <hr>
 
 ## Verification & testing posture
 
-Coverage as of 1.0:
+Coverage as of the additive 1.1 candidate:
 
 | Category | Count | Surface |
 |---|---:|---|
-| Unit tests | 126 | All modules |
-| Integration tests | 38 | Streaming, `_into` APIs |
-| Doctests | 33 | Every public item has a runnable example |
-| `cargo-fuzz` targets | 8 | Every algorithm + stream frame format |
-| Pre-release fuzz iterations | 4.7 M | 15-second smoke per target — 0 findings |
+| Unit tests | 154 | Established algorithms + authenticated storage internals |
+| Integration tests | 130 | Legacy APIs, storage boundaries, Ed25519 contracts |
+| Doctests | 40 | Public contracts and compile-fail capability checks |
+| `cargo-fuzz` targets | 13 | Established algorithms, storage formats, Ed25519 verification |
+| 1.0 pre-release fuzz iterations | 4.7 M | Legacy eight-target smoke — 0 findings |
 | Spec-pinned KATs | 17+ | RFC 8439 (ChaCha20-Poly1305), NIST GCM TC14+15 (AES-GCM), FIPS 180-4 B.1+B.2+C.1+C.2 + empty (SHA-2), RFC 4231 TC1+TC2 × SHA-256/SHA-512 (HMAC), RFC 5869 TC1+TC3 (HKDF), BLAKE3 official + BLAKE3-keyed empty |
+| C2SP/Wycheproof cases | 334 | AES-256-GCM, HKDF-SHA256, HMAC-SHA256, Ed25519 verification |
 
 Per-release [`docs/release/`](release/) notes document the
 verification matrix at each phase. The full per-suite measured
@@ -219,13 +249,17 @@ performance numbers are in [`PERFORMANCE.md`](PERFORMANCE.md).
 
 ## Reproducibility
 
-- **`rust-toolchain.toml`** pins the MSRV exactly.
+- **`rust-toolchain.toml`** pins the reproducible project compiler to Rust
+  1.95.0; the declared Rust 1.85.0 MSRV is an independent CI lane.
 - **`Cargo.lock`** is committed.
-- **All test vectors** are pinned as byte-array constants in
-  source, not generated at test time.
-- **CI** runs the full gate (fmt + clippy + test + doc) on
-  Linux + macOS + Windows × stable + MSRV. Pre-CI gate is
-  WSL2 Ubuntu (the same Linux environment CI uses).
+- **Test vectors** are either pinned byte-array constants in source or exact
+  official C2SP/Wycheproof JSON fixtures with a commit pin and recorded
+  SHA-256 checksums; none are generated at test time.
+- **CI** runs fmt, Clippy, tests, and docs on GitHub-hosted Ubuntu, macOS, and
+  Windows at exact Rust 1.95.0 and the 1.85.0 MSRV. Six Apple/Linux/Windows
+  target triples are cross-checked at the MSRV, and Ubuntu has an exact Rust
+  1.97.1 forward-compatibility lane. Historical WSL2 release and benchmark
+  evidence is local evidence, not the GitHub Actions Linux environment.
 - **The fuzz corpus** lives at `fuzz/corpus/` (per-target);
   any future findings get committed there so future runs
   always exercise them.

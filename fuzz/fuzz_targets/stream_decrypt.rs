@@ -27,28 +27,39 @@ struct Input {
     use_aes: bool,
 }
 
+fn exercise_attacker_stream(input: &Input) {
+    if input.header.len() < HEADER_LEN {
+        return;
+    }
+    let Ok(mut dec) = StreamDecryptor::new(&input.key, &input.header[..HEADER_LEN]) else {
+        return;
+    };
+
+    // Feed body in arbitrary chunks. Must not panic.
+    let mut cursor = 0usize;
+    for &split in &input.chunk_splits {
+        if cursor >= input.body.len() {
+            break;
+        }
+        let max = input.body.len() - cursor;
+        let take = if max == 0 {
+            0
+        } else {
+            (split as usize) % max + 1
+        };
+        let end = (cursor + take).min(input.body.len());
+        let _ = dec.update(&input.body[cursor..end]);
+        cursor = end;
+    }
+    // Finalise. Either error or success — never panic.
+    let _ = dec.finalize();
+}
+
 fuzz_target!(|input: Input| {
     // ---- Attacker-controlled stream ----
     // Skip if header isn't even close to long enough — that's a
     // boring uninteresting input.
-    if input.header.len() >= HEADER_LEN
-        && let Ok(mut dec) = StreamDecryptor::new(&input.key, &input.header[..HEADER_LEN])
-    {
-        // Feed body in arbitrary chunks. Must not panic.
-        let mut cursor = 0usize;
-        for &split in &input.chunk_splits {
-            if cursor >= input.body.len() {
-                break;
-            }
-            let max = input.body.len() - cursor;
-            let take = if max == 0 { 0 } else { (split as usize) % max + 1 };
-            let end = (cursor + take).min(input.body.len());
-            let _ = dec.update(&input.body[cursor..end]);
-            cursor = end;
-        }
-        // Finalise. Either error or success — never panic.
-        let _ = dec.finalize();
-    }
+    exercise_attacker_stream(&input);
 
     // ---- Round-trip with arbitrary chunk splits ----
     // Only valid 32-byte keys are interesting for the round-trip.
