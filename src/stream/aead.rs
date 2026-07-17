@@ -9,6 +9,12 @@
 
 use alloc::vec::Vec;
 
+use aes_gcm::Aes256Gcm;
+use aes_gcm::aead::{
+    Aead as AesAead, AeadInOut as AesAeadInOut, KeyInit as AesKeyInit, Nonce as AesNonce,
+    Payload as AesPayload, Tag as AesTag,
+};
+
 use crate::aead::Algorithm;
 use crate::error::{Error, Result};
 
@@ -40,14 +46,12 @@ pub(super) fn encrypt_chunk(
                 .map_err(|_| Error::AuthenticationFailed)
         }
         Algorithm::Aes256Gcm => {
-            use aes_gcm::aead::{Aead, KeyInit, Payload};
-            use aes_gcm::{Aes256Gcm, Key as AesKey, Nonce as AesNonce};
-
-            let cipher = Aes256Gcm::new(AesKey::<Aes256Gcm>::from_slice(key));
+            let cipher = new_aes_cipher(key)?;
+            let nonce = aes_nonce(nonce)?;
             cipher
                 .encrypt(
-                    AesNonce::from_slice(nonce),
-                    Payload {
+                    &nonce,
+                    AesPayload {
                         msg: plaintext,
                         aad,
                     },
@@ -84,12 +88,10 @@ pub(super) fn encrypt_chunk_into(
             out.extend_from_slice(&tag);
         }
         Algorithm::Aes256Gcm => {
-            use aes_gcm::aead::{AeadInPlace, KeyInit};
-            use aes_gcm::{Aes256Gcm, Key as AesKey, Nonce as AesNonce};
-
-            let cipher = Aes256Gcm::new(AesKey::<Aes256Gcm>::from_slice(key));
+            let cipher = new_aes_cipher(key)?;
+            let nonce = aes_nonce(nonce)?;
             let tag = cipher
-                .encrypt_in_place_detached(AesNonce::from_slice(nonce), aad, out)
+                .encrypt_inout_detached(&nonce, aad, out.as_mut_slice().into())
                 .map_err(|_| Error::AuthenticationFailed)?;
             out.extend_from_slice(&tag);
         }
@@ -99,8 +101,9 @@ pub(super) fn encrypt_chunk_into(
 
 /// Decrypt one chunk into a caller-supplied buffer. Buffer is cleared
 /// and grown to `ciphertext_and_tag.len() - tag_len` bytes (the
-/// recovered plaintext). On authentication failure the buffer is
-/// scrubbed before returning.
+/// recovered plaintext). The pinned backends authenticate before decrypting;
+/// on authentication failure the caller-visible output length is also cleared
+/// defensively before returning.
 pub(super) fn decrypt_chunk_into(
     algorithm: Algorithm,
     key: &[u8; 32],
@@ -136,13 +139,12 @@ pub(super) fn decrypt_chunk_into(
                 })?;
         }
         Algorithm::Aes256Gcm => {
-            use aes_gcm::aead::{AeadInPlace, KeyInit};
-            use aes_gcm::{Aes256Gcm, Key as AesKey, Nonce as AesNonce};
-
-            let cipher = Aes256Gcm::new(AesKey::<Aes256Gcm>::from_slice(key));
-            let tag = aes_gcm::Tag::from_slice(tag_bytes);
+            let cipher = new_aes_cipher(key)?;
+            let nonce = aes_nonce(nonce)?;
+            let tag = AesTag::<Aes256Gcm>::try_from(tag_bytes)
+                .map_err(|_| Error::InvalidCiphertext("tag length mismatch".into()))?;
             cipher
-                .decrypt_in_place_detached(AesNonce::from_slice(nonce), aad, out, tag)
+                .decrypt_inout_detached(&nonce, aad, out.as_mut_slice().into(), &tag)
                 .map_err(|_| {
                     out.clear();
                     Error::AuthenticationFailed
@@ -178,14 +180,12 @@ pub(super) fn decrypt_chunk(
                 .map_err(|_| Error::AuthenticationFailed)
         }
         Algorithm::Aes256Gcm => {
-            use aes_gcm::aead::{Aead, KeyInit, Payload};
-            use aes_gcm::{Aes256Gcm, Key as AesKey, Nonce as AesNonce};
-
-            let cipher = Aes256Gcm::new(AesKey::<Aes256Gcm>::from_slice(key));
+            let cipher = new_aes_cipher(key)?;
+            let nonce = aes_nonce(nonce)?;
             cipher
                 .decrypt(
-                    AesNonce::from_slice(nonce),
-                    Payload {
+                    &nonce,
+                    AesPayload {
                         msg: ciphertext_and_tag,
                         aad,
                     },
@@ -193,4 +193,18 @@ pub(super) fn decrypt_chunk(
                 .map_err(|_| Error::AuthenticationFailed)
         }
     }
+}
+
+#[inline]
+fn new_aes_cipher(key: &[u8; 32]) -> Result<Aes256Gcm> {
+    Aes256Gcm::new_from_slice(key).map_err(|_| Error::InvalidKey {
+        expected: 32,
+        actual: key.len(),
+    })
+}
+
+#[inline]
+fn aes_nonce(bytes: &[u8; NONCE_LEN]) -> Result<AesNonce<Aes256Gcm>> {
+    AesNonce::<Aes256Gcm>::try_from(bytes.as_slice())
+        .map_err(|_| Error::InvalidCiphertext("nonce length mismatch".into()))
 }

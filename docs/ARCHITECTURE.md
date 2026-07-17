@@ -34,17 +34,19 @@ crypt-io/
 │   │   ├── mod.rs        ← Module docs, re-exports
 │   │   ├── hkdf_impl.rs  ← HKDF-SHA256 / HKDF-SHA512
 │   │   └── argon2_impl.rs← Argon2id + Argon2Params + PHC parse/verify
-│   └── stream/           ← Chunked AEAD with STREAM construction
-│       ├── mod.rs        ← Re-exports, public constants
-│       ├── frame.rs      ← Header layout + per-chunk nonce derivation
-│       ├── aead.rs       ← Per-chunk encrypt/decrypt primitives
-│       ├── encryptor.rs  ← StreamEncryptor (with _into variants)
-│       ├── decryptor.rs  ← StreamDecryptor (with _into variants)
-│       └── file.rs       ← encrypt_file / decrypt_file (std-only)
-├── benches/              ← criterion benches (aead, hash, mac, kdf, stream)
-├── examples/             ← runnable examples (aead, mac, kdf, stream, profile_alloc)
-├── fuzz/                 ← cargo-fuzz workspace (8 targets)
-├── tests/                ← integration tests (stream, into_apis)
+│   ├── stream/           ← Legacy chunked AEAD with STREAM construction
+│   │   ├── mod.rs        ← Re-exports, public constants
+│   │   ├── frame.rs      ← Header layout + per-chunk nonce derivation
+│   │   ├── aead.rs       ← Per-chunk encrypt/decrypt primitives
+│   │   ├── encryptor.rs  ← StreamEncryptor (with _into variants)
+│   │   ├── decryptor.rs  ← StreamDecryptor (with _into variants)
+│   │   └── file.rs       ← encrypt_file / decrypt_file (std-only)
+│   ├── storage/          ← Opt-in versioned records + chained streams
+│   └── signature.rs      ← Opt-in strict detached Ed25519 verification
+├── benches/              ← criterion benches, including storage + verification
+├── examples/             ← runnable examples, including sealed storage records
+├── fuzz/                 ← independent cargo-fuzz workspace (13 targets)
+├── tests/                ← legacy, storage, signature, and vector contracts
 └── docs/                 ← public docs (API, PERFORMANCE, SECURITY, this file, ...)
 ```
 
@@ -131,6 +133,27 @@ output buffer to avoid per-call allocation; useful for the
 encrypt path where files can be large and `Vec` growth becomes a
 hot loop.
 
+### `storage/` — versioned authenticated persistence boundaries
+
+The non-default `storage-v1` feature is separate from the frozen legacy stream
+format. It provides bounded records and buffered or incremental encrypted
+streams with explicit versioning, external key-provider leases, purpose and
+space separation, authenticated caller context, key rotation, mandatory final
+frames, and frame-chain validation. The owning product stores keys and enforces
+authorization; this module owns only cryptographic framing and fail-closed
+validation. The complete wire and integration contract is in
+[`STORAGE_FORMATS.md`](STORAGE_FORMATS.md). Caller-context constructors reject
+more than 64 KiB before hashing, bounding pre-authentication CPU work.
+
+### `signature.rs` — strict detached verification only
+
+The non-default `signature-ed25519` feature accepts fixed-width raw public keys
+and signatures plus caller-defined exact message bytes. It uses the upstream
+strict Ed25519 verifier and maps every key-decoding or verification rejection
+to one opaque error. The module contains no signing, key generation, parser,
+trust-policy, download, or canonicalization capability and does not force
+`std`. See [`SIGNATURES.md`](SIGNATURES.md).
+
 <hr>
 
 ## Algorithm dispatch
@@ -197,6 +220,10 @@ tampering, truncation, reorder — all surface as the same
 variant. Splitting them into distinct variants would let an
 attacker tell how close they are to a forgery.
 
+The opt-in storage and signature modules define their own typed,
+`#[non_exhaustive]` errors so their additive contracts do not change the frozen
+root `Error` enum or any 1.0 match behavior.
+
 <hr>
 
 ## Dependency rationale
@@ -207,13 +234,17 @@ Every dependency is a deliberate choice. The full list:
 |---|---|
 | `chacha20poly1305` | ChaCha20-Poly1305 primitive. RustCrypto. |
 | `aes-gcm` | AES-256-GCM primitive with AES-NI / ARMv8 dispatch. RustCrypto. |
+| `aes`, `polyval` | Feature-unification pins that zeroize the effective AES and POLYVAL expanded state. |
 | `blake3` | BLAKE3 hash + XOF + keyed. Official BLAKE3 crate. |
 | `sha2` | SHA-256 / SHA-512 with SHA-NI dispatch. RustCrypto. |
 | `hmac` | Generic HMAC with constant-time `verify_slice`. RustCrypto. |
 | `hkdf` | RFC 5869 HKDF. RustCrypto. |
 | `argon2` | Argon2id with PHC framework. RustCrypto. |
-| `mod-rand` | Portfolio CSPRNG (Tier 3 = OS-backed). |
-| `error-forge` | Portfolio error framework. Declared but minimally used in 1.0 — manual `Display + Error` impls satisfy current needs. |
+| `mod-rand` | Frozen 1.0 portfolio CSPRNG boundary for legacy nonces and salts. |
+| `getrandom` *(opt)* | Exact-pinned operating-system entropy for authenticated storage formats. |
+| `subtle` *(opt)* | Constant-time comparisons for sensitive storage bindings and verified plaintext. |
+| `ed25519-dalek` *(opt)* | Strict, verification-only Ed25519 primitive with upstream defaults disabled. |
+| `error-forge` | Portfolio typed-error metadata for the additive storage and signature boundaries. |
 | `zeroize` *(opt)* | Zero-on-drop wrappers (default on). |
 | `log-io` *(opt)* | Operation logging. Not enabled by default. |
 | `metrics-lib` *(opt)* | Performance instrumentation. Not enabled by default. |
@@ -223,7 +254,8 @@ Dev dependencies for tests + benches + the alloc profile:
 
 - `criterion` — benches
 - `proptest` — property tests
-- `hex` — test vector parsing
+- `hex`, `hex-literal` — test vector parsing and fixed known-answer vectors
+- `serde`, `serde_json` — offline parsing of pinned Project Wycheproof fixtures
 - `mod-alloc` — heap profiler for `examples/profile_alloc.rs`
 
 <hr>
@@ -254,12 +286,14 @@ throughput on the AEAD paths.
 
 Documented elsewhere but worth restating in one place:
 
-- **No asymmetric crypto** (RSA, ECDSA, Ed25519, X25519). Use
-  the relevant focused crate.
+- **No general-purpose asymmetric suite, signing, or key generation**. The
+  optional Ed25519 surface verifies detached signatures only; use a focused
+  crate for every other asymmetric operation.
 - **No PGP / GPG**. Use `sequoia-openpgp`.
 - **No TLS**. Use `rustls`.
-- **No RNG surface**. Use `mod-rand` directly — this crate uses
-  it internally for nonces/salts only.
+- **No general-purpose RNG surface**. Use `mod-rand` directly. Frozen 1.0 APIs
+  retain `mod-rand`; authenticated storage uses exact-pinned `getrandom`
+  internally and never accepts caller-selected nonces.
 - **No `Crypt::with_key`** that stores a key. Keys are per-call
   arguments by design; key storage is `key-vault`'s job.
 - **No `hash::*::with_key`**. Keyed hashing lives in `mac::*`.

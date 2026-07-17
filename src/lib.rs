@@ -30,20 +30,23 @@
 //! - **Hashing** (BLAKE3, SHA-256, SHA-512)
 //! - **MAC** (HMAC-SHA256, BLAKE3 keyed)
 //! - **KDF** (HKDF for key derivation, Argon2id for password hashing)
+//! - **Strict detached Ed25519 verification** (opt-in, verification only)
 //!
 //! Out of scope (use other crates):
 //!
 //! - **Random utilities** -> use `mod-rand`
 //! - **UUID generation** -> use `id-forge`
-//! - **Asymmetric crypto** (RSA, ECDSA, Ed25519) -> deferred to separate crate
+//! - **General-purpose asymmetric crypto and signing** -> use a focused crate
 //! - **PGP/GPG** -> use `sequoia-openpgp`
 //! - **TLS** -> use `rustls`
 //! - **Key storage** -> use `key-vault`
 //!
 //! # Status
 //!
-//! Early scaffolding. Public API not yet defined. See [the repository](https://github.com/jamesgober/crypt-io)
-//! and `.dev/ROADMAP.md` for the milestone plan.
+//! The established 1.x root API and wire formats follow the frozen contract in
+//! [`docs/STABILITY-1.0.md`](https://github.com/jamesgober/crypt-io/blob/main/docs/STABILITY-1.0.md).
+//! Authenticated storage formats and detached-signature verification are
+//! additive, non-default features with separately versioned contracts.
 //!
 //! # License
 //!
@@ -93,6 +96,14 @@ pub mod kdf;
 
 #[cfg(feature = "stream")]
 pub mod stream;
+
+/// Versioned authenticated formats for storage engines and object stores.
+#[cfg(feature = "storage-v1")]
+pub mod storage;
+
+/// Strict detached-signature verification over caller-supplied exact bytes.
+#[cfg(feature = "signature-ed25519")]
+pub mod signature;
 
 pub use crate::error::{Error, Result};
 

@@ -20,7 +20,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use hkdf::Hkdf;
-use sha2::{Sha256, Sha512};
+use sha2::{Sha256, Sha512, digest::zeroize::Zeroize};
 
 use crate::error::{Error, Result};
 
@@ -64,7 +64,11 @@ pub fn hkdf_sha256(ikm: &[u8], salt: Option<&[u8]>, info: &[u8], len: usize) -> 
     if len > HKDF_MAX_OUTPUT_SHA256 {
         return Err(Error::Kdf("hkdf-sha256 output > 255 * 32 bytes"));
     }
-    let hk = Hkdf::<Sha256>::new(salt, ikm);
+    // `Hkdf::new` discards its returned PRK as a plain digest output. Extract
+    // explicitly so the transient master-derived PRK is wiped immediately
+    // after the zeroizing HKDF state has been constructed.
+    let (mut prk, hk) = Hkdf::<Sha256>::extract(salt, ikm);
+    prk.zeroize();
     let mut out = vec![0u8; len];
     hk.expand(info, &mut out)
         .map_err(|_| Error::Kdf("hkdf-sha256 expand"))?;
@@ -97,7 +101,9 @@ pub fn hkdf_sha512(ikm: &[u8], salt: Option<&[u8]>, info: &[u8], len: usize) -> 
     if len > HKDF_MAX_OUTPUT_SHA512 {
         return Err(Error::Kdf("hkdf-sha512 output > 255 * 64 bytes"));
     }
-    let hk = Hkdf::<Sha512>::new(salt, ikm);
+    // Keep the SHA-512 path under the same explicit transient-PRK hygiene.
+    let (mut prk, hk) = Hkdf::<Sha512>::extract(salt, ikm);
+    prk.zeroize();
     let mut out = vec![0u8; len];
     hk.expand(info, &mut out)
         .map_err(|_| Error::Kdf("hkdf-sha512 expand"))?;

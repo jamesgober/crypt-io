@@ -451,11 +451,11 @@ subsequent call reuses the buffer's capacity. Verified by
 which runs 10,000 iterations under `mod-alloc` and prints
 allocation counts.
 
-**`decrypt_*_into` auth-failure scrub.** On
-`Error::AuthenticationFailed` the output buffer is cleared
-before returning, so partially-decrypted plaintext from the
-upstream `decrypt_in_place_detached` call can't leak to the
-caller.
+**`decrypt_*_into` auth-failure clear.** RustCrypto's pinned
+AES-GCM and ChaCha20-Poly1305 backends authenticate before decrypting, so a
+tag failure leaves the copied ciphertext unchanged. The wrapper also clears
+the caller-visible output length defensively before returning
+`Error::AuthenticationFailed`.
 
 **When to use:** any hot-path encrypt loop. The `Vec`-returning
 methods are kept for ergonomics — use them when you'd discard

@@ -441,9 +441,9 @@ impl Crypt {
     /// the caller-supplied `out` buffer. The buffer is cleared first
     /// and then grown as needed.
     ///
-    /// On authentication failure the buffer is cleared (any
-    /// partially-decrypted bytes are scrubbed before returning) so
-    /// callers can't accidentally observe unverified plaintext.
+    /// The pinned backends authenticate before decrypting. On authentication
+    /// failure the caller-visible output length is also cleared defensively,
+    /// so callers cannot observe unauthenticated plaintext.
     ///
     /// Equivalent to [`decrypt`](Self::decrypt) but does not allocate
     /// a fresh `Vec` per call. New in 0.10.0.

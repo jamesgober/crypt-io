@@ -29,7 +29,7 @@
 </p>
 
 <p>
-    Unlike monolithic crypto crates that try to be everything, <strong>crypt-io</strong> stays focused. No asymmetric crypto, no PGP, no TLS — those are different problems best solved by purpose-built crates. <strong>crypt-io</strong> is the foundation primitive that handles the 95% case with a clean API where the easy path is also the secure path: constant-time verification for MACs, fresh nonces per call for AEAD, redaction-clean errors, and a hash module that deliberately won't let you accidentally use a raw hash as a MAC.
+    Unlike monolithic crypto crates that try to be everything, <strong>crypt-io</strong> stays focused. It does not provide a general-purpose asymmetric suite, PGP, or TLS. Its one public-key boundary is an opt-in, verification-only Ed25519 API for exact pre-authenticated bytes. <strong>crypt-io</strong> keeps the easy path secure: constant-time verification for MACs, fresh nonces per call for AEAD, strict detached-signature verification, redaction-clean errors, and a hash module that deliberately won't let you accidentally use a raw hash as a MAC.
 </p>
 
 <hr>
@@ -165,13 +165,85 @@ Chunked AEAD with the STREAM construction — works for files of any size, detec
 
 See [`docs/API.md`](docs/API.md) for the full reference.
 
+### Authenticated storage formats (opt-in)
+
+The non-default `storage-v1` feature adds a separate storage-engine boundary
+without changing the established root API or legacy stream format:
+
+```toml
+[dependencies]
+crypt-io = { version = "1.1", features = ["storage-v1"] }
+```
+
+`crypt_io::storage::RecordCodec` seals bounded records.
+`EncryptedStreamCodec` and its incremental reader/writer seal larger snapshots
+with authenticated frame chaining and a mandatory final frame. Both formats
+bind an opaque storage space, purpose, caller context, and sequence to keys
+leased from an application-owned `KeyProvider`; the crate does not store
+master keys or own trust policy. Context constructors are fallible and cap
+metadata at 64 KiB so hostile input cannot trigger unbounded hashing. See the executable
+[`sealed_record`](examples/sealed_record.rs) example and the
+[`STORAGE_FORMATS`](docs/STORAGE_FORMATS.md) security and integration contract.
+
+Whole-object freshness remains host-owned. An old valid record or stream is
+accepted whenever the host reuses its old expected logical sequence and
+context; fresh nonces, AEAD authentication, and key generation do not prevent
+rollback. Persist and protect a monotonic object or snapshot sequence, bind it
+through `RecordContext` or `StreamContext`, and atomically advance it with the
+durable publication of the new object.
+
+The `KeyProvider` mapping is also a durability contract: each
+(`KeyScope`, `KeyId`, `KeyGeneration`) tuple must identify exactly one master
+secret for as long as any ciphertext may reference it. Never reuse a descriptor
+for new key bytes, keep active generations monotonic per scope, and retain
+historical mappings until verified migration and reference elimination are
+durable. Every same-scope replacement must use independently generated master
+material distinct from the source and prior generations. A normal seal
+operation cannot detect descriptor reuse, which can make older objects
+unrecoverable. Cross-scope migration does not reject equal master material;
+whether scopes may share a master key is an explicit host key-policy decision.
+
+### Strict detached Ed25519 verification (opt-in)
+
+The non-default `signature-ed25519` feature verifies a raw 64-byte detached
+signature against a raw 32-byte Ed25519 public key and the exact message bytes
+supplied by the caller:
+
+```toml
+[dependencies]
+crypt-io = { version = "1.1", default-features = false, features = ["signature-ed25519"] }
+```
+
+```rust
+use crypt_io::signature::{
+    Ed25519PublicKey, Ed25519Signature, verify_ed25519_detached,
+};
+
+# let public_key_bytes = [0_u8; 32];
+# let signature_bytes = [0_u8; 64];
+# let exact_manifest_bytes = b"example";
+let public_key = Ed25519PublicKey::new(public_key_bytes);
+let signature = Ed25519Signature::new(signature_bytes);
+let result = verify_ed25519_detached(
+    &public_key,
+    exact_manifest_bytes,
+    &signature,
+);
+# let _ = result;
+```
+
+The caller owns trust-root selection, byte canonicalization, format parsing,
+and policy. The feature has no signing, key-generation, network, PKCS#8, or
+PEM surface and does not require `std`. See
+[`SIGNATURES`](docs/SIGNATURES.md) for the full boundary contract.
+
 <hr>
 
 ## Design philosophy
 
 **crypt-io** is intentionally focused:
 
-- **One job:** symmetric crypto. Done well.
+- **One job:** hardened data-protection and verification boundaries. Done well.
 - **No reinvention.** Primitives come from RustCrypto and BLAKE3 (battle-tested, widely audited).
 - **Simple API.** Encrypt in two lines. Hash in one. The easy path is the secure path.
 - **Algorithm agility.** ChaCha20-Poly1305 by default, AES-256-GCM when you want hardware acceleration. Same `Crypt` API either way.
@@ -183,10 +255,10 @@ See [`docs/API.md`](docs/API.md) for the full reference.
 What we explicitly do NOT do:
 
 - Implement crypto primitives from scratch (use battle-tested upstreams)
-- Asymmetric crypto (RSA, ECDSA, Ed25519) — different problem, separate crate
+- General-purpose asymmetric crypto, signing, or key generation — use a focused crate; `signature-ed25519` is strictly verification-only
 - PGP/GPG (use `sequoia-openpgp`)
 - TLS (use `rustls`)
-- Random number generation (use `mod-rand`)
+- General-purpose random utilities (use `mod-rand`)
 - UUID generation (use `id-forge`)
 - Key storage (use `key-vault`)
 
@@ -201,15 +273,16 @@ What we explicitly do NOT do:
 - Authenticating messages, audit logs, signed records
 - Hashing for integrity checks, fingerprinting, content-addressed storage
 - HMAC signatures for outgoing requests (AWS SigV4, JWT HS256/HS512, webhooks)
+- Verifying detached Ed25519 signatures over caller-defined exact artifact bytes
 - Composing with `key-vault` for in-memory key handling
 
 **Wrong fit:**
 
 - TLS connections — use [`rustls`](https://crates.io/crates/rustls)
 - OpenPGP interop — use [`sequoia-openpgp`](https://crates.io/crates/sequoia-openpgp)
-- Digital signatures — use [`ed25519-dalek`](https://crates.io/crates/ed25519-dalek)
+- Creating digital signatures or generating key pairs — use [`ed25519-dalek`](https://crates.io/crates/ed25519-dalek)
 - Key exchange — use [`x25519-dalek`](https://crates.io/crates/x25519-dalek)
-- Random number generation — use [`mod-rand`](https://crates.io/crates/mod-rand)
+- General-purpose random utilities — use [`mod-rand`](https://crates.io/crates/mod-rand)
 
 <hr>
 
@@ -242,6 +315,8 @@ Reproduce: `cargo bench --all-features` (numbers vary by hardware — see PERFOR
 - [`docs/PLATFORM-NOTES.md`](docs/PLATFORM-NOTES.md) — hardware acceleration per platform + cross-compile guide.
 - [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) — measured throughput, contract-check matrix, parameter-choice guidance.
 - [`docs/FILE_FORMAT.md`](docs/FILE_FORMAT.md) — stream wire format spec (frozen for the 1.x series).
+- [`docs/STORAGE_FORMATS.md`](docs/STORAGE_FORMATS.md) — opt-in authenticated record/stream formats and integration boundaries.
+- [`docs/SIGNATURES.md`](docs/SIGNATURES.md) — verification-only Ed25519 boundary and caller-owned trust policy.
 - [`CHANGELOG.md`](CHANGELOG.md) — per-version Added / Changed / Security entries.
 - [`docs/release/`](docs/release) — per-release notes (`v0.2.0.md`, `v0.3.0.md`, …, `v1.0.0.md`).
 - [`.dev/ROADMAP.md`](.dev/ROADMAP.md) — milestone plan through 1.0 and beyond.
@@ -253,7 +328,9 @@ Reproduce: `cargo bench --all-features` (numbers vary by hardware — see PERFOR
 - **REPS** (Rust Efficiency & Performance Standards) governs every decision. See [`REPS.md`](REPS.md).
 - **MSRV:** Rust 1.85.
 - **Edition:** 2024.
-- **Cross-platform:** Linux, macOS, Windows (CI matrix on stable + MSRV).
+- **Cross-platform:** Linux, macOS, and Windows on the pinned Rust 1.95.0
+  toolchain and Rust 1.85.0 MSRV, plus an Ubuntu forward-compatibility lane on
+  Rust 1.97.1.
 
 <hr>
 

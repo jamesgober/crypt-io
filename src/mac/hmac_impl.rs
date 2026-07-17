@@ -7,7 +7,7 @@
 //!
 //! [RFC 2104]: https://datatracker.ietf.org/doc/html/rfc2104
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Sha256, Sha512};
 
 use super::{HMAC_SHA256_OUTPUT_LEN, HMAC_SHA512_OUTPUT_LEN};
