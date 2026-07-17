@@ -193,7 +193,9 @@ jobs:
             target
           key: ubuntu-1.85-cross-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
       - run: cargo check --no-default-features --features signature-ed25519 --locked
-      - run: cargo check --all-features --locked
+      # Foreign targets do not have their native C/assembly toolchains on the
+      # Ubuntu runner. Keep the optimized BLAKE3 paths covered by native jobs.
+      - run: cargo check --all-features --features blake3/pure --locked
 
   security:
     name: Supply-chain policy
