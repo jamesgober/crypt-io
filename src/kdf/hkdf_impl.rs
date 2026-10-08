@@ -181,7 +181,7 @@ mod tests {
     #[test]
     fn hkdf_sha256_zero_length_output() {
         let out = hkdf_sha256(&[0u8; 32], None, &[], 0).unwrap();
-        assert!(out.is_empty());
+        assert_eq!(out, [] as [u8; 0]);
     }
 
     #[test]

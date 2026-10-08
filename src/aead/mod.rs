@@ -551,7 +551,7 @@ mod tests {
         // Layout: 12-byte nonce + 0-byte body + 16-byte tag.
         assert_eq!(ciphertext.len(), CHACHA20_NONCE_LEN + CHACHA20_TAG_LEN);
         let recovered = crypt.decrypt(&key, &ciphertext).unwrap();
-        assert!(recovered.is_empty());
+        assert_eq!(recovered, [] as [u8; 0]);
     }
 
     #[test]
@@ -731,7 +731,7 @@ mod aes_gcm_tests {
         let ciphertext = crypt.encrypt(&key, b"").unwrap();
         assert_eq!(ciphertext.len(), AES_GCM_NONCE_LEN + AES_GCM_TAG_LEN);
         let recovered = crypt.decrypt(&key, &ciphertext).unwrap();
-        assert!(recovered.is_empty());
+        assert_eq!(recovered, [] as [u8; 0]);
     }
 
     #[test]
