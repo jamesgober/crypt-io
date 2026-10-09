@@ -41,6 +41,19 @@
 //!   on the first chunk.
 //! - **Wrong key** → authentication failure on the first chunk.
 //!
+//! # Limits and caveats
+//!
+//! - **Streams per key.** Every stream uses a random 56-bit nonce
+//!   prefix directly under the caller's key. Keep one key below about
+//!   2^12 (4,096) streams, or derive a per-stream key (for example
+//!   `kdf::hkdf_sha256` with a random salt stored next to the
+//!   ciphertext). See [`StreamEncryptor`](StreamEncryptor#limits).
+//! - **Early output is not end-authenticated.** Plaintext returned by
+//!   [`StreamDecryptor::update`] is authentic chunk by chunk, but
+//!   truncation at a chunk boundary is only detected by
+//!   [`StreamDecryptor::finalize`]. Don't act on it before `finalize`
+//!   returns `Ok`. `decrypt_file` handles this for you.
+//!
 //! # Example
 //!
 //! ```

@@ -53,12 +53,23 @@
 //!
 //! # Nonce policy
 //!
-//! Nonces are generated fresh for every call. The 96-bit nonce space has a
-//! birthday bound of ~`2^48` — well beyond any realistic message volume for
-//! a single key. Callers that need a specific nonce (interop with another
+//! Nonces are generated fresh for every call from the OS CSPRNG. Because
+//! they are random, two encryptions under the same key collide with
+//! probability about `n^2 / 2^97` after `n` messages, and a single
+//! collision is catastrophic for AES-256-GCM (it leaks the XOR of the two
+//! plaintexts and the GHASH key, which allows forgeries) and serious for
+//! ChaCha20-Poly1305.
+//!
+//! **Limit: at most 2^32 encryptions per key** (about 4.3 billion; the
+//! NIST SP 800-38D cap for random 96-bit IVs, collision probability about
+//! 2^-33). The often-quoted `2^48` is not a safe limit: it is the point
+//! where a collision becomes likely (about 39%). crypt-io does not count
+//! messages for you. If one key may exceed 2^32 messages, rotate keys or
+//! derive per-context subkeys with HKDF.
+//!
+//! Callers that need a specific nonce (interop with another
 //! implementation, deterministic test vectors) are out of scope for the
-//! 0.2.0 API; that surface will arrive in a later milestone with explicit
-//! "I understand the risk" naming.
+//! 1.0 API.
 //!
 //! # Example
 //!
@@ -370,6 +381,10 @@ impl Crypt {
     /// first and then grown as needed. Reusing the same buffer across
     /// calls amortises the allocation cost away entirely.
     ///
+    /// On error `out` is empty. If the upstream cipher rejects the
+    /// input after the plaintext was copied into `out`, the copy is
+    /// overwritten with zeros before returning.
+    ///
     /// Equivalent to [`encrypt`](Self::encrypt) but does not allocate
     /// a fresh `Vec` per call. New in 0.10.0.
     ///
@@ -411,6 +426,7 @@ impl Crypt {
         aad: &[u8],
         out: &mut Vec<u8>,
     ) -> Result<()> {
+        out.clear();
         match self.algorithm {
             Algorithm::ChaCha20Poly1305 => {
                 #[cfg(feature = "aead-chacha20")]
@@ -441,9 +457,14 @@ impl Crypt {
     /// the caller-supplied `out` buffer. The buffer is cleared first
     /// and then grown as needed.
     ///
-    /// On authentication failure the buffer is cleared (any
-    /// partially-decrypted bytes are scrubbed before returning) so
-    /// callers can't accidentally observe unverified plaintext.
+    /// `out` is cleared before any check runs, so on **every** error
+    /// (`InvalidKey`, `InvalidCiphertext`, `AuthenticationFailed`, ...)
+    /// it is empty and never holds a previous message's plaintext. On
+    /// authentication failure the whole allocation (length and spare
+    /// capacity) is also overwritten with zeros before returning.
+    ///
+    /// Note that `out` is not wiped on success or when it is dropped;
+    /// the recovered plaintext is the caller's to manage.
     ///
     /// Equivalent to [`decrypt`](Self::decrypt) but does not allocate
     /// a fresh `Vec` per call. New in 0.10.0.
@@ -486,6 +507,9 @@ impl Crypt {
         aad: &[u8],
         out: &mut Vec<u8>,
     ) -> Result<()> {
+        // Clear before anything can fail, so no error path returns the
+        // caller's previous contents.
+        out.clear();
         match self.algorithm {
             Algorithm::ChaCha20Poly1305 => {
                 #[cfg(feature = "aead-chacha20")]

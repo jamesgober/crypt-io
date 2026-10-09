@@ -213,11 +213,12 @@ Every dependency is a deliberate choice. The full list:
 | `hkdf` | RFC 5869 HKDF. RustCrypto. |
 | `argon2` | Argon2id with PHC framework. RustCrypto. |
 | `mod-rand` | Portfolio CSPRNG (Tier 3 = OS-backed). |
-| `error-forge` | Portfolio error framework. Declared but minimally used in 1.0 — manual `Display + Error` impls satisfy current needs. |
-| `zeroize` *(opt)* | Zero-on-drop wrappers (default on). |
-| `log-io` *(opt)* | Operation logging. Not enabled by default. |
-| `metrics-lib` *(opt)* | Performance instrumentation. Not enabled by default. |
-| `async-trait` *(opt)* | Reserved for 1.x async surface. Not used in 1.0. |
+| `zeroize` *(opt)* | Volatile wiping of the stream types' key copy and buffer, the BLAKE3 keyed MAC state and `_into` failure buffers; enables upstream `zeroize` in `aes-gcm`, `argon2`, `blake3` (default on). |
+
+1.0.1 removed `error-forge`, `log-io`, `metrics-lib` and
+`async-trait`: no code used them. The `logging`, `metrics` and
+`async-trait` features remain as empty features so existing
+feature lists keep resolving.
 
 Dev dependencies for tests + benches + the alloc profile:
 
@@ -265,9 +266,11 @@ Documented elsewhere but worth restating in one place:
 - **No `hash::*::with_key`**. Keyed hashing lives in `mac::*`.
 - **No "raw" / "unauthenticated" cipher modes** (CTR, CBC).
   Authentication is non-negotiable.
-- **No nonce-misuse-resistant variants** in 1.0 (SIV modes). The
-  internally-generated random nonces are misuse-resistant
-  enough for the current API shape.
+- **No nonce-misuse-resistant variants** in 1.0 (SIV modes).
+  Internally generated random nonces remove caller nonce
+  mistakes, but they can still collide: keep each key below
+  2^32 single-shot messages and about 2^12 streams (see
+  [`SECURITY.md`](SECURITY.md#known-caveats)).
 
 <hr>
 

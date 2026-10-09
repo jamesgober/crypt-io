@@ -28,9 +28,12 @@ fn main() -> Result<(), crypt_io::Error> {
     let supplied_correct = b"correct horse battery staple";
     let supplied_wrong = b"hunter2";
 
-    let ok = kdf::argon2_verify(&phc_string, supplied_correct)?;
-    println!("Correct password verifies: {ok}");
-    assert!(ok);
+    // A wrong password is `Ok(false)`, not an error: branch on the
+    // bool. `kdf::argon2_verify(..)?;` alone would log everyone in.
+    if !kdf::argon2_verify(&phc_string, supplied_correct)? {
+        return Err(crypt_io::Error::AuthenticationFailed);
+    }
+    println!("Correct password verifies: true");
 
     let ok = kdf::argon2_verify(&phc_string, supplied_wrong)?;
     println!("Wrong password verifies:   {ok}");
@@ -40,6 +43,8 @@ fn main() -> Result<(), crypt_io::Error> {
     //
     //   - wrong password               → Ok(false)
     //   - malformed / corrupted PHC    → Err(Error::Kdf(...))
+    //   - non-argon2id PHC, or costs above the verify limits
+    //     (m > 1 GiB, t > 64, p > 16)  → Err(Error::Kdf(...))
     //
     // Log these differently. Wrong password is "attacker / typo"
     // (warn). Malformed PHC is "corruption / bug" (error).

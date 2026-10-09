@@ -23,7 +23,7 @@
 use alloc::string::{String, ToString};
 
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use argon2::{Algorithm, Argon2, Params, Version};
+use argon2::{ARGON2ID_IDENT, Algorithm, Argon2, Params, Version};
 
 use crate::error::{Error, Result};
 
@@ -33,6 +33,29 @@ pub const ARGON2_DEFAULT_OUTPUT_LEN: usize = 32;
 /// Default Argon2id salt length, in bytes. Equal to `16` (128 bits, the
 /// PHC-recommended minimum).
 pub const ARGON2_DEFAULT_SALT_LEN: usize = 16;
+
+/// Upper bound on `m_cost` (KiB) accepted by [`argon2_verify`] and
+/// [`argon2_hash_with_params`]: 1 GiB.
+const MAX_M_COST_KIB: u32 = 1024 * 1024;
+
+/// Upper bound on `t_cost` accepted by [`argon2_verify`] and
+/// [`argon2_hash_with_params`].
+const MAX_T_COST: u32 = 64;
+
+/// Upper bound on `p_cost` accepted by [`argon2_verify`] and
+/// [`argon2_hash_with_params`].
+const MAX_P_COST: u32 = 16;
+
+/// Reject cost parameters above the verify caps. Applied to PHC
+/// strings before any memory is allocated, and to caller-supplied
+/// hashing parameters so every hash crypt-io produces stays
+/// verifiable.
+fn check_cost_caps(m_cost: u32, t_cost: u32, p_cost: u32) -> Result<()> {
+    if m_cost > MAX_M_COST_KIB || t_cost > MAX_T_COST || p_cost > MAX_P_COST {
+        return Err(Error::Kdf("argon2 params exceed limits"));
+    }
+    Ok(())
+}
 
 /// Tuneable Argon2id parameters.
 ///
@@ -116,10 +139,16 @@ pub fn argon2_hash(password: &[u8]) -> Result<String> {
 
 /// Like [`argon2_hash`] but uses caller-supplied parameters.
 ///
+/// The parameters must stay within the limits [`argon2_verify`]
+/// enforces (`m_cost` at most 1 GiB, `t_cost` at most 64, `p_cost` at
+/// most 16), so that every hash produced here can be verified.
+///
 /// # Errors
 ///
-/// Same as [`argon2_hash`].
+/// Same as [`argon2_hash`]; [`Error::Kdf`] also when a parameter is
+/// above those limits.
 pub fn argon2_hash_with_params(password: &[u8], params: Argon2Params) -> Result<String> {
+    check_cost_caps(params.m_cost, params.t_cost, params.p_cost)?;
     let mut salt_bytes = [0u8; ARGON2_DEFAULT_SALT_LEN];
     mod_rand::tier3::fill_bytes(&mut salt_bytes)
         .map_err(|_| Error::RandomFailure("mod_rand::tier3::fill_bytes"))?;
@@ -142,22 +171,36 @@ pub fn argon2_hash_with_params(password: &[u8], params: Argon2Params) -> Result<
     Ok(hash.to_string())
 }
 
-/// Verify `password` against a PHC-encoded Argon2 hash string.
+/// Verify `password` against a PHC-encoded Argon2id hash string.
 ///
 /// Returns `Ok(true)` if the password matches, `Ok(false)` if it does
-/// not, and [`Error::Kdf`] if `phc` is not a parseable Argon2 PHC
+/// not, and [`Error::Kdf`] if `phc` is not an acceptable Argon2id PHC
 /// string.
+///
+/// **A wrong password is `Ok(false)`, not an error.** Writing
+/// `argon2_verify(..)?;` throws that `bool` away and logs everyone in.
+/// Always branch on the value, as in the example below.
 ///
 /// Argon2id's verification re-derives the hash under the encoded
 /// parameters and compares in constant time. The cost is the same as
 /// computing a fresh hash with those parameters — usually ~100 ms with
 /// the default params.
 ///
+/// # Limits on the PHC string
+///
+/// The cost parameters come from `phc`, so a hostile or corrupted PHC
+/// string could otherwise demand gigabytes of memory or minutes of CPU
+/// per call. Before doing any work, `argon2_verify` rejects:
+///
+/// - any variant other than `argon2id` (crypt-io only ever produces
+///   `$argon2id$`), and
+/// - `m` above 1 GiB (1,048,576 KiB), `t` above 64 or `p` above 16.
+///
 /// # Errors
 ///
-/// Returns [`Error::Kdf`] only when `phc` fails to parse as a valid
-/// PHC string. A correctly-formatted but wrong-password hash returns
-/// `Ok(false)`.
+/// Returns [`Error::Kdf`] when `phc` fails to parse as a PHC string,
+/// names a variant other than Argon2id, or exceeds the limits above. A
+/// correctly-formatted but wrong-password hash returns `Ok(false)`.
 ///
 /// # Example
 ///
@@ -165,13 +208,22 @@ pub fn argon2_hash_with_params(password: &[u8], params: Argon2Params) -> Result<
 /// # #[cfg(feature = "kdf-argon2")] {
 /// use crypt_io::kdf;
 /// let phc = kdf::argon2_hash(b"hunter2")?;
-/// assert!(kdf::argon2_verify(&phc, b"hunter2")?);
+///
+/// // Correct: branch on the returned bool.
+/// if !kdf::argon2_verify(&phc, b"hunter2")? {
+///     return Err(crypt_io::Error::AuthenticationFailed);
+/// }
 /// assert!(!kdf::argon2_verify(&phc, b"hunter3")?);
 /// # }
 /// # Ok::<(), crypt_io::Error>(())
 /// ```
 pub fn argon2_verify(phc: &str, password: &[u8]) -> Result<bool> {
     let parsed = PasswordHash::new(phc).map_err(|_| Error::Kdf("argon2 phc parse"))?;
+    if parsed.algorithm != ARGON2ID_IDENT {
+        return Err(Error::Kdf("argon2 phc variant is not argon2id"));
+    }
+    let params = Params::try_from(&parsed).map_err(|_| Error::Kdf("argon2 phc parse"))?;
+    check_cost_caps(params.m_cost(), params.t_cost(), params.p_cost())?;
     let argon2 = Argon2::default();
     Ok(argon2.verify_password(password, &parsed).is_ok())
 }
@@ -293,6 +345,61 @@ mod tests {
         let bad = Argon2Params::new(0, 1, 1, 32);
         let err = argon2_hash_with_params(b"pw", bad).unwrap_err();
         assert!(matches!(err, Error::Kdf(_)), "{err:?}");
+    }
+
+    // ---- 1.0.1: PHC limits (audit CI-M3) ----
+
+    const SALT_HASH: &str = "$c2FsdHNhbHRzYWx0c2FsdA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    #[test]
+    fn verify_rejects_argon2d_and_argon2i() {
+        for variant in ["argon2d", "argon2i"] {
+            let phc = format!("${variant}$v=19$m=8,t=1,p=1{SALT_HASH}");
+            let err = argon2_verify(&phc, b"guess").unwrap_err();
+            assert!(matches!(err, Error::Kdf(_)), "{variant}: {err:?}");
+        }
+    }
+
+    #[test]
+    fn verify_rejects_hostile_memory_cost_without_allocating() {
+        // 1.0.0 allocated 4 GiB here before comparing.
+        let phc = format!("$argon2id$v=19$m=4194304,t=1,p=1{SALT_HASH}");
+        let err = argon2_verify(&phc, b"guess").unwrap_err();
+        assert!(matches!(err, Error::Kdf(_)), "{err:?}");
+    }
+
+    #[test]
+    fn verify_rejects_hostile_time_and_lane_cost() {
+        let t = format!("$argon2id$v=19$m=8,t=200000,p=1{SALT_HASH}");
+        assert!(matches!(argon2_verify(&t, b"guess"), Err(Error::Kdf(_))));
+        let p = format!("$argon2id$v=19$m=1024,t=1,p=64{SALT_HASH}");
+        assert!(matches!(argon2_verify(&p, b"guess"), Err(Error::Kdf(_))));
+    }
+
+    #[test]
+    fn verify_accepts_parameters_at_the_limits() {
+        // t and p exactly at the caps (m kept small so the test is fast).
+        let params = Argon2Params::new(8 * MAX_P_COST, MAX_T_COST, MAX_P_COST, 32);
+        let phc = argon2_hash_with_params(b"pw", params).unwrap();
+        assert!(argon2_verify(&phc, b"pw").unwrap());
+    }
+
+    #[test]
+    fn hash_with_params_rejects_parameters_above_the_limits() {
+        for bad in [
+            Argon2Params::new(MAX_M_COST_KIB + 1, 1, 1, 32),
+            Argon2Params::new(8, MAX_T_COST + 1, 1, 32),
+            Argon2Params::new(8 * (MAX_P_COST + 1), 1, MAX_P_COST + 1, 32),
+        ] {
+            let err = argon2_hash_with_params(b"pw", bad).unwrap_err();
+            assert!(matches!(err, Error::Kdf(_)), "{bad:?}: {err:?}");
+        }
+    }
+
+    #[test]
+    fn default_params_are_within_the_limits() {
+        let d = Argon2Params::default();
+        assert!(check_cost_caps(d.m_cost, d.t_cost, d.p_cost).is_ok());
     }
 
     #[test]

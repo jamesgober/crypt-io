@@ -203,13 +203,17 @@ Frozen free functions and types (feature-gated as documented in
 
 ## How this contract is enforced
 
-- **`cargo-public-api`** runs in CI on every PR. Any unintended
-  surface change blocks merge.
-- **`cargo-msrv`** verifies the MSRV declared in
-  `rust-toolchain.toml` actually builds the crate. Bumping MSRV
-  without bumping the minor version is a CI failure.
-- **The `tests/into_apis.rs` and `tests/stream.rs` suites** lock
-  in the wire-format invariants — any change that breaks
+- **`cargo-semver-checks`** is run against the last published
+  release before every release. A patch release must report "no
+  semver update required".
+- **The CI matrix** builds and tests on Rust 1.85 (the MSRV,
+  declared as `rust-version` in `Cargo.toml`) and on stable, on
+  Linux, macOS and Windows. Bumping MSRV without bumping the
+  minor version is a contract violation.
+- **The `tests/into_apis.rs`, `tests/stream.rs` and
+  `tests/kat.rs` suites** lock in the wire-format invariants.
+  `tests/kat.rs` decrypts frozen stream bytes produced from the
+  raw upstream primitives, so any change that breaks
   cross-version decrypt fails the gate.
 
 <hr>

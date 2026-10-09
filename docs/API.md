@@ -99,7 +99,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-crypt-io = "0.7"
+crypt-io = "1"
 ```
 
 ### Install via terminal
@@ -124,8 +124,8 @@ documented in `Cargo.toml`. The full plan ships across the 0.3 →
 
 | Feature | Default | Effect |
 |---|---|---|
-| `std` | ✅ | Standard-library types. Required by the current implementation. |
-| `zeroize` | ✅ | `zeroize` integration on supporting types. |
+| `std` | ✅ | Standard-library types. Required: 1.0.x does not build as `no_std` even with this feature off. |
+| `zeroize` | ✅ | Wipes the stream types' key copy and buffer on drop, the BLAKE3 keyed MAC state on drop, and `_into` buffers on failure with volatile writes; also enables the upstream `zeroize` support in `aes-gcm`, `argon2` and `blake3`. |
 | `aead-chacha20` | ✅ | ChaCha20-Poly1305 backend + [`Crypt::new`](#cryptnew). |
 | `aead-aes-gcm` | ✅ | AES-256-GCM backend + [`Crypt::aes_256_gcm`](#cryptaes_256_gcm). |
 | `aead-all` |  | Both AEADs (already in the 0.3.0+ default). |
@@ -141,6 +141,7 @@ documented in `Cargo.toml`. The full plan ships across the 0.3 →
 | `stream` | ✅ | [`StreamEncryptor`](#streamencryptor) / [`StreamDecryptor`](#streamdecryptor) + [`encrypt_file`](#streamencrypt_file) / [`decrypt_file`](#streamdecrypt_file). Pulls both AEAD backends. |
 | `preset-minimal` |  | `std` + `aead-chacha20` only — the 0.2.0 surface. |
 | `preset-all` |  | All planned features enabled. Some are inert until their phase ships. |
+| `metrics`, `logging`, `async-trait` |  | Reserved. They enable nothing; 1.0.1 removed the unused dependencies they used to pull in. |
 
 <a href="#top">↑ TOP</a>
 
@@ -451,11 +452,14 @@ subsequent call reuses the buffer's capacity. Verified by
 which runs 10,000 iterations under `mod-alloc` and prints
 allocation counts.
 
-**`decrypt_*_into` auth-failure scrub.** On
-`Error::AuthenticationFailed` the output buffer is cleared
-before returning, so partially-decrypted plaintext from the
-upstream `decrypt_in_place_detached` call can't leak to the
-caller.
+**Error behaviour.** `out` is cleared before any check runs, so on
+every error (`InvalidKey`, `InvalidCiphertext`,
+`AuthenticationFailed`, ...) it is empty; it never hands back a
+previous message's plaintext. On `AuthenticationFailed` the whole
+allocation (length and spare capacity) is also overwritten with
+zeros. If `encrypt_*_into` fails after the plaintext was copied
+into `out`, that copy is overwritten too. `out` is not wiped on
+success; the plaintext is the caller's to manage.
 
 **When to use:** any hot-path encrypt loop. The `Vec`-returning
 methods are kept for ergonomics — use them when you'd discard
@@ -842,6 +846,12 @@ Returns `Ok(true)` on match, `Ok(false)` otherwise (including when
 
 **Always use this rather than `tag == expected`.**
 
+> **Check the `bool`.** A mismatch is `Ok(false)`, not an error.
+> `mac::hmac_sha256_verify(key, data, tag)?;` compiles without a
+> warning and accepts every tag, forged or not. Always write
+> `if !mac::hmac_sha256_verify(..)? { /* reject */ }`. The same
+> applies to `hmac_sha512_verify` and `kdf::argon2_verify`.
+
 **Errors.** Same as [`mac::hmac_sha256`](#machmac_sha256).
 
 ```rust
@@ -849,7 +859,9 @@ Returns `Ok(true)` on match, `Ok(false)` otherwise (including when
 use crypt_io::mac;
 let key = b"shared";
 let tag = mac::hmac_sha256(key, b"data")?;
-assert!(mac::hmac_sha256_verify(key, b"data", &tag)?);
+if !mac::hmac_sha256_verify(key, b"data", &tag)? {
+    return Err(crypt_io::Error::AuthenticationFailed);
+}
 assert!(!mac::hmac_sha256_verify(key, b"tampered", &tag)?);
 # }
 # Ok::<(), crypt_io::Error>(())
@@ -1185,9 +1197,21 @@ let phc = argon2_hash_with_params(b"service-token", params)?;
 pub fn argon2_verify(phc: &str, password: &[u8]) -> Result<bool>;
 ```
 
-Verify `password` against a PHC-encoded Argon2 hash. Returns
+Verify `password` against a PHC-encoded Argon2id hash. Returns
 `Ok(true)` on match, `Ok(false)` on wrong password, and
-[`Error::Kdf`](#error) if `phc` is not a parseable PHC string.
+[`Error::Kdf`](#error) if `phc` is not an acceptable Argon2id PHC
+string.
+
+> **Check the `bool`.** A wrong password is `Ok(false)`, not an
+> error. `kdf::argon2_verify(&phc, pw)?;` on its own logs everyone
+> in. Always write `if !kdf::argon2_verify(&phc, pw)? { /* reject */ }`.
+
+**Limits (1.0.1).** The cost parameters come from the PHC string, so
+before any work `argon2_verify` rejects (with `Error::Kdf`) any
+variant other than `argon2id`, and `m` above 1 GiB (1,048,576 KiB),
+`t` above 64 or `p` above 16. crypt-io has only ever produced
+`$argon2id$v=19$` strings. `argon2_hash_with_params` enforces the
+same limits so every hash it produces can be verified.
 
 The distinction matters: a *malformed* PHC string indicates
 corruption or a coding mistake (log as `error`); a *correctly-
@@ -1198,14 +1222,17 @@ Verification re-derives the hash under the parameters encoded in
 `phc` and compares in constant time. Cost is the same as computing
 a fresh hash with those parameters (~100 ms with the defaults).
 
-**Errors.** Returns [`Error::Kdf`](#error) only when `phc` fails
-to parse. Wrong-password returns `Ok(false)`, not an error.
+**Errors.** Returns [`Error::Kdf`](#error) when `phc` fails to
+parse, is not Argon2id, or exceeds the limits above. Wrong-password
+returns `Ok(false)`, not an error.
 
 ```rust
 # #[cfg(feature = "kdf-argon2")] {
 use crypt_io::kdf;
 let phc = kdf::argon2_hash(b"hunter2")?;
-assert!(kdf::argon2_verify(&phc, b"hunter2")?);
+if !kdf::argon2_verify(&phc, b"hunter2")? {
+    return Err(crypt_io::Error::AuthenticationFailed);
+}
 assert!(!kdf::argon2_verify(&phc, b"hunter3")?);
 # }
 # Ok::<(), crypt_io::Error>(())
@@ -1287,6 +1314,17 @@ concept of chunks.
 | [`decrypt_file`](#streamdecrypt_file) | File-to-file decrypt (std-only) |
 
 Wire format documented in [Stream wire format](#stream-wire-format).
+
+> **Streams per key.** Each stream uses a random 56-bit nonce prefix
+> directly under the caller's key. Two streams with the same prefix
+> reuse nonces (for AES-256-GCM that also exposes the GHASH key).
+> Keep one key below about 2^12 (4,096) streams, or derive a fresh
+> key per stream or file, for example with `kdf::hkdf_sha256` and a
+> random salt stored next to the ciphertext.
+
+`StreamEncryptor` and `StreamDecryptor` overwrite their key copy and
+internal buffer on drop, and their `Debug` output shows only the
+algorithm, chunk size, counter and buffered length.
 
 <a href="#top">↑ TOP</a>
 
@@ -1392,6 +1430,16 @@ header, truncation, reordering, chunk duplication) all surface as
 [`Error::AuthenticationFailed`](#error) — the variant is
 intentionally opaque.
 
+> **`update` output is not end-authenticated.** Each chunk `update`
+> returns has passed its own tag check, but a stream truncated at a
+> chunk boundary is only detected by `finalize`. Do not act on the
+> output until `finalize` returns `Ok`; on error, discard everything
+> the decryptor produced.
+
+`update` is linear in the input size (1.0.0 was quadratic when a
+large input was fed in one call). On error, `update_into` wipes
+whatever it appended and leaves `out` as it was on entry.
+
 **Errors on `new`:**
 
 - [`Error::InvalidKey`](#error) — `key` is not 32 bytes.
@@ -1421,7 +1469,9 @@ pub fn encrypt_file(
 ```
 
 Encrypt `input_path` into `output_path` using the default 64 KiB
-chunk size. Overwrites `output_path` if it exists.
+chunk size. Overwrites `output_path` if it exists. Rejects (with
+`Error::Mac`) an `output_path` that names the same file as
+`input_path`; 1.0.0 truncated the input instead.
 
 **Errors:**
 
@@ -1459,12 +1509,14 @@ pub fn decrypt_file(
 Decrypt `input_path` into `output_path`. Algorithm is read from the
 stream header — no `algorithm` argument required.
 
-> **On error, delete the output file.** `decrypt_file` writes
-> plaintext chunks to disk as they verify. If a later chunk fails
-> authentication, earlier chunks may already be on disk. **Callers
-> must remove the output file when this function returns an error**
-> — otherwise an attacker who can flip late chunks could leak
-> earlier plaintext to disk.
+Since 1.0.1, plaintext only reaches `output_path` after the whole
+stream has been authenticated. It is written to a new temporary file
+in the same directory (created exclusively, mode `0600` on Unix),
+which is flushed, `fsync`ed and renamed over `output_path` once the
+final chunk verifies. On any error the temporary file is overwritten
+and deleted, and `output_path` is left untouched. On Unix the
+decrypted file therefore has mode `0600`. An `output_path` that names
+the same file as `input_path` is rejected with `Error::Mac`.
 
 **Errors:**
 
@@ -1676,18 +1728,28 @@ caller's responsibility to keep AAD addressable on the decrypt side
 
 ## Notes
 
-- **Nonce reuse is impossible through this API.** Every
-  `encrypt` / `encrypt_with_aad` call draws a fresh 12-byte
-  nonce. There is no caller-supplied-nonce surface in 0.2.0.
-- **The 96-bit nonce birthday bound** is ~`2^48` messages per
-  key — far beyond any realistic single-key workload.
+- **Nonces are random, so they can collide.** Every
+  `encrypt` / `encrypt_with_aad` call draws a fresh random 12-byte
+  nonce; there is no caller-supplied-nonce surface. Random nonces
+  collide with probability about `n^2 / 2^97` after `n` messages
+  under one key, and one collision is catastrophic for AES-256-GCM.
+- **Limit each key to 2^32 single-shot encryptions** (the NIST SP
+  800-38D cap for random 96-bit IVs; collision probability about
+  2^-33). `2^48` messages is not a safe limit: it is where a
+  collision becomes likely (about 39%). crypt-io does not count
+  messages; rotate keys or derive subkeys with HKDF before that.
+- **Limit each key to about 2^12 streams** (see the
+  [`stream` module](#stream-module) note).
 - **Constant-time tag verification** is preserved by deferring to
   the upstream `chacha20poly1305` crate; no equality comparisons on
   tag bytes happen in this wrapper.
-- **Plaintext is `Vec<u8>` in 0.2.0.** Wrap with
+- **Plaintext is a plain `Vec<u8>`.** Wrap with
   `zeroize::Zeroizing::new(_)` if you need zero-on-drop for the
   recovered plaintext, or compose with `key-vault` for production
-  key handling.
+  key handling. The same applies to HKDF output and
+  `StreamDecryptor` output. HMAC state (`HmacSha256`,
+  `HmacSha512`) and AES round keys inside the `aes` crate are not
+  wiped on drop in 1.0.x.
 - **AES-256-GCM ships in 0.3.0** with NIST SP 800-38D vectors and
   hardware-acceleration verification (AES-NI on x86, crypto
   extensions on ARM).

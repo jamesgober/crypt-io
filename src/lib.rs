@@ -14,7 +14,7 @@
 //! - A clean, ergonomic API
 //! - Algorithm agility (switch ciphers via enum or feature flag)
 //! - REPS-disciplined error handling and lifecycle
-//! - Tight integration with the portfolio (mod-rand, error-forge, optional log-io/metrics-lib)
+//! - OS-backed CSPRNG nonces and salts via the portfolio crate `mod-rand`
 //! - Sub-microsecond throughput targets verified by benchmarks
 //!
 //! crypt-io does NOT implement cryptographic primitives from scratch. The actual
@@ -42,8 +42,29 @@
 //!
 //! # Status
 //!
-//! Early scaffolding. Public API not yet defined. See [the repository](https://github.com/jamesgober/crypt-io)
-//! and `.dev/ROADMAP.md` for the milestone plan.
+//! Stable (1.x). The public API and both wire formats are frozen for the
+//! 1.x series; see `docs/STABILITY-1.0.md` in
+//! [the repository](https://github.com/jamesgober/crypt-io).
+//!
+//! # Platform support
+//!
+//! crypt-io 1.0.x requires `std`. The `std` feature exists, but building
+//! with it disabled does not produce a `no_std` library: several
+//! dependencies still pull in `std`. Real `no_std` support is planned for
+//! a later minor release.
+//!
+//! # Security notes
+//!
+//! - The `*_verify` functions that return `Result<bool>`
+//!   (`mac::hmac_sha256_verify`, `mac::hmac_sha512_verify`,
+//!   `kdf::argon2_verify`) report a mismatch as `Ok(false)`, not as an
+//!   error. Writing `verify(..)?;` discards that `bool` and accepts
+//!   forged tags and wrong passwords. Always branch on the value:
+//!   `if !verify(..)? { /* reject */ }`.
+//! - Random 96-bit nonces: keep each key below 2^32 single-shot
+//!   encryptions (NIST SP 800-38D). Stream encryption: keep each key
+//!   below about 2^12 (4,096) streams, or derive a per-stream key with
+//!   HKDF. See `docs/SECURITY.md`.
 //!
 //! # License
 //!
@@ -51,6 +72,8 @@
 
 #![doc(html_root_url = "https://docs.rs/crypt-io")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+// `no_std` is not supported in 1.0.x (see "Platform support" above); the
+// attribute is kept so the 1.x `no_std` work has a starting point.
 #![cfg_attr(not(feature = "std"), no_std)]
 // REPS §Code Quality canonical lint set. `#![deny(warnings)]` is
 // intentionally NOT used at the crate root — new rustc versions can
@@ -78,6 +101,9 @@
 extern crate alloc;
 
 mod error;
+
+#[cfg(any(feature = "aead-chacha20", feature = "aead-aes-gcm"))]
+mod wipe;
 
 #[cfg(any(feature = "aead-chacha20", feature = "aead-aes-gcm"))]
 pub mod aead;

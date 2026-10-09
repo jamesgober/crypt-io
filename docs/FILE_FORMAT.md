@@ -97,8 +97,19 @@ byte invalidates the very first chunk's tag.
 ```
 
 This is the [STREAM construction](https://eprint.iacr.org/2015/189.pdf)
-by Hoang, Reyhanitabar, Rogaway, and Vizár (2015) — the same
-shape AGE encryption uses.
+by Hoang, Reyhanitabar, Rogaway, and Vizár (2015).
+
+Unlike `age`, which derives a fresh key for every file from a
+16-byte random nonce, format v1 encrypts every stream directly
+under the caller's key and relies on the 7-byte random
+`nonce_prefix` alone to keep streams apart. Two streams whose
+prefixes collide reuse the nonce for every chunk index they
+share. With `n` streams under one key the chance of that is
+about `n^2 / 2^57`, so **keep one key below about 2^12 (4,096)
+streams**, or derive a per-stream key (for example HKDF over the
+master key with a random salt stored next to the stream). A
+future format version with a per-stream subkey will use a new
+`version` byte; v1 streams will keep decrypting.
 
 ### Why this defeats specific attacks
 
@@ -234,7 +245,7 @@ from the encryptor's `update` / `finalize`.
 
 If you need to encrypt more than 256 TiB under a single key,
 split it across multiple streams (each with its own random
-nonce prefix). Or use a smaller chunk size if you specifically
+nonce prefix, subject to the streams-per-key limit above). Or use a smaller chunk size if you specifically
 need more chunks per stream (256 TiB × 4 if you halve the
 chunk size).
 
@@ -257,7 +268,10 @@ The reserved bytes (`[11..16]` and `[23]`) are reserved for
 future minor-release header extensions and are currently zero-
 filled. Decoders MUST NOT reject streams based on the values of
 reserved bytes (so future encoders can set them without breaking
-older decoders).
+older decoders). Because older decoders ignore them, reserved
+bytes will only ever carry information a decoder may safely
+ignore. Any change to how a stream must be decoded will use a new
+`version` byte, which older decoders reject.
 
 Breaking the wire format requires a `2.0` major-version release
 with a documented migration path.

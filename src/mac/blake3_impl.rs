@@ -137,6 +137,15 @@ impl Blake3Mac {
     }
 }
 
+/// With the `zeroize` feature, the keyed hasher state (which is derived
+/// from the key) is overwritten with zeros on drop.
+#[cfg(feature = "zeroize")]
+impl Drop for Blake3Mac {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.inner);
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, unused_results)]
 mod tests {

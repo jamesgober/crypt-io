@@ -31,6 +31,26 @@
 //! **Never** compare a computed tag to an expected tag with `==`. Use
 //! the `verify` paths in this module.
 //!
+//! # Check the `bool`, not just the `Result`
+//!
+//! [`hmac_sha256_verify`] and [`hmac_sha512_verify`] return
+//! `Result<bool>`: `Err` only when the MAC cannot be set up, and
+//! `Ok(false)` when the tag does not match. The `?` operator handles the
+//! `Err` and hands back the `bool`, so
+//!
+//! ```text
+//! mac::hmac_sha256_verify(key, data, tag)?;   // WRONG: accepts forged tags
+//! ```
+//!
+//! compiles without a warning and accepts every tag. Always branch on
+//! the value:
+//!
+//! ```text
+//! if !mac::hmac_sha256_verify(key, data, tag)? {
+//!     return Err(Error::AuthenticationFailed);
+//! }
+//! ```
+//!
 //! # Choosing a MAC
 //!
 //! - **HMAC-SHA256** — universal interop. JWT (HS256), TLS PRF, AWS
@@ -52,7 +72,9 @@
 //! let data = b"message to authenticate";
 //!
 //! let tag = mac::hmac_sha256(key, data)?;
-//! assert!(mac::hmac_sha256_verify(key, data, &tag)?);
+//! if !mac::hmac_sha256_verify(key, data, &tag)? {
+//!     return Err(crypt_io::Error::AuthenticationFailed);
+//! }
 //! # }
 //! # Ok::<(), crypt_io::Error>(())
 //! ```

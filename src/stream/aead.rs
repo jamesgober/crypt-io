@@ -11,8 +11,9 @@ use alloc::vec::Vec;
 
 use crate::aead::Algorithm;
 use crate::error::{Error, Result};
+use crate::wipe::{wipe_tail, wipe_vec};
 
-use super::frame::NONCE_LEN;
+use super::frame::{NONCE_LEN, TAG_LEN};
 
 /// Encrypt one chunk under `key` with the supplied 12-byte `nonce` and
 /// `aad`. Returns `ciphertext || tag`.
@@ -59,7 +60,8 @@ pub(super) fn encrypt_chunk(
 
 /// Encrypt one chunk into a caller-supplied buffer. Buffer is cleared
 /// and grown to `plaintext.len() + tag_len` bytes. The 16-byte tag is
-/// appended after the in-place ciphertext.
+/// appended after the in-place ciphertext. On error the buffer (which
+/// held a copy of the plaintext) is wiped.
 pub(super) fn encrypt_chunk_into(
     algorithm: Algorithm,
     key: &[u8; 32],
@@ -69,7 +71,7 @@ pub(super) fn encrypt_chunk_into(
     out: &mut Vec<u8>,
 ) -> Result<()> {
     out.clear();
-    out.reserve(plaintext.len() + 16);
+    out.reserve(plaintext.len() + TAG_LEN);
     out.extend_from_slice(plaintext);
 
     match algorithm {
@@ -80,7 +82,11 @@ pub(super) fn encrypt_chunk_into(
             let cipher = ChaCha20Poly1305::new(ChaKey::from_slice(key));
             let tag = cipher
                 .encrypt_in_place_detached(ChaNonce::from_slice(nonce), aad, out)
-                .map_err(|_| Error::AuthenticationFailed)?;
+                .map_err(|_| {
+                    // `out` still holds the plaintext copy; wipe it.
+                    wipe_vec(out);
+                    Error::AuthenticationFailed
+                })?;
             out.extend_from_slice(&tag);
         }
         Algorithm::Aes256Gcm => {
@@ -90,18 +96,26 @@ pub(super) fn encrypt_chunk_into(
             let cipher = Aes256Gcm::new(AesKey::<Aes256Gcm>::from_slice(key));
             let tag = cipher
                 .encrypt_in_place_detached(AesNonce::from_slice(nonce), aad, out)
-                .map_err(|_| Error::AuthenticationFailed)?;
+                .map_err(|_| {
+                    // `out` still holds the plaintext copy; wipe it.
+                    wipe_vec(out);
+                    Error::AuthenticationFailed
+                })?;
             out.extend_from_slice(&tag);
         }
     }
     Ok(())
 }
 
-/// Decrypt one chunk into a caller-supplied buffer. Buffer is cleared
-/// and grown to `ciphertext_and_tag.len() - tag_len` bytes (the
-/// recovered plaintext). On authentication failure the buffer is
-/// scrubbed before returning.
-pub(super) fn decrypt_chunk_into(
+/// Decrypt one chunk (`ciphertext || tag`) and **append** the
+/// recovered plaintext to `out`. Bytes already in `out` are left
+/// untouched.
+///
+/// The ciphertext is copied to the end of `out` and decrypted in place
+/// there, so no intermediate buffer is allocated. On any error the
+/// appended region is overwritten with zeros and `out` is truncated
+/// back to its original length.
+pub(super) fn decrypt_chunk_append(
     algorithm: Algorithm,
     key: &[u8; 32],
     nonce: &[u8; NONCE_LEN],
@@ -109,31 +123,30 @@ pub(super) fn decrypt_chunk_into(
     aad: &[u8],
     out: &mut Vec<u8>,
 ) -> Result<()> {
-    if ciphertext_and_tag.len() < 16 {
+    if ciphertext_and_tag.len() < TAG_LEN {
         return Err(Error::InvalidCiphertext(alloc::format!(
-            "chunk too short ({} bytes, need at least 16 for tag)",
+            "chunk too short ({} bytes, need at least {TAG_LEN} for tag)",
             ciphertext_and_tag.len()
         )));
     }
-    let (ct, tag_bytes) = ciphertext_and_tag.split_at(ciphertext_and_tag.len() - 16);
+    let (ct, tag_bytes) = ciphertext_and_tag.split_at(ciphertext_and_tag.len() - TAG_LEN);
 
-    out.clear();
-    out.reserve(ct.len());
+    let start = out.len();
     out.extend_from_slice(ct);
 
-    match algorithm {
+    let result = match algorithm {
         Algorithm::ChaCha20Poly1305 => {
             use chacha20poly1305::aead::{AeadInPlace, KeyInit};
             use chacha20poly1305::{ChaCha20Poly1305, Key as ChaKey, Nonce as ChaNonce};
 
             let cipher = ChaCha20Poly1305::new(ChaKey::from_slice(key));
             let tag = chacha20poly1305::Tag::from_slice(tag_bytes);
-            cipher
-                .decrypt_in_place_detached(ChaNonce::from_slice(nonce), aad, out, tag)
-                .map_err(|_| {
-                    out.clear();
-                    Error::AuthenticationFailed
-                })?;
+            cipher.decrypt_in_place_detached(
+                ChaNonce::from_slice(nonce),
+                aad,
+                &mut out[start..],
+                tag,
+            )
         }
         Algorithm::Aes256Gcm => {
             use aes_gcm::aead::{AeadInPlace, KeyInit};
@@ -141,56 +154,16 @@ pub(super) fn decrypt_chunk_into(
 
             let cipher = Aes256Gcm::new(AesKey::<Aes256Gcm>::from_slice(key));
             let tag = aes_gcm::Tag::from_slice(tag_bytes);
-            cipher
-                .decrypt_in_place_detached(AesNonce::from_slice(nonce), aad, out, tag)
-                .map_err(|_| {
-                    out.clear();
-                    Error::AuthenticationFailed
-                })?;
+            cipher.decrypt_in_place_detached(
+                AesNonce::from_slice(nonce),
+                aad,
+                &mut out[start..],
+                tag,
+            )
         }
-    }
-    Ok(())
-}
-
-/// Decrypt one chunk under `key` with the supplied 12-byte `nonce` and
-/// `aad`. `ciphertext_and_tag` is `ciphertext || tag`.
-pub(super) fn decrypt_chunk(
-    algorithm: Algorithm,
-    key: &[u8; 32],
-    nonce: &[u8; NONCE_LEN],
-    ciphertext_and_tag: &[u8],
-    aad: &[u8],
-) -> Result<Vec<u8>> {
-    match algorithm {
-        Algorithm::ChaCha20Poly1305 => {
-            use chacha20poly1305::aead::{Aead, KeyInit, Payload};
-            use chacha20poly1305::{ChaCha20Poly1305, Key as ChaKey, Nonce as ChaNonce};
-
-            let cipher = ChaCha20Poly1305::new(ChaKey::from_slice(key));
-            cipher
-                .decrypt(
-                    ChaNonce::from_slice(nonce),
-                    Payload {
-                        msg: ciphertext_and_tag,
-                        aad,
-                    },
-                )
-                .map_err(|_| Error::AuthenticationFailed)
-        }
-        Algorithm::Aes256Gcm => {
-            use aes_gcm::aead::{Aead, KeyInit, Payload};
-            use aes_gcm::{Aes256Gcm, Key as AesKey, Nonce as AesNonce};
-
-            let cipher = Aes256Gcm::new(AesKey::<Aes256Gcm>::from_slice(key));
-            cipher
-                .decrypt(
-                    AesNonce::from_slice(nonce),
-                    Payload {
-                        msg: ciphertext_and_tag,
-                        aad,
-                    },
-                )
-                .map_err(|_| Error::AuthenticationFailed)
-        }
-    }
+    };
+    result.map_err(|_| {
+        wipe_tail(out, start);
+        Error::AuthenticationFailed
+    })
 }

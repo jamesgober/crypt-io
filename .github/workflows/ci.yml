@@ -42,3 +42,78 @@ jobs:
       - run: cargo doc --no-deps --all-features
         env:
           RUSTDOCFLAGS: "-D warnings"
+  # The jobs below run on Linux only. Nightly-only jobs clear
+  # RUSTFLAGS so a new nightly lint cannot fail them; the stable
+  # matrix above keeps `-D warnings`.
+
+  audit:
+    name: Audit (RustSec)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit
+
+  minimal-versions:
+    name: Minimal dependency versions
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+      # Downstream users do not get our Cargo.lock: check that the
+      # floors declared in Cargo.toml resolve and build.
+      - run: cargo update -Zminimal-versions
+      - run: cargo build --all-features
+      - run: cargo build
+      - run: cargo build --no-default-features --features std,hash-blake3
+      - run: cargo build --no-default-features --features std,aead-aes-gcm
+      - run: cargo build --no-default-features --features std,kdf-argon2
+
+  miri:
+    name: Miri (subset)
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: ""
+      MIRIFLAGS: "-Zmiri-strict-provenance"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: miri
+      - run: cargo miri setup
+      # Memory-handling paths: buffer wiping, key wipe on drop, the
+      # stream decryptor, `_into` error paths and the frozen KATs.
+      # Large-input tests are skipped or `cfg_attr(miri, ignore)`.
+      - run: >-
+          cargo miri test --all-features --lib --
+          wipe:: stream:: aead::tests::round_trip_short aead::tests::tampered
+          aead::aes_gcm_tests::round_trip_short
+      - run: >-
+          cargo miri test --all-features --test regressions --test kat --
+          --skip update_and_update_into_agree
+
+  fuzz-build:
+    name: Fuzz targets build
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - run: cargo fuzz build -O
+        working-directory: fuzz

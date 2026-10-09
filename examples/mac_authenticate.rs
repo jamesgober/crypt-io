@@ -24,9 +24,13 @@ fn main() -> Result<(), crypt_io::Error> {
     // ALWAYS use `*_verify` for the comparison — never `tag == expected`.
     // The non-constant-time leak is enough to forge tags one byte
     // at a time.
-    let ok = mac::hmac_sha256_verify(shared_key, message, &tag)?;
-    println!("Authentic message verifies: {ok}");
-    assert!(ok);
+    //
+    // A mismatch is `Ok(false)`, not an error, so branch on the bool.
+    // `mac::hmac_sha256_verify(..)?;` alone would accept forged tags.
+    if !mac::hmac_sha256_verify(shared_key, message, &tag)? {
+        return Err(crypt_io::Error::AuthenticationFailed);
+    }
+    println!("Authentic message verifies: true");
 
     // Tampered message → rejected.
     let tampered = b"please transfer $1000000 to account 99999";

@@ -76,7 +76,7 @@ the 1 GiB/s contract target for both algorithms at 1 MiB plaintext.
 | **CPU** | AMD Ryzen 9 9950X3D (Zen 5, 16-core, 32-thread, 5.7 GHz boost) |
 | **CPU flags** | `aes` (AES-NI), `sha_ni` (SHA-NI), `avx2`, `avx512f`, `avx512vbmi2`, `vaes` |
 | **OS** | WSL2 Ubuntu (kernel 6.6.87.2 on Windows 11) |
-| **Rust** | `1.85.0` (the MSRV pinned in `rust-toolchain.toml`) |
+| **Rust** | `1.85.0` (the MSRV, `rust-version` in `Cargo.toml`) |
 | **Build profile** | `[profile.bench]` — `opt-level = 3`, `lto = "fat"`, `codegen-units = 1`, `debug = true` |
 | **Date** | 2026-05-22 |
 

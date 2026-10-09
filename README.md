@@ -25,7 +25,7 @@
 <br>
 
 <p>
-    <strong>crypt-io</strong> is a focused encryption library that wraps battle-tested cryptographic primitives (from RustCrypto and the BLAKE3 team) behind a clean, hard-to-misuse API. Built from the ground up with REPS discipline, algorithm agility, and tight portfolio integration (<code>mod-rand</code> for CSPRNG nonces, <code>error-forge</code> for error metadata), it targets the symmetric-crypto needs that <i>most</i> applications actually have: encrypt some data, hash some data, authenticate a tag, derive a key.
+    <strong>crypt-io</strong> is a focused encryption library that wraps battle-tested cryptographic primitives (from RustCrypto and the BLAKE3 team) behind a clean, hard-to-misuse API. Built from the ground up with REPS discipline, algorithm agility, and tight portfolio integration (<code>mod-rand</code> for CSPRNG nonces), it targets the symmetric-crypto needs that <i>most</i> applications actually have: encrypt some data, hash some data, authenticate a tag, derive a key.
 </p>
 
 <p>
@@ -100,10 +100,14 @@ let key  = b"shared secret";
 let data = b"message to authenticate";
 
 let tag = mac::hmac_sha256(key, data)?;
-assert!(mac::hmac_sha256_verify(key, data, &tag)?);
+if !mac::hmac_sha256_verify(key, data, &tag)? {
+    return Err(crypt_io::Error::AuthenticationFailed);
+}
 // Never `tag == expected_tag` against a secret — use the `*_verify` path.
 # Ok::<(), crypt_io::Error>(())
 ```
+
+> **Check the `bool`.** `hmac_sha256_verify`, `hmac_sha512_verify` and `argon2_verify` return `Ok(false)` on a mismatch. `verify(..)?;` on its own compiles without a warning and accepts forged tags and wrong passwords. Always branch on the result: `if !verify(..)? { reject }`.
 
 BLAKE3 keyed mode — typed key, infallible:
 
@@ -145,7 +149,9 @@ Hashing a password (Argon2id, OWASP-recommended defaults):
 use crypt_io::kdf;
 
 let phc = kdf::argon2_hash(b"correct horse battery staple")?;
-assert!(kdf::argon2_verify(&phc, b"correct horse battery staple")?);
+if !kdf::argon2_verify(&phc, b"correct horse battery staple")? {
+    return Err(crypt_io::Error::AuthenticationFailed);
+}
 # Ok::<(), crypt_io::Error>(())
 ```
 
@@ -161,7 +167,15 @@ stream::decrypt_file("output.enc", "decrypted.bin", &key)?;
 # Ok::<(), crypt_io::Error>(())
 ```
 
-Chunked AEAD with the STREAM construction — works for files of any size, detects tampering / truncation / reordering. For in-memory streaming (network sockets, buffered I/O), use `StreamEncryptor` / `StreamDecryptor` directly.
+Chunked AEAD with the STREAM construction — works for files of any size, detects tampering / truncation / reordering. `decrypt_file` writes to a temporary file and only renames it into place once the whole stream has been authenticated. For in-memory streaming (network sockets, buffered I/O), use `StreamEncryptor` / `StreamDecryptor` directly; their `update` output is not end-authenticated until `finalize` returns `Ok`.
+
+### Usage limits
+
+- **Single-shot AEAD:** at most 2^32 messages per key (random 96-bit nonces).
+- **Streams and files:** at most about 2^12 (4,096) streams per key, or derive a per-file key with `kdf::hkdf_sha256`.
+- **`no_std`:** not supported in 1.0.x.
+
+See [`docs/SECURITY.md`](docs/SECURITY.md#known-caveats) for the numbers behind these limits.
 
 See [`docs/API.md`](docs/API.md) for the full reference.
 
@@ -243,7 +257,7 @@ Reproduce: `cargo bench --all-features` (numbers vary by hardware — see PERFOR
 - [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) — measured throughput, contract-check matrix, parameter-choice guidance.
 - [`docs/FILE_FORMAT.md`](docs/FILE_FORMAT.md) — stream wire format spec (frozen for the 1.x series).
 - [`CHANGELOG.md`](CHANGELOG.md) — per-version Added / Changed / Security entries.
-- [`docs/release/`](docs/release) — per-release notes (`v0.2.0.md`, `v0.3.0.md`, …, `v1.0.0.md`).
+- [`docs/release/`](docs/release) — per-release notes (`v0.2.0.md`, `v0.3.0.md`, …, `v1.0.1.md`).
 - [`.dev/ROADMAP.md`](.dev/ROADMAP.md) — milestone plan through 1.0 and beyond.
 
 <hr>

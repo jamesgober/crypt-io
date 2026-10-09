@@ -140,11 +140,13 @@ The upstream RustCrypto crates use `cfg(target_arch)` and
 `cfg(target_feature)` to pick the right backend; no consumer-
 side configuration required.
 
-For **embedded targets without `std`**, build with
-`default-features = false` and only `aead-chacha20` (plus any
-others you need). Note that 1.0 retains a `std` requirement for
-the streaming `encrypt_file` / `decrypt_file` helpers; the rest
-of the surface is `no_std`-compatible.
+**`no_std` is not supported in 1.0.x.** Earlier versions of this
+document said the surface was `no_std`-compatible with
+`default-features = false`; that was wrong for every feature
+combination. `mod-rand` (the nonce and salt source) and the
+default features of the RustCrypto and BLAKE3 dependencies all
+require `std`. Real `no_std` support is planned for a 1.x minor
+release.
 
 <hr>
 

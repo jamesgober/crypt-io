@@ -42,7 +42,13 @@
 //! # #[cfg(feature = "kdf-argon2")] {
 //! use crypt_io::kdf;
 //! let phc = kdf::argon2_hash(b"correct horse battery staple")?;
-//! assert!(kdf::argon2_verify(&phc, b"correct horse battery staple")?);
+//!
+//! // `argon2_verify` returns `Ok(false)` for a wrong password, so branch
+//! // on the bool. `kdf::argon2_verify(..)?;` on its own would accept
+//! // every password.
+//! if !kdf::argon2_verify(&phc, b"correct horse battery staple")? {
+//!     return Err(crypt_io::Error::AuthenticationFailed);
+//! }
 //! assert!(!kdf::argon2_verify(&phc, b"wrong guess")?);
 //! # }
 //! # Ok::<(), crypt_io::Error>(())

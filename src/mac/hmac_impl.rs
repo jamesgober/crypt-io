@@ -47,6 +47,11 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<[u8; HMAC_SHA256_OUTPUT_LE
 /// Returns `Ok(true)` if the tags match, `Ok(false)` if they don't, and
 /// [`Error::Mac`] if the upstream MAC could not be constructed.
 ///
+/// **A mismatch is `Ok(false)`, not an error.** Writing
+/// `hmac_sha256_verify(..)?;` throws that `bool` away and accepts any
+/// tag, including a forged one. Always branch on the value, as in the
+/// example below.
+///
 /// **Always** use this rather than `tag == expected`. The comparison
 /// inside is `subtle::ConstantTimeEq` (via the `hmac` crate's
 /// `verify_slice`), so timing does not leak how many leading bytes
@@ -64,7 +69,11 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<[u8; HMAC_SHA256_OUTPUT_LE
 /// use crypt_io::mac;
 /// let key = b"shared";
 /// let tag = mac::hmac_sha256(key, b"data")?;
-/// assert!(mac::hmac_sha256_verify(key, b"data", &tag)?);
+///
+/// // Correct: branch on the returned bool.
+/// if !mac::hmac_sha256_verify(key, b"data", &tag)? {
+///     return Err(crypt_io::Error::AuthenticationFailed);
+/// }
 /// assert!(!mac::hmac_sha256_verify(key, b"tampered", &tag)?);
 /// # }
 /// # Ok::<(), crypt_io::Error>(())
@@ -100,6 +109,10 @@ pub fn hmac_sha512(key: &[u8], data: &[u8]) -> Result<[u8; HMAC_SHA512_OUTPUT_LE
 }
 
 /// Verify an HMAC-SHA512 tag in constant time. See [`hmac_sha256_verify`].
+///
+/// **A mismatch is `Ok(false)`, not an error.** Branch on the returned
+/// `bool` (`if !hmac_sha512_verify(..)? { reject }`); never write
+/// `hmac_sha512_verify(..)?;`.
 ///
 /// # Errors
 ///

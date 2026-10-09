@@ -79,14 +79,33 @@ note in `hash` both explicitly forbid `tag == expected` /
   lengths, names, or `&'static str` reasons only — never key
   material, plaintext, ciphertext, nonces, or tag bytes.
   Verified by `kdf::argon2_impl::tests::error_messages_redact_password`.
-- **`decrypt_into` scrubs on auth failure.** The upstream
-  `decrypt_in_place_detached` writes decrypted bytes to the
-  buffer *first* and then verifies the tag; on tag mismatch the
-  wrapper clears the buffer before returning so partially-
-  decrypted plaintext can't leak. Verified by
-  `tests/into_apis.rs::decrypt_into_scrubs_on_auth_failure`.
-- **`zeroize`** (default feature) zeros internal scratch buffers
-  on drop where they hold key-equivalent or plaintext material.
+- **`_into` buffers on failure.** `decrypt_into` /
+  `decrypt_with_aad_into` clear `out` before any check, so every
+  error returns an empty buffer (1.0.0 returned the previous
+  message's plaintext on `InvalidKey` / `InvalidCiphertext`). On
+  `AuthenticationFailed` the whole allocation, including spare
+  capacity, is overwritten with zeros (1.0.0 only called
+  `Vec::clear()`, which leaves the bytes in place). With
+  `chacha20poly1305` 0.10 and `aes-gcm` 0.10.3 or later, upstream
+  verifies the tag before decrypting, so those bytes were
+  ciphertext; `aes-gcm` 0.10.0 to 0.10.2 decrypted first
+  (RUSTSEC-2023-0096), and 1.0.1 raises the dependency floor to
+  0.10.3. Stream `update_into` truncates `out` back to its entry
+  length and wipes what it appended. Verified by
+  `tests/regressions.rs`.
+- **`zeroize`** (default feature). `StreamEncryptor` and
+  `StreamDecryptor` overwrite their key copy and internal buffer on
+  drop, `Blake3Mac` wipes its keyed state on drop, and the `_into`
+  failure paths above use volatile writes. The feature also turns
+  on the upstream `zeroize` support in `aes-gcm` (GHASH key
+  setup), `argon2` (memory blocks) and `blake3`. Not covered in
+  1.0.x: AES round keys inside the `aes` crate, HMAC state, and
+  every `Vec<u8>` crypt-io returns to you (plaintext, HKDF output);
+  wrap those in `zeroize::Zeroizing` yourself. In 1.0.0 this feature
+  did nothing.
+- **No secrets in `Debug`.** The stream types print only the
+  algorithm, chunk size, counter and buffered length (1.0.0 printed
+  the raw key and buffered plaintext).
 
 <hr>
 
@@ -195,6 +214,26 @@ and confidentiality against:
 - **The OS RNG (`mod_rand::tier3`) is trusted.** Failure to
   produce randomness is a `RandomFailure` error — we don't
   fall back to a non-CSPRNG.
+- **PHC strings passed to `argon2_verify` are not fully trusted.**
+  Their cost parameters are capped (`m` at most 1 GiB, `t` at most
+  64, `p` at most 16) and only `argon2id` is accepted, so an
+  imported or tampered hash cannot make one login allocate
+  gigabytes or burn minutes of CPU, or downgrade the variant.
+
+### API misuse to avoid
+
+- **`verify(..)?;` accepts forgeries.** `mac::hmac_sha256_verify`,
+  `mac::hmac_sha512_verify` and `kdf::argon2_verify` return
+  `Result<bool>`, with a mismatch as `Ok(false)`. The `?` operator
+  only handles the `Err` case, so `verify(..)?;` compiles without a
+  warning and ignores the result. Always write
+  `if !verify(..)? { /* reject */ }`. A `Result<()>`-returning
+  check API is planned for 1.1.
+- **Acting on `StreamDecryptor::update` output early.** Chunks are
+  authenticated one by one, but truncation at a chunk boundary is
+  only detected by `finalize`. `stream::decrypt_file` handles this
+  for you by writing to a temporary file and renaming it only after
+  `finalize` succeeds.
 
 <hr>
 
@@ -219,8 +258,11 @@ performance numbers are in [`PERFORMANCE.md`](PERFORMANCE.md).
 
 ## Reproducibility
 
-- **`rust-toolchain.toml`** pins the MSRV exactly.
-- **`Cargo.lock`** is committed.
+- **MSRV** is declared as `rust-version = "1.85"` in `Cargo.toml`
+  and checked by the CI matrix (there is no `rust-toolchain.toml`).
+- **`Cargo.lock`** is committed. Downstream users do not get it, so
+  the dependency floors in `Cargo.toml` are also checked with a
+  `-Zminimal-versions` build in CI.
 - **All test vectors** are pinned as byte-array constants in
   source, not generated at test time.
 - **CI** runs the full gate (fmt + clippy + test + doc) on
@@ -248,11 +290,31 @@ performance numbers are in [`PERFORMANCE.md`](PERFORMANCE.md).
   allocating path is for ergonomics-over-throughput cases.
   See [`PERFORMANCE.md`](PERFORMANCE.md) §"0.10.0 wrapping-
   overhead close".
-- **No nonce-misuse-resistance in 1.0.** Both shipped AEADs use
-  a 96-bit random nonce per call; collision probability is
-  birthday-bounded at ~2^48 messages per key, fine for any
-  realistic workload but not catastrophic-collision-resistant.
-  XChaCha20-Poly1305 (192-bit nonce) is a 1.x candidate.
+- **Single-shot encryption: at most 2^32 messages per key.**
+  Both shipped AEADs use a random 96-bit nonce per call. After `n`
+  messages under one key the chance of a repeated nonce is about
+  `n^2 / 2^97`: about 2^-33 at 2^32 messages (the NIST SP 800-38D
+  cap for random IVs), 7.6e-6 at 2^40, and 39% at 2^48. A repeated
+  nonce leaks the XOR of two plaintexts and, for AES-256-GCM, the
+  GHASH key, which allows forgeries. Earlier docs called 2^48 safe;
+  it is not. crypt-io does not count messages; rotate keys or
+  derive subkeys with HKDF. XChaCha20-Poly1305 (192-bit nonce) is a
+  1.x candidate.
+- **Stream encryption: at most about 2^12 (4,096) streams per
+  key.** Each stream uses a random 56-bit nonce prefix directly
+  under the caller's key, with no per-stream subkey. Two streams
+  with the same prefix reuse nonces for every chunk index they
+  share. The collision chance is about `n^2 / 2^57`: 2^-33 at 4,096
+  streams, 2^-17 at about one million, 0.2% at 16 million. For
+  "one key, many files" (for example `stream::encrypt_file` in a
+  loop), derive a fresh key per file with `kdf::hkdf_sha256` and a
+  random salt stored next to the file. A stream format with a
+  per-stream subkey is planned for 1.1; 1.x will keep decrypting
+  the current format.
+- **No `no_std` support in 1.0.x.** Building with
+  `default-features = false` still needs `std` (through
+  `mod-rand` and the RustCrypto/BLAKE3 crates' default features).
+  Earlier docs said otherwise.
 - **No deterministic encryption mode.** Every `encrypt` call
   draws a fresh nonce. Callers who need deterministic
   encryption (key-wrap, format-preserving encryption,

@@ -31,6 +31,7 @@ use aes_gcm::{Aes256Gcm, Key, Nonce};
 
 use super::{AES_GCM_NONCE_LEN, AES_GCM_TAG_LEN, KEY_LEN};
 use crate::error::{Error, Result};
+use crate::wipe::wipe_vec;
 
 /// Encrypt `plaintext` with associated data `aad` under `key`. Returns
 /// `nonce || ciphertext || tag`.
@@ -74,13 +75,13 @@ pub(super) fn encrypt_into(
     aad: &[u8],
     out: &mut Vec<u8>,
 ) -> Result<()> {
+    out.clear();
     check_key_len(key)?;
 
     let mut nonce_bytes = [0u8; AES_GCM_NONCE_LEN];
     mod_rand::tier3::fill_bytes(&mut nonce_bytes)
         .map_err(|_| Error::RandomFailure("mod_rand::tier3::fill_bytes"))?;
 
-    out.clear();
     out.reserve(AES_GCM_NONCE_LEN + plaintext.len() + AES_GCM_TAG_LEN);
     out.extend_from_slice(&nonce_bytes);
     out.extend_from_slice(plaintext);
@@ -89,7 +90,13 @@ pub(super) fn encrypt_into(
     let nonce = Nonce::from_slice(&nonce_bytes);
     let tag = cipher
         .encrypt_in_place_detached(nonce, aad, &mut out[AES_GCM_NONCE_LEN..])
-        .map_err(|_| Error::AuthenticationFailed)?;
+        .map_err(|_| {
+            // Upstream rejects over-long inputs *after* we copied the
+            // plaintext into `out`. Do not hand the caller a
+            // "ciphertext" buffer that still holds plaintext.
+            wipe_vec(out);
+            Error::AuthenticationFailed
+        })?;
     out.extend_from_slice(&tag);
     Ok(())
 }
@@ -124,6 +131,9 @@ pub(super) fn decrypt(key: &[u8], wire: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
 /// Decrypt into a caller-supplied buffer. Buffer is cleared and grown to
 /// hold `wire.len() - nonce_len - tag_len` bytes (the recovered plaintext).
 pub(super) fn decrypt_into(key: &[u8], wire: &[u8], aad: &[u8], out: &mut Vec<u8>) -> Result<()> {
+    // Clear first so that no early-return error path below hands the
+    // caller's previous plaintext back to it.
+    out.clear();
     check_key_len(key)?;
 
     if wire.len() < AES_GCM_NONCE_LEN + AES_GCM_TAG_LEN {
@@ -137,7 +147,6 @@ pub(super) fn decrypt_into(key: &[u8], wire: &[u8], aad: &[u8], out: &mut Vec<u8
     let (nonce_bytes, ct_and_tag) = wire.split_at(AES_GCM_NONCE_LEN);
     let (ct, tag_bytes) = ct_and_tag.split_at(ct_and_tag.len() - AES_GCM_TAG_LEN);
 
-    out.clear();
     out.reserve(ct.len());
     out.extend_from_slice(ct);
 
@@ -147,8 +156,11 @@ pub(super) fn decrypt_into(key: &[u8], wire: &[u8], aad: &[u8], out: &mut Vec<u8
     cipher
         .decrypt_in_place_detached(nonce, aad, out, tag)
         .map_err(|_| {
-            // Scrub on auth failure — see chacha20.rs for rationale.
-            out.clear();
+            // Wipe length and spare capacity, see chacha20.rs. With
+            // aes-gcm < 0.10.3 (RUSTSEC-2023-0096) the buffer held
+            // unauthenticated plaintext at this point; the dependency
+            // floor now excludes those releases.
+            wipe_vec(out);
             Error::AuthenticationFailed
         })?;
     Ok(())

@@ -19,6 +19,162 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.1] - 2026-10-08
+
+Security patch. Fixes the memory-hygiene, `_into` buffer, file-helper,
+Argon2 and dependency-floor problems found in a security review of
+1.0.0, and corrects documentation that overstated what 1.0.0
+guaranteed. No public API or wire-format change: `cargo-semver-checks`
+against 1.0.0 reports no semver update required, and files and
+messages written by 1.0.0 decrypt unchanged. Upgrading is recommended
+for all users.
+
+Release notes: [`docs/release/v1.0.1.md`](docs/release/v1.0.1.md).
+
+### Security
+
+- **Stream types printed the raw key through `Debug`.**
+  `StreamEncryptor` and `StreamDecryptor` derived `Debug`, so any
+  `{:?}` (a `tracing` field, `dbg!`, an `unwrap()` on a containing
+  struct) printed the 32 key bytes and any buffered plaintext. Both
+  now have a hand-written `Debug` that shows only the algorithm,
+  chunk size, counter and buffered length.
+- **The default `zeroize` feature did nothing.** No code used it and
+  nothing was wiped on drop. Now:
+  - `StreamEncryptor` and `StreamDecryptor` overwrite their key copy
+    and internal buffer (full capacity) on drop, including after
+    `finalize`.
+  - `Blake3Mac` wipes its keyed hasher state on drop.
+  - The feature enables the upstream `zeroize` support of `aes-gcm`,
+    `argon2` and `blake3`.
+  - The `zeroize` dependency no longer pulls in the unused `derive`
+    proc-macro.
+  - Not covered yet: AES round keys inside the `aes` crate, HMAC
+    state, and the plaintext `Vec`s crypt-io returns. The docs now
+    say so.
+- **Dependency floor admitted aes-gcm with RUSTSEC-2023-0096.**
+  `aes-gcm = "0.10"` allowed 0.10.0 to 0.10.2, whose
+  `decrypt_in_place_detached` decrypts before checking the tag. The
+  floor is now `0.10.3`. `blake3` is now `1.5` (the first release
+  with a `zeroize` feature; `blake3 = "1"` also resolved to 1.0.0,
+  which does not build). A `-Zminimal-versions` build passes.
+- **`decrypt_into` returned stale plaintext on some errors.**
+  `decrypt_into` / `decrypt_with_aad_into` checked the key and
+  ciphertext length before clearing `out`, so `InvalidKey` and
+  `InvalidCiphertext` returned with the previous message's plaintext
+  still in the buffer. `out` is now cleared first, so it is empty on
+  every error.
+- **The auth-failure "scrub" only reset the length.** On
+  `AuthenticationFailed`, `decrypt_into` called `Vec::clear()`, which
+  leaves every byte in the allocation. The whole allocation (length
+  and spare capacity) is now overwritten with zeros. The same applies
+  to the stream chunk paths and to `encrypt_into` when the upstream
+  cipher rejects an input after the plaintext was copied into `out`.
+- **`stream::decrypt_file` left unauthenticated output on disk.**
+  Plaintext went straight to the destination, so a truncated or
+  tampered file returned `Err` but left the verified prefix behind,
+  world-readable under the default umask. `decrypt_file` now writes
+  to a new temporary file in the destination directory (created
+  exclusively, mode `0600` on Unix), `fsync`s it and renames it over
+  the destination only after the final chunk authenticates. On error
+  the temporary file is overwritten and removed and the destination
+  is untouched.
+- **`argon2_verify` trusted every parameter in the PHC string.** A
+  hostile or corrupted hash could make one verify allocate gigabytes
+  (`m`), run for minutes (`t`), or downgrade to `argon2d` / `argon2i`.
+  `argon2_verify` now rejects, with `Error::Kdf` and before doing any
+  work, any variant other than `argon2id` and any `m` above 1 GiB,
+  `t` above 64 or `p` above 16. crypt-io has only ever produced
+  `$argon2id$v=19$` hashes, so no hash it created is affected unless
+  it was made with `argon2_hash_with_params` beyond those limits.
+  `argon2_hash_with_params` now enforces the same limits.
+
+### Fixed
+
+- **`StreamDecryptor::update` was quadratic.** The whole input was
+  appended to an internal buffer and drained from the front one chunk
+  at a time, so one large `update` call (32 MiB at 1 KiB chunks) took
+  46 s instead of 0.16 s. Complete chunks are now decrypted directly
+  from the input and the buffer never holds more than one frame.
+- **`encrypt_file(p, p, ..)` destroyed its input.** It truncated `p`
+  before reading it and returned `Ok(())`. Both file helpers now
+  reject an output path that resolves to the input file.
+- **`StreamDecryptor::update_into` left partial output on error.**
+  If a later chunk in the same call failed, plaintext from earlier
+  chunks stayed appended to `out`. `out` is now truncated back to its
+  entry length and the appended bytes are wiped, matching `update`.
+- **`encrypt_into` / `encrypt_with_aad_into`** now clear `out` on
+  every error path, as documented.
+
+### Changed
+
+- **Removed unused dependencies.** `error-forge` (a non-optional
+  dependency that also broke `no_std` builds), `log-io`,
+  `metrics-lib` and `async-trait` were never used by any code. They
+  are gone; the `logging`, `metrics` and `async-trait` features remain
+  as empty features so existing feature lists keep resolving.
+- **`decrypt_file` output has mode `0600` on Unix** (it is created as
+  a private temporary file). Change it afterwards if others need to
+  read it.
+
+### Documentation
+
+- **`verify(..)?;` accepts forgeries.** `hmac_sha256_verify`,
+  `hmac_sha512_verify` and `argon2_verify` return `Ok(false)` on a
+  mismatch, so `verify(..)?;` compiles silently and ignores the
+  result. Every example now uses `if !verify(..)? { .. }`, and the
+  function docs, module docs, README and `SECURITY.md` carry a
+  warning.
+- **Nonce limits.** The docs said a key was good for about 2^48
+  messages; that is where a random-nonce collision becomes likely
+  (about 39%). They now state the NIST SP 800-38D limit of 2^32
+  messages per key, and a limit of about 2^12 (4,096) streams per key
+  for stream and file encryption (each stream uses a random 56-bit
+  nonce prefix under the caller's key), with HKDF per-file keys as
+  the workaround.
+- **`no_std` claim removed.** No feature combination of 1.0.x builds
+  as `no_std`; `PLATFORM-NOTES.md` said otherwise.
+- **Stale statements removed:** the comparison of the stream format
+  to `age` (which derives a per-file key), references to a
+  `rust-toolchain.toml` that does not exist, the "early scaffolding"
+  crate status, `error-forge` "error metadata", and the claim that
+  the CI runs `cargo-public-api` / `cargo-msrv`.
+- `StreamDecryptor::update` docs now say its output is not
+  end-authenticated until `finalize` succeeds. `FILE_FORMAT.md`
+  commits to using the version byte, not the reserved bytes, for any
+  change that affects decoding.
+- `docs/API.md` installation snippet said `crypt-io = "0.7"`.
+
+### Testing
+
+- **`tests/regressions.rs`**: one test per fix above; each fails
+  against 1.0.0.
+- **`tests/kat.rs`**: RFC 8439 section 2.8.2 and GCM Test Case 16
+  (with AAD) decrypted through `Crypt`, and frozen ChaCha20-Poly1305
+  and AES-256-GCM stream vectors built from the raw upstream
+  primitives per `FILE_FORMAT.md`.
+- **`tests/properties.rs`**: `proptest` properties (`decrypt` vs
+  `decrypt_into`, single-bit tampering, stream split points,
+  truncation).
+- **New fuzz target `audit_into_diff`** with the stale-output
+  reproducer in its corpus. The committed `fuzz/Cargo.lock` is
+  refreshed (it still pinned crypt-io 0.8.0).
+- **CI**: new `cargo audit`, `-Zminimal-versions` build, Miri subset
+  and fuzz-target build jobs.
+
+### Not in this release (planned for 1.1)
+
+- A stream format with a per-stream subkey, removing the
+  streams-per-key limit (1.x keeps decrypting the current format).
+- `Result<()>`-returning `*_check` functions (and `#[must_use]` on the
+  `bool` verifiers) for the `verify(..)?;` problem. Adding
+  `#[must_use]` is a minor-version change under semver.
+- Real `no_std` support.
+
+[1.0.1]: https://github.com/jamesgober/crypt-io/compare/v1.0.0...v1.0.1
+
+---
+
 ## [1.0.0] - 2026-05-24
 
 **Stable release.** The 1.0 contract in
@@ -884,5 +1040,5 @@ the deliberate stable cut.
 - Feature flags for AEAD (chacha20, aes-gcm), hashing (blake3, sha2), MAC (hmac, blake3 keyed), KDF (hkdf, argon2), stream encryption.
 - Dependencies wired: `mod-rand` for CSPRNG, `error-forge` for errors, optional `log-io` and `metrics-lib`.
 
-[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v1.0.1...HEAD
 [0.1.0]: https://github.com/jamesgober/crypt-io/releases/tag/v0.1.0

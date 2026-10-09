@@ -100,3 +100,9 @@ name = "stream_decrypt"
 path = "fuzz_targets/stream_decrypt.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "audit_into_diff"
+path = "fuzz_targets/audit_into_diff.rs"
+test = false
+doc = false

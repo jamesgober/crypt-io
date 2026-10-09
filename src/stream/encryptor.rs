@@ -1,9 +1,11 @@
 //! Streaming AEAD encryptor.
 
 use alloc::vec::Vec;
+use core::fmt;
 
 use crate::aead::Algorithm;
 use crate::error::{Error, Result};
+use crate::wipe::{wipe_bytes, wipe_vec};
 
 use super::aead::{encrypt_chunk, encrypt_chunk_into};
 use super::frame::{
@@ -53,7 +55,23 @@ use super::frame::{
 /// # }
 /// # Ok::<(), crypt_io::Error>(())
 /// ```
-#[derive(Debug)]
+///
+/// # Key and buffer hygiene
+///
+/// The encryptor keeps its own copy of the key and up to one chunk of
+/// buffered plaintext. Both are overwritten with zeros when the value
+/// is dropped (including after [`finalize`](Self::finalize)), using
+/// volatile writes when the `zeroize` feature is on. The `Debug`
+/// output never shows the key, the nonce prefix or buffered plaintext.
+///
+/// # Limits
+///
+/// Each stream gets a random 56-bit nonce prefix and is encrypted
+/// directly under the caller's key. Two streams whose prefixes collide
+/// reuse nonces, which for AES-256-GCM also exposes the GHASH key. Keep
+/// a single key below about 2^12 (4,096) streams, or derive a fresh
+/// key per stream (for example with `kdf::hkdf_sha256` and a random
+/// salt stored next to the ciphertext). See `docs/SECURITY.md`.
 pub struct StreamEncryptor {
     algorithm: Algorithm,
     key: [u8; 32],
@@ -121,6 +139,9 @@ impl StreamEncryptor {
             chunk_size_log2,
             buffer: Vec::with_capacity(chunk_size),
         };
+        // `[u8; 32]` is `Copy`: the struct got its own copy, so wipe
+        // the stack temporary as well.
+        wipe_bytes(&mut key_arr);
         Ok((enc, header))
     }
 
@@ -294,6 +315,26 @@ impl StreamEncryptor {
     }
 }
 
+impl fmt::Debug for StreamEncryptor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Hand-written so the key, nonce prefix, header and buffered
+        // plaintext can never reach logs through `{:?}`.
+        f.debug_struct("StreamEncryptor")
+            .field("algorithm", &self.algorithm)
+            .field("chunk_size", &self.chunk_size)
+            .field("counter", &self.counter)
+            .field("buffered_len", &self.buffer.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for StreamEncryptor {
+    fn drop(&mut self) {
+        wipe_bytes(&mut self.key);
+        wipe_vec(&mut self.buffer);
+    }
+}
+
 fn check_key(key: &[u8]) -> Result<()> {
     if key.len() == 32 {
         Ok(())
@@ -302,5 +343,39 @@ fn check_key(key: &[u8]) -> Result<()> {
             expected: 32,
             actual: key.len(),
         })
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use alloc::boxed::Box;
+    use core::mem::{MaybeUninit, offset_of};
+
+    /// 1.0.0 had no `Drop` impl: the key copy survived the value
+    /// (audit CI-H2, proof of concept 07).
+    #[test]
+    fn drop_wipes_key_copy() {
+        let key: [u8; 32] = core::array::from_fn(|i| 0xa0 ^ u8::try_from(i).unwrap());
+        for alg in [Algorithm::ChaCha20Poly1305, Algorithm::Aes256Gcm] {
+            let (value, _header) = StreamEncryptor::new(&key, alg).unwrap();
+            let mut slot: Box<MaybeUninit<StreamEncryptor>> = Box::new(MaybeUninit::new(value));
+            // SAFETY: `slot` holds an initialised value; it is dropped
+            // exactly once here and never used as a `StreamEncryptor` again.
+            unsafe { slot.assume_init_drop() };
+            let off = offset_of!(StreamEncryptor, key);
+            // SAFETY: bytes `off..off + 32` are the `key: [u8; 32]`
+            // field. They were initialised at construction and drop
+            // glue only writes to them; the allocation is still live.
+            let after: [u8; 32] = unsafe {
+                slot.as_ptr()
+                    .cast::<u8>()
+                    .add(off)
+                    .cast::<[u8; 32]>()
+                    .read_unaligned()
+            };
+            assert_eq!(after, [0u8; 32], "{alg:?}");
+        }
     }
 }
