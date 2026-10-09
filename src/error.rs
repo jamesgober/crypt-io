@@ -60,6 +60,28 @@ pub enum Error {
     /// digest_size`), Argon2 parameter errors, and PHC-string parse
     /// failures.
     Kdf(&'static str),
+
+    /// An I/O operation failed in the file helpers
+    /// (`stream::encrypt_file` / `stream::decrypt_file`). The string
+    /// names the step (for example `"stream: read input"`). The
+    /// underlying `std::io::Error` is not carried, so no path fragment
+    /// can reach a log through this error. New in 1.1.0; 1.0.x
+    /// reported these as [`Error::Mac`].
+    Io(&'static str),
+
+    /// The caller passed an argument the operation cannot accept, such
+    /// as a stream chunk size outside `10..=24`, an algorithm the
+    /// requested format cannot carry, or the same path as input and
+    /// output of a file helper. New in 1.1.0; 1.0.x reported these as
+    /// [`Error::InvalidCiphertext`] or [`Error::Mac`].
+    InvalidInput(&'static str),
+
+    /// An encrypt-side size limit was hit: a plaintext or associated
+    /// data longer than the cipher allows, or a stream longer than
+    /// 2^32 chunks. Not a sign of tampering. New in 1.1.0; 1.0.x
+    /// reported these as [`Error::AuthenticationFailed`] or
+    /// [`Error::InvalidCiphertext`].
+    LimitExceeded(&'static str),
 }
 
 /// Type alias for `core::result::Result<T, Error>`.
@@ -82,12 +104,17 @@ impl fmt::Display for Error {
             Self::RandomFailure(why) => write!(f, "OS random source failed: {why}"),
             Self::Mac(why) => write!(f, "MAC operation failed: {why}"),
             Self::Kdf(why) => write!(f, "KDF operation failed: {why}"),
+            Self::Io(why) => write!(f, "I/O error: {why}"),
+            Self::InvalidInput(why) => write!(f, "invalid input: {why}"),
+            Self::LimitExceeded(why) => write!(f, "limit exceeded: {why}"),
         }
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for Error {}
+// `core::error::Error` is stable since Rust 1.81 (below the 1.85 MSRV)
+// and is the same trait as `std::error::Error`, so `no_std` builds get
+// the impl too.
+impl core::error::Error for Error {}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -126,6 +153,9 @@ mod tests {
             Error::RandomFailure("ENOSYS"),
             Error::Mac("init"),
             Error::Kdf("expand"),
+            Error::Io("read"),
+            Error::InvalidInput("chunk size"),
+            Error::LimitExceeded("counter"),
         ] {
             let _ = format!("{e:?}");
         }

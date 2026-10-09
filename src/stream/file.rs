@@ -29,23 +29,24 @@ const IO_BUFFER_LEN: usize = 64 * 1024;
 ///
 /// `input_path` and `output_path` must not name the same file (after
 /// resolving symlinks and `..`): that would truncate the input before
-/// it is read. The call is rejected with [`Error::Mac`] instead.
+/// it is read. The call is rejected with [`Error::InvalidInput`]
+/// instead.
 ///
-/// Each call starts a new stream under `key`. Keep one key below about
-/// 2^12 (4,096) streams, or derive a per-file key; see
-/// [`StreamEncryptor`](super::StreamEncryptor#limits).
+/// The file is written in stream format v2, so each file gets its own
+/// subkey and one key can encrypt any number of files. Readers on
+/// crypt-io 1.0.x cannot read v2; drive
+/// [`StreamEncryptor::new_with_format`](super::StreamEncryptor::new_with_format)
+/// with [`StreamFormat::V1`](super::StreamFormat::V1) if they must.
 ///
 /// # Errors
 ///
 /// - [`Error::InvalidKey`] if `key` is not 32 bytes.
 /// - [`Error::RandomFailure`] if the OS RNG cannot produce a nonce.
-/// - [`Error::Mac`] for I/O failures (file open, read, write) and when
-///   input and output are the same file — the
-///   variant carries a `&'static str` reason; the underlying
-///   `std::io::Error` is not surfaced (would risk leaking path
-///   fragments through error rendering).
-/// - [`Error::AuthenticationFailed`] for the (unreachable in
-///   practice) AEAD failure path.
+/// - [`Error::Io`] for I/O failures (file open, read, write). The
+///   variant carries a `&'static str` naming the step; the underlying
+///   `std::io::Error` is not surfaced (it could leak path fragments
+///   through error rendering). 1.0.x reported these as [`Error::Mac`].
+/// - [`Error::InvalidInput`] when input and output are the same file.
 ///
 /// # Example
 ///
@@ -67,40 +68,40 @@ pub fn encrypt_file(
 ) -> Result<()> {
     let input_path = input_path.as_ref();
     let output_path = output_path.as_ref();
-    let input = File::open(input_path).map_err(|_| Error::Mac("stream: open input"))?;
+    let input = File::open(input_path).map_err(|_| Error::Io("stream: open input"))?;
     reject_same_file(input_path, output_path)?;
     // Validate the key (and draw the nonce prefix) before touching the
     // output path.
     let (mut enc, header) = StreamEncryptor::new(key, algorithm)?;
-    let output = File::create(output_path).map_err(|_| Error::Mac("stream: create output"))?;
+    let output = File::create(output_path).map_err(|_| Error::Io("stream: create output"))?;
     let mut reader = BufReader::with_capacity(IO_BUFFER_LEN, input);
     let mut writer = BufWriter::with_capacity(IO_BUFFER_LEN, output);
 
     writer
         .write_all(&header)
-        .map_err(|_| Error::Mac("stream: write header"))?;
+        .map_err(|_| Error::Io("stream: write header"))?;
 
     let mut io_buf = alloc::vec![0u8; IO_BUFFER_LEN];
     loop {
         let n = reader
             .read(&mut io_buf)
-            .map_err(|_| Error::Mac("stream: read input"))?;
+            .map_err(|_| Error::Io("stream: read input"))?;
         if n == 0 {
             break;
         }
         let encrypted = enc.update(&io_buf[..n])?;
         writer
             .write_all(&encrypted)
-            .map_err(|_| Error::Mac("stream: write chunk"))?;
+            .map_err(|_| Error::Io("stream: write chunk"))?;
     }
 
     let tail = enc.finalize()?;
     writer
         .write_all(&tail)
-        .map_err(|_| Error::Mac("stream: write final chunk"))?;
+        .map_err(|_| Error::Io("stream: write final chunk"))?;
     writer
         .flush()
-        .map_err(|_| Error::Mac("stream: flush output"))?;
+        .map_err(|_| Error::Io("stream: flush output"))?;
     Ok(())
 }
 
@@ -121,15 +122,18 @@ pub fn encrypt_file(
 /// afterwards if it should be readable by others.
 ///
 /// `input_path` and `output_path` must not name the same file; that is
-/// rejected with [`Error::Mac`].
+/// rejected with [`Error::InvalidInput`].
+///
+/// Files in either stream format (v1 from crypt-io 1.0.x, v2 from 1.1)
+/// are accepted.
 ///
 /// # Errors
 ///
 /// - [`Error::InvalidKey`] if `key` is not 32 bytes.
 /// - [`Error::InvalidCiphertext`] if the header is malformed or the
 ///   stream is truncated below the minimum frame (header + tag).
-/// - [`Error::Mac`] for I/O failures and when input and output are the
-///   same file.
+/// - [`Error::Io`] for I/O failures (1.0.x: [`Error::Mac`]).
+/// - [`Error::InvalidInput`] when input and output are the same file.
 /// - [`Error::AuthenticationFailed`] for any cryptographic failure.
 ///
 /// # Example
@@ -150,7 +154,7 @@ pub fn decrypt_file(
 ) -> Result<()> {
     let input_path = input_path.as_ref();
     let output_path = output_path.as_ref();
-    let input = File::open(input_path).map_err(|_| Error::Mac("stream: open input"))?;
+    let input = File::open(input_path).map_err(|_| Error::Io("stream: open input"))?;
     reject_same_file(input_path, output_path)?;
     let mut reader = BufReader::with_capacity(IO_BUFFER_LEN, input);
 
@@ -158,7 +162,7 @@ pub fn decrypt_file(
     let mut header = [0u8; HEADER_LEN];
     reader
         .read_exact(&mut header)
-        .map_err(|_| Error::Mac("stream: read header"))?;
+        .map_err(|_| Error::Io("stream: read header"))?;
     let dec = StreamDecryptor::new(key, &header)?;
 
     let (tmp_path, tmp_file) = create_temp_beside(output_path)?;
@@ -166,7 +170,7 @@ pub fn decrypt_file(
         Ok(()) => {
             if fs::rename(&tmp_path, output_path).is_err() {
                 discard_temp(&tmp_path);
-                return Err(Error::Mac("stream: rename output"));
+                return Err(Error::Io("stream: rename output"));
             }
             sync_parent_dir(output_path);
             Ok(())
@@ -189,7 +193,7 @@ fn decrypt_body(mut dec: StreamDecryptor, reader: &mut impl Read, file: File) ->
         loop {
             let n = reader
                 .read(&mut io_buf)
-                .map_err(|_| Error::Mac("stream: read input"))?;
+                .map_err(|_| Error::Io("stream: read input"))?;
             if n == 0 {
                 break;
             }
@@ -197,18 +201,18 @@ fn decrypt_body(mut dec: StreamDecryptor, reader: &mut impl Read, file: File) ->
             dec.update_into(&io_buf[..n], &mut plaintext)?;
             writer
                 .write_all(&plaintext)
-                .map_err(|_| Error::Mac("stream: write plaintext"))?;
+                .map_err(|_| Error::Io("stream: write plaintext"))?;
         }
         plaintext.clear();
         dec.finalize_into(&mut plaintext)?;
         writer
             .write_all(&plaintext)
-            .map_err(|_| Error::Mac("stream: write final plaintext"))?;
+            .map_err(|_| Error::Io("stream: write final plaintext"))?;
         let file = writer
             .into_inner()
-            .map_err(|_| Error::Mac("stream: flush output"))?;
+            .map_err(|_| Error::Io("stream: flush output"))?;
         file.sync_all()
-            .map_err(|_| Error::Mac("stream: sync output"))
+            .map_err(|_| Error::Io("stream: sync output"))
     })();
     crate::wipe::wipe_vec(&mut plaintext);
     result
@@ -238,7 +242,9 @@ fn reject_same_file(input: &Path, output: &Path) -> Result<()> {
         },
     };
     if output_canon.as_deref() == Some(input_canon.as_path()) {
-        return Err(Error::Mac("stream: input and output are the same file"));
+        return Err(Error::InvalidInput(
+            "stream: input and output are the same file",
+        ));
     }
     Ok(())
 }
@@ -254,12 +260,11 @@ fn create_temp_beside(output: &Path) -> Result<(PathBuf, File)> {
     };
     let base = output
         .file_name()
-        .ok_or(Error::Mac("stream: output path has no file name"))?
+        .ok_or(Error::InvalidInput("stream: output path has no file name"))?
         .to_string_lossy();
     for _ in 0..8 {
         let mut rnd = [0u8; 8];
-        mod_rand::tier3::fill_bytes(&mut rnd)
-            .map_err(|_| Error::RandomFailure("mod_rand::tier3::fill_bytes"))?;
+        crate::rng::fill(&mut rnd)?;
         let suffix = u64::from_le_bytes(rnd);
         let path = dir.join(alloc::format!(".{base}.{suffix:016x}.crypt-io-tmp"));
 
@@ -273,10 +278,10 @@ fn create_temp_beside(output: &Path) -> Result<(PathBuf, File)> {
         match opts.open(&path) {
             Ok(f) => return Ok((path, f)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(_) => return Err(Error::Mac("stream: create temporary output")),
+            Err(_) => return Err(Error::Io("stream: create temporary output")),
         }
     }
-    Err(Error::Mac("stream: create temporary output"))
+    Err(Error::Io("stream: create temporary output"))
 }
 
 /// Best-effort removal of a temporary file that may hold verified

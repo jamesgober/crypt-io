@@ -5,9 +5,13 @@
 //! to the block size, both per [RFC 2104]. The wrapper preserves that
 //! contract; callers do not need to size their keys.
 //!
+//! With the `zeroize` feature (default on) the HMAC state, which is
+//! derived from the key, is wiped when a MAC is dropped (`hmac` and
+//! `sha2` `zeroize` support, new in crypt-io 1.1.0).
+//!
 //! [RFC 2104]: https://datatracker.ietf.org/doc/html/rfc2104
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Sha256, Sha512};
 
 use super::{HMAC_SHA256_OUTPUT_LEN, HMAC_SHA512_OUTPUT_LEN};
@@ -41,7 +45,51 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<[u8; HMAC_SHA256_OUTPUT_LE
     Ok(mac.finalize().into_bytes().into())
 }
 
+/// Check an HMAC-SHA256 tag in constant time.
+///
+/// Computes the tag for `(key, data)` and compares it to `expected_tag`
+/// with `subtle::ConstantTimeEq` (via the `hmac` crate's
+/// `verify_slice`). Returns `Ok(())` on a match and
+/// `Err(`[`Error::AuthenticationFailed`]`)` on a mismatch, including an
+/// `expected_tag` of the wrong length.
+///
+/// Because a mismatch is an error, `hmac_sha256_check(..)?;` does the
+/// right thing. New in 1.1.0; replaces [`hmac_sha256_verify`].
+///
+/// # Errors
+///
+/// - [`Error::AuthenticationFailed`] if the tag does not match.
+/// - [`Error::Mac`] if the upstream MAC could not be constructed
+///   (unreachable in practice).
+///
+/// # Example
+///
+/// ```
+/// # #[cfg(feature = "mac-hmac")] {
+/// use crypt_io::{mac, Error};
+/// let key = b"shared";
+/// let tag = mac::hmac_sha256(key, b"data")?;
+///
+/// mac::hmac_sha256_check(key, b"data", &tag)?;
+/// assert_eq!(
+///     mac::hmac_sha256_check(key, b"tampered", &tag),
+///     Err(Error::AuthenticationFailed)
+/// );
+/// # }
+/// # Ok::<(), crypt_io::Error>(())
+/// ```
+pub fn hmac_sha256_check(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Result<()> {
+    let mut mac =
+        HmacSha256Inner::new_from_slice(key).map_err(|_| Error::Mac("hmac-sha256 init"))?;
+    mac.update(data);
+    mac.verify_slice(expected_tag)
+        .map_err(|_| Error::AuthenticationFailed)
+}
+
 /// Verify an HMAC-SHA256 tag in constant time.
+///
+/// **Deprecated since 1.1.0:** use [`hmac_sha256_check`], which returns
+/// `Err(AuthenticationFailed)` on a mismatch.
 ///
 /// Computes the tag for `(key, data)` and compares it to `expected_tag`.
 /// Returns `Ok(true)` if the tags match, `Ok(false)` if they don't, and
@@ -65,6 +113,7 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<[u8; HMAC_SHA256_OUTPUT_LE
 /// # Example
 ///
 /// ```
+/// # #![allow(deprecated)]
 /// # #[cfg(feature = "mac-hmac")] {
 /// use crypt_io::mac;
 /// let key = b"shared";
@@ -78,6 +127,11 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<[u8; HMAC_SHA256_OUTPUT_LE
 /// # }
 /// # Ok::<(), crypt_io::Error>(())
 /// ```
+#[deprecated(
+    since = "1.1.0",
+    note = "returns Ok(false) on a mismatch, so `hmac_sha256_verify(..)?;` accepts forged tags; use `hmac_sha256_check`, which returns Err(AuthenticationFailed)"
+)]
+#[must_use = "a mismatch is Ok(false): check the bool, or use `hmac_sha256_check`"]
 pub fn hmac_sha256_verify(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Result<bool> {
     let mut mac =
         HmacSha256Inner::new_from_slice(key).map_err(|_| Error::Mac("hmac-sha256 init"))?;
@@ -108,7 +162,25 @@ pub fn hmac_sha512(key: &[u8], data: &[u8]) -> Result<[u8; HMAC_SHA512_OUTPUT_LE
     Ok(mac.finalize().into_bytes().into())
 }
 
+/// Check an HMAC-SHA512 tag in constant time. Returns
+/// `Err(`[`Error::AuthenticationFailed`]`)` on a mismatch. See
+/// [`hmac_sha256_check`]. New in 1.1.0; replaces
+/// [`hmac_sha512_verify`].
+///
+/// # Errors
+///
+/// Same as [`hmac_sha256_check`].
+pub fn hmac_sha512_check(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Result<()> {
+    let mut mac =
+        HmacSha512Inner::new_from_slice(key).map_err(|_| Error::Mac("hmac-sha512 init"))?;
+    mac.update(data);
+    mac.verify_slice(expected_tag)
+        .map_err(|_| Error::AuthenticationFailed)
+}
+
 /// Verify an HMAC-SHA512 tag in constant time. See [`hmac_sha256_verify`].
+///
+/// **Deprecated since 1.1.0:** use [`hmac_sha512_check`].
 ///
 /// **A mismatch is `Ok(false)`, not an error.** Branch on the returned
 /// `bool` (`if !hmac_sha512_verify(..)? { reject }`); never write
@@ -117,6 +189,11 @@ pub fn hmac_sha512(key: &[u8], data: &[u8]) -> Result<[u8; HMAC_SHA512_OUTPUT_LE
 /// # Errors
 ///
 /// Same as [`hmac_sha256_verify`].
+#[deprecated(
+    since = "1.1.0",
+    note = "returns Ok(false) on a mismatch, so `hmac_sha512_verify(..)?;` accepts forged tags; use `hmac_sha512_check`, which returns Err(AuthenticationFailed)"
+)]
+#[must_use = "a mismatch is Ok(false): check the bool, or use `hmac_sha512_check`"]
 pub fn hmac_sha512_verify(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Result<bool> {
     let mut mac =
         HmacSha512Inner::new_from_slice(key).map_err(|_| Error::Mac("hmac-sha512 init"))?;
@@ -128,7 +205,7 @@ pub fn hmac_sha512_verify(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Resul
 ///
 /// Construct with [`HmacSha256::new`], absorb data with
 /// [`update`](Self::update), finalise with [`finalize`](Self::finalize)
-/// (returns the 32-byte tag) or [`verify`](Self::verify) (constant-time
+/// (returns the 32-byte tag) or [`check`](Self::check) (constant-time
 /// compare against an expected tag).
 ///
 /// # Example
@@ -178,10 +255,23 @@ impl HmacSha256 {
 
     /// Finalise and verify against `expected_tag` in constant time.
     /// Returns `true` iff the computed tag matches `expected_tag`.
-    /// Consumes the hasher.
+    /// Consumes the hasher. See [`check`](Self::check) for the
+    /// `Result` form.
     #[must_use]
     pub fn verify(self, expected_tag: &[u8]) -> bool {
         self.inner.verify_slice(expected_tag).is_ok()
+    }
+
+    /// Finalise and check against `expected_tag` in constant time.
+    /// Consumes the hasher. New in 1.1.0.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::AuthenticationFailed`] if the tag does not match.
+    pub fn check(self, expected_tag: &[u8]) -> Result<()> {
+        self.inner
+            .verify_slice(expected_tag)
+            .map_err(|_| Error::AuthenticationFailed)
     }
 }
 
@@ -233,15 +323,28 @@ impl HmacSha512 {
 
     /// Finalise and verify against `expected_tag` in constant time.
     /// Returns `true` iff the computed tag matches `expected_tag`.
-    /// Consumes the hasher.
+    /// Consumes the hasher. See [`check`](Self::check) for the
+    /// `Result` form.
     #[must_use]
     pub fn verify(self, expected_tag: &[u8]) -> bool {
         self.inner.verify_slice(expected_tag).is_ok()
     }
+
+    /// Finalise and check against `expected_tag` in constant time.
+    /// Consumes the hasher. New in 1.1.0.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::AuthenticationFailed`] if the tag does not match.
+    pub fn check(self, expected_tag: &[u8]) -> Result<()> {
+        self.inner
+            .verify_slice(expected_tag)
+            .map_err(|_| Error::AuthenticationFailed)
+    }
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, unused_results)]
+#[allow(clippy::unwrap_used, clippy::expect_used, unused_results, deprecated)]
 mod tests {
     use super::*;
 
@@ -430,5 +533,61 @@ mod tests {
         let key = [0xaau8; 256];
         let tag = hmac_sha256(&key, b"data").unwrap();
         assert!(hmac_sha256_verify(&key, b"data", &tag).unwrap());
+    }
+
+    // --- 1.1.0: check functions and state wiping ---
+
+    #[test]
+    fn check_functions_accept_and_reject() {
+        let tag = hmac_sha256(b"k", b"d").unwrap();
+        assert_eq!(hmac_sha256_check(b"k", b"d", &tag), Ok(()));
+        assert_eq!(
+            hmac_sha256_check(b"k", b"x", &tag),
+            Err(Error::AuthenticationFailed)
+        );
+        assert_eq!(
+            hmac_sha256_check(b"k", b"d", &tag[..31]),
+            Err(Error::AuthenticationFailed)
+        );
+        let tag = hmac_sha512(b"k", b"d").unwrap();
+        assert_eq!(hmac_sha512_check(b"k", b"d", &tag), Ok(()));
+        assert_eq!(
+            hmac_sha512_check(b"j", b"d", &tag),
+            Err(Error::AuthenticationFailed)
+        );
+        let mut m = HmacSha512::new(b"k").unwrap();
+        m.update(b"d");
+        assert_eq!(m.clone().check(&tag), Ok(()));
+        assert_eq!(m.check(&[0u8; 64]), Err(Error::AuthenticationFailed));
+    }
+
+    /// With `zeroize`, dropping a MAC wipes its key-derived state
+    /// (`hmac`/`sha2` zeroize support, deferred in 1.0.1).
+    #[cfg(feature = "zeroize")]
+    #[test]
+    fn drop_wipes_hmac_state() {
+        use alloc::boxed::Box;
+        use core::mem::{MaybeUninit, size_of};
+
+        fn wiped_after_drop<T>(value: T) -> bool {
+            let mut slot: Box<MaybeUninit<T>> = Box::new(MaybeUninit::new(value));
+            // SAFETY: `slot` holds an initialised value; it is dropped
+            // exactly once here and never used as a `T` again.
+            unsafe { slot.assume_init_drop() };
+            let ptr = slot.as_ptr().cast::<u8>();
+            // SAFETY: the allocation is live and `size_of::<T>()` bytes
+            // long; drop glue only writes to it. Padding bytes may be
+            // uninitialised in principle, but every field here is
+            // zeroed by the drop, so all bytes were written.
+            (0..size_of::<T>()).all(|i| unsafe { ptr.add(i).read_volatile() } == 0)
+        }
+
+        let key = [0x5au8; 40];
+        let mut a = HmacSha256::new(&key).unwrap();
+        a.update(b"some data");
+        assert!(wiped_after_drop(a), "HMAC-SHA256 state survived drop");
+        let mut b = HmacSha512::new(&key).unwrap();
+        b.update(b"some data");
+        assert!(wiped_after_drop(b), "HMAC-SHA512 state survived drop");
     }
 }

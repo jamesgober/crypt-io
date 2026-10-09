@@ -19,6 +19,183 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.0] - 2026-10-09
+
+Minor release. Finishes the work 1.0.1 deferred: a stream format with
+a per-stream subkey, `Result`-returning MAC and password checks, real
+`no_std` support, XChaCha20-Poly1305, an Argon2 policy, and wiping of
+AES round keys and HMAC state. Everything is additive:
+`cargo-semver-checks` against 1.0.1 reports a minor update. Streams
+and messages written by 1.0.x decrypt unchanged.
+
+Release notes: [`docs/release/v1.1.0.md`](docs/release/v1.1.0.md).
+
+**Read before upgrading a mixed fleet:** 1.1.0 writes stream format
+v2 by default, and crypt-io 1.0.x cannot read v2 (it fails cleanly
+with `InvalidCiphertext("unsupported stream version: 0x02 ...")`).
+Until every reader runs 1.1, write v1 with
+`StreamEncryptor::new_with_format(.., StreamFormat::V1)`.
+
+### Security
+
+- **Stream format v2: one subkey per stream.** Format v1 encrypted
+  every stream directly under the caller's key with a random 56-bit
+  nonce prefix, so two streams whose prefixes collided reused
+  nonces (keystream reuse, and for AES-256-GCM the GHASH key); the
+  safe limit was about 2^12 streams per key. A v2 stream starts with
+  a 32-byte random salt and is encrypted under
+  `HKDF-SHA256(key, salt, "crypt-io stream v2" || header)`, which
+  also yields the nonce prefix. Two streams now share nonces only if
+  their 256-bit salts collide. `StreamEncryptor::new`,
+  `new_with_chunk_size` and `stream::encrypt_file` write v2;
+  `StreamDecryptor` and `stream::decrypt_file` read v1 and v2. The
+  v2 header's reserved bytes must be zero, so they can never be
+  given a meaning that older v2 readers would ignore. The format,
+  key schedule and test vectors are in `docs/FILE_FORMAT.md`.
+- **`verify(..)?;` accepted forgeries.** New `*_check` functions
+  return `Err(AuthenticationFailed)` on a mismatch, so `?` does the
+  right thing: `mac::hmac_sha256_check`, `hmac_sha512_check`,
+  `blake3_keyed_check`, `kdf::argon2_check`,
+  `kdf::argon2_check_with_policy`, and a `check` method on
+  `HmacSha256`, `HmacSha512` and `Blake3Mac`. The `bool` versions
+  (`hmac_sha256_verify`, `hmac_sha512_verify`, `blake3_keyed_verify`,
+  `argon2_verify`) are deprecated, so every existing call site now
+  gets a compiler warning pointing at the replacement. They keep
+  working for the rest of 1.x.
+- **AES round keys and HMAC state are wiped on drop** with the
+  default `zeroize` feature. `aes` is now a direct dependency so the
+  feature can enable `aes/zeroize`, and `hmac` / `sha2` / `hkdf` move
+  to 0.13 / 0.11 / 0.13, whose `zeroize` support wipes the
+  key-derived HMAC state and the hash state. A test checks that a
+  dropped `HmacSha256` / `HmacSha512` leaves only zeros. Not covered:
+  the GHASH key inside `polyval` 0.6 (no `Drop` in its runtime
+  dispatch backend). The fixed `polyval` 0.7 only comes with
+  `aes-gcm` 0.11, which measured about 40% slower on 64-byte
+  messages and whose `aes` 0.9.3 needs Rust 1.89, above the 1.x
+  MSRV; see `docs/SECURITY.md`.
+- **Growing a buffer no longer leaves plaintext behind.**
+  `decrypt_into` and the stream decryptor used `Vec::reserve`, which
+  copies the old allocation and frees it without clearing it. They
+  now wipe the old allocation first, and `StreamDecryptor::update`
+  sizes its output once.
+
+### Added
+
+- **`Algorithm::XChaCha20Poly1305`** (192-bit nonce; draft-irtf-cfrg-
+  xchacha), `Crypt::xchacha20_poly1305()`, `XCHACHA20_NONCE_LEN`,
+  `XCHACHA20_TAG_LEN`. Available with `aead-chacha20`, in
+  single-shot, sealed and stream (v2) form. Use it when one key may
+  encrypt more than 2^32 messages. `Algorithm` is `#[non_exhaustive]`,
+  so this is not a breaking change.
+- **Sealed single-shot format:** `Crypt::seal`, `seal_with_aad`,
+  `open`, `open_with_aad`, `sealed_algorithm`, and the constants
+  `SEALED_HEADER_LEN`, `SEALED_VERSION`. Output is
+  `0x01 || algorithm || nonce || ciphertext || tag`, with both header
+  bytes authenticated; `open` routes on the stored algorithm. The 1.0
+  `encrypt` format, which records neither, is unchanged.
+- **`no_std` + `alloc`.** All RustCrypto and BLAKE3 dependencies now
+  have their default features off, and crypt-io's `std` feature
+  forwards to theirs. With `default-features = false` the crate
+  builds for bare-metal targets (CI builds `thumbv7em-none-eabihf`
+  on stable and 1.85). Hashing, MACs, HKDF, Argon2 checks and every
+  decrypt path work without `std`; APIs that need randomness need
+  the new **`getrandom` feature** (the `getrandom` crate, which on
+  bare metal calls a backend the application registers).
+  `mod-rand` stays the random source with `std` unless `getrandom`
+  is enabled. `Error` implements `core::error::Error` in every build.
+- **`kdf::Argon2Policy`** (caps, minimums, allowed variants),
+  `kdf::argon2_check_with_policy`, `kdf::argon2_hash_with_policy`
+  and **`Argon2Params::validate()`** (OWASP minimums). Hashes stored
+  with costs above the 1.0.1 caps can be verified again by raising
+  the caps.
+- **`Tag<N>`**: a tag wrapper whose `==` is constant-time
+  (`subtle`), with `ct_eq`, `From<[u8; N]>`, `TryFrom<&[u8]>`.
+- **`generate_key()`** → `Zeroizing<[u8; 32]>` from the OS CSPRNG,
+  `Crypt::decrypt_zeroizing` / `decrypt_with_aad_zeroizing`,
+  `kdf::hkdf_sha256_into` / `hkdf_sha512_into`,
+  `hash::blake3_long_into`, and a `Zeroizing` re-export.
+- **`stream::StreamFormat`**, `StreamEncryptor::new_with_format`,
+  `algorithm()` / `format()` on both stream types, `stream::SALT_LEN`,
+  `frame::VERSION_2`, `frame::SALT_LEN`, `frame::V2_KDF_INFO`.
+- **`Error::Io`, `Error::InvalidInput`, `Error::LimitExceeded`.**
+
+### Changed
+
+- **Errors that looked like tampering now say what happened.**
+  File-helper I/O failures were `Error::Mac("stream: ...")` and are
+  now `Error::Io`; same-file input/output was `Error::Mac` and an
+  out-of-range stream chunk size was `Error::InvalidCiphertext`,
+  both now `Error::InvalidInput`; an over-long plaintext or AAD was
+  `Error::AuthenticationFailed` and a stream past 2^32 chunks was
+  `Error::InvalidCiphertext`, both now `Error::LimitExceeded`. Code
+  that matched the old variants for these cases needs updating;
+  monitoring that alerts on `AuthenticationFailed` no longer gets
+  false positives from them.
+- **Stream output layout:** in v2 the first output of
+  `update` / `update_into` / `finalize` / `finalize_into` starts with
+  the 32-byte salt. Code that writes the header and then every
+  output in order (as all the examples do) needs no change.
+- **Dependencies:** `hmac` 0.13, `sha2` 0.11, `hkdf` 0.13 (from 0.12 /
+  0.10 / 0.12; none appear in crypt-io's public API); new direct
+  dependencies `aes` 0.8.4, `subtle` 2.5 and the optional
+  `getrandom` 0.4; `mod-rand` is now enabled by `std`.
+  `chacha20poly1305` and `aes-gcm` no longer enable their unused
+  `getrandom` feature. MSRV stays 1.85, but `digest` 0.11 depends on
+  `ctutils`, whose 0.4.3 needs Rust 1.87: on 1.85 / 1.86, Cargo's
+  MSRV-aware resolver (the default for edition 2024 workspaces)
+  picks 0.4.2 by itself; a workspace on resolver 2 needs
+  `cargo update -p ctutils --precise 0.4.2`.
+- `docs/STABILITY-1.0.md`: 1.0 promised that a 1.0 reader could read
+  any 1.x stream. Writing v2 by default withdraws that for streams
+  (v1 stays available for mixed fleets); everything else in the
+  contract stands.
+
+### Performance
+
+Measured A/B against 1.0.1 in one process (details in
+`docs/PERFORMANCE.md`):
+
+- Stream round trips: 3.5–4.5× faster at 1 KiB and about 1.4× at
+  16 KiB, because drop now wipes only the bytes a buffer ever held
+  instead of its whole 64 KiB capacity; `StreamDecryptor::update` on
+  10 MiB about 1.4× faster (output sized once); stream encrypt 3–12%
+  faster (full chunks encrypted straight from the input).
+- `Crypt::encrypt` 1.3–2× faster from 64 KiB up (one allocation, no
+  extra copy). `hmac_sha256_check` 15–40% faster than
+  `hmac_sha256_verify`.
+- SHA-256 on small inputs and HKDF-SHA256 are 6–35 ns slower per call
+  (the `sha2` 0.11 upgrade needed for HMAC state wiping, plus the
+  wiping itself). Everything else is within noise.
+
+### Documentation
+
+- `docs/FILE_FORMAT.md` rewritten for v1 + v2 + the sealed format,
+  with v2 test vectors from an independent implementation.
+- `README.md`, `docs/API.md`, `docs/SECURITY.md`,
+  `docs/ARCHITECTURE.md`, `docs/PLATFORM-NOTES.md` (new `no_std`
+  section), `docs/STABILITY-1.0.md`, the examples and rustdoc cover
+  every new item and use the `*_check` APIs.
+
+### Testing
+
+- Frozen v2 stream vectors (ChaCha20-Poly1305, AES-256-GCM,
+  XChaCha20-Poly1305) checked byte for byte on the encrypt side
+  (including byte-at-a-time input) and the decrypt side, generated
+  by an independent Python implementation of the spec.
+- XChaCha20-Poly1305 known-answer test from draft-irtf-cfrg-xchacha
+  A.3.1, also decrypted through crypt-io's wire format.
+- `tests/v1_1.rs`: every algorithm × format, salt handling, the new
+  error variants, file helpers writing v2 and reading v1, the sealed
+  format across an algorithm switch.
+- A memory test that dropped HMAC state is zero; unit tests for the
+  policy, `validate`, `Tag` and the buffer-wiping helpers.
+- CI: new `no_std` job (`thumbv7em-none-eabihf`, stable and 1.85,
+  with and without `getrandom`) and two more minimal-versions builds.
+
+[1.1.0]: https://github.com/jamesgober/crypt-io/compare/v1.0.1...v1.1.0
+
+---
+
 ## [1.0.1] - 2026-10-08
 
 Security patch. Fixes the memory-hygiene, `_into` buffer, file-helper,

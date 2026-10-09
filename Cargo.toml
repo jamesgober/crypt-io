@@ -1,6 +1,6 @@
 [package]
 name = "crypt-io"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.85"
 readme = "README.md"
@@ -50,16 +50,41 @@ path = "src/lib.rs"
 default = ["std", "zeroize", "aead-chacha20", "aead-aes-gcm", "hash-blake3", "hash-sha2", "mac-hmac", "mac-blake3", "kdf-hkdf", "kdf-argon2", "stream"]
 
 # Core
-std = []                              # Standard library (default on)
+# Standard library (default on). Turns on the upstream `std` features
+# (runtime CPU-feature detection in BLAKE3, `std::error::Error` impls)
+# and the `mod-rand` OS random source. Without `std` the crate is
+# `no_std` + `alloc`; see docs/PLATFORM-NOTES.md for what works there.
+std = [
+    "dep:mod-rand",
+    "chacha20poly1305?/std",
+    "aes-gcm?/std",
+    "blake3?/std",
+    "argon2?/std",
+    "getrandom?/std",
+]
+# Use the `getrandom` crate as the random source for nonces, salts and
+# keys. Required for the random-dependent APIs (`encrypt*`, `seal*`,
+# `StreamEncryptor::new*`, `argon2_hash*`, `generate_key`) in `no_std`
+# builds. With `std` it replaces `mod-rand`.
+getrandom = ["dep:getrandom"]
 # Wipe key copies and plaintext scratch buffers held by crypt-io types
 # (stream encryptor/decryptor, `_into` failure paths, BLAKE3 keyed MAC)
 # with volatile writes, and turn on the upstream `zeroize` support in
-# aes-gcm, argon2 and blake3. Default on.
-zeroize = ["dep:zeroize", "aes-gcm?/zeroize", "argon2?/zeroize", "blake3?/zeroize"]
+# aes-gcm, aes (round keys), sha2 and hmac (hash and MAC state),
+# argon2 and blake3. Default on.
+zeroize = [
+    "dep:zeroize",
+    "aes-gcm?/zeroize",
+    "aes?/zeroize",
+    "sha2?/zeroize",
+    "hmac?/zeroize",
+    "argon2?/zeroize",
+    "blake3?/zeroize",
+]
 
 # AEAD encryption algorithms
-aead-chacha20 = ["dep:chacha20poly1305"]  # ChaCha20-Poly1305 (default)
-aead-aes-gcm = ["dep:aes-gcm"]            # AES-256-GCM (hw-accel)
+aead-chacha20 = ["dep:chacha20poly1305"]  # ChaCha20-Poly1305 and XChaCha20-Poly1305 (default)
+aead-aes-gcm = ["dep:aes-gcm", "dep:aes"] # AES-256-GCM (hw-accel)
 aead-all = ["aead-chacha20", "aead-aes-gcm"]
 
 # Hashing algorithms
@@ -73,13 +98,14 @@ mac-blake3 = ["hash-blake3"]          # BLAKE3 keyed mode
 mac-all = ["mac-hmac", "mac-blake3"]
 
 # KDF (Key Derivation Functions)
-kdf-hkdf = ["dep:hkdf", "hash-sha2"]  # HKDF (key derivation)
+kdf-hkdf = ["dep:hkdf", "dep:hmac", "hash-sha2"]  # HKDF (key derivation)
 kdf-argon2 = ["dep:argon2"]           # Argon2id (password hashing)
 kdf-all = ["kdf-hkdf", "kdf-argon2"]
 
 # Stream/file encryption (chunked AEAD with STREAM-construction).
-# Pulls both AEAD backends so callers can pick either at runtime.
-stream = ["aead-chacha20", "aead-aes-gcm"]
+# Pulls both AEAD backends so callers can pick either at runtime, and
+# HKDF-SHA256 for the per-stream subkey of format v2.
+stream = ["aead-chacha20", "aead-aes-gcm", "dep:hkdf", "dep:hmac", "dep:sha2"]
 
 # Reserved. These features enable nothing in 1.0.x (no code ever used
 # the dependencies they used to pull in). They are kept so that
@@ -93,22 +119,31 @@ preset-all = ["std", "zeroize", "aead-all", "hash-all", "mac-all", "kdf-all", "s
 preset-minimal = ["std", "aead-chacha20"]
 
 [dependencies]
-# Cryptographic primitives (RustCrypto + BLAKE3)
-chacha20poly1305 = { version = "0.10", optional = true }
+# Cryptographic primitives (RustCrypto + BLAKE3). Default features are
+# off so the crate builds without `std`; `std` is forwarded through
+# crypt-io's own `std` feature.
+chacha20poly1305 = { version = "0.10", optional = true, default-features = false, features = ["alloc"] }
 # 0.10.3 is the first release that verifies the tag before decrypting
 # in place (RUSTSEC-2023-0096).
-aes-gcm = { version = "0.10.3", optional = true }
-blake3 = { version = "1.5", optional = true }   # 1.5 is the first release with a `zeroize` feature
-sha2 = { version = "0.10", optional = true }
-hmac = { version = "0.12", optional = true }
-hkdf = { version = "0.12", optional = true }
-argon2 = { version = "0.5", optional = true }
+aes-gcm = { version = "0.10.3", optional = true, default-features = false, features = ["aes", "alloc"] }
+# Direct dependency only so the `zeroize` feature can turn on
+# `aes/zeroize` (wipes the AES round keys when a cipher is dropped).
+aes = { version = "0.8.4", optional = true, default-features = false }
+blake3 = { version = "1.5", optional = true, default-features = false }   # 1.5 is the first release with a `zeroize` feature
+sha2 = { version = "0.11", optional = true, default-features = false }
+hmac = { version = "0.13", optional = true, default-features = false }
+hkdf = { version = "0.13", optional = true, default-features = false }
+argon2 = { version = "0.5", optional = true, default-features = false, features = ["alloc", "password-hash"] }
+# Constant-time comparison for `Tag`.
+subtle = { version = "2.5", default-features = false }
 
-# Portfolio dependencies
-mod-rand = { version = "1" }          # CSPRNG for nonces, salts, IVs
+# Random sources. `mod-rand` (portfolio crate, OS CSPRNG) with `std`;
+# `getrandom` when the `getrandom` feature is on.
+mod-rand = { version = "1", optional = true }
+getrandom = { version = "0.4", optional = true, default-features = false }
 
 # Optional secret zeroing
-zeroize = { version = "1.7", optional = true }
+zeroize = { version = "1.7", optional = true, default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

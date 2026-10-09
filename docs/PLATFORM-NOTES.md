@@ -140,15 +140,51 @@ The upstream RustCrypto crates use `cfg(target_arch)` and
 `cfg(target_feature)` to pick the right backend; no consumer-
 side configuration required.
 
-**`no_std` is not supported in 1.0.x.** Earlier versions of this
-document said the surface was `no_std`-compatible with
-`default-features = false`; that was wrong for every feature
-combination. `mod-rand` (the nonce and salt source) and the
-default features of the RustCrypto and BLAKE3 dependencies all
-require `std`. Real `no_std` support is planned for a 1.x minor
-release.
-
 <hr>
+
+## `no_std` (1.1.0)
+
+crypt-io builds as `no_std` + `alloc` since 1.1.0. (1.0.x claimed
+this but did not build without `std` in any configuration.) CI
+builds it for `thumbv7em-none-eabihf` (Cortex-M4F) on every push.
+
+```toml
+[dependencies]
+crypt-io = { version = "1.1", default-features = false, features = [
+    "aead-chacha20", "hash-sha2", "mac-hmac", "kdf-hkdf", "zeroize",
+    "getrandom",   # only if you need to encrypt; see below
+] }
+```
+
+You need a global allocator (`alloc`). What works without `std`:
+
+| Works with no extra setup | Needs the `getrandom` feature (fresh randomness) | Needs `std` |
+|---|---|---|
+| `Crypt::decrypt*`, `Crypt::open*`, `Crypt::sealed_algorithm` | `Crypt::encrypt*`, `Crypt::seal*` | `stream::encrypt_file` |
+| `StreamDecryptor` (v1 and v2) | `StreamEncryptor::new*` | `stream::decrypt_file` |
+| `hash::*`, `mac::*` (compute and `*_check`) | `kdf::argon2_hash*` | |
+| `kdf::hkdf_*`, `kdf::argon2_check*`, `Argon2Params::validate` | `generate_key` (also needs `zeroize`) | |
+| `Tag`, `Error` (implements `core::error::Error`) | | |
+
+Without `std` and without `getrandom`, the functions in the middle
+column are not compiled at all, so a build can never fall back to a
+weak random source.
+
+**The random source.** With `std`, nonces, salts and keys come from
+`mod_rand::tier3` (the OS CSPRNG). With the `getrandom` feature they
+come from the [`getrandom`](https://docs.rs/getrandom) crate instead
+(with or without `std`). On targets with an OS, `getrandom` uses the
+OS CSPRNG. On bare metal it has no source of its own: build with
+`RUSTFLAGS='--cfg getrandom_backend="custom"'` and register your
+hardware RNG (a TRNG peripheral, not a seeded PRNG) as described in
+the [`getrandom` custom backend docs](https://docs.rs/getrandom/0.4/getrandom/#custom-backend).
+Every nonce and salt is only as good as that backend.
+
+**Performance without `std`.** `blake3` detects AVX2 / AVX-512 /
+NEON at runtime only with `std`; without it, it uses the SIMD the
+target was compiled for (`-C target-cpu` / `target-feature`). The
+RustCrypto AEAD and SHA-2 crates detect CPU features through
+`cpufeatures`, which does not depend on `std`.
 
 ## Performance varies by 2-5× across platforms
 

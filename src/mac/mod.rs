@@ -2,7 +2,7 @@
 //!
 //! A MAC is a small fixed-size tag computed over `(key, data)` such that
 //! anyone holding the key can verify the tag is intact. Three algorithms
-//! ship in 0.5.0:
+//! ship:
 //!
 //! | Algorithm        | One-shot                       | Streaming      | Tag    | Feature       |
 //! |------------------|--------------------------------|----------------|--------|---------------|
@@ -13,42 +13,42 @@
 //! Every algorithm exposes three operations:
 //!
 //! - **Compute** (`hmac_sha256`, `blake3_keyed`, ...): produces the tag.
-//! - **Verify** (`hmac_sha256_verify`, `blake3_keyed_verify`, ...): computes
-//!   the tag for the supplied `(key, data)` and compares it against an
-//!   expected tag in **constant time**.
+//! - **Check** (`hmac_sha256_check`, `blake3_keyed_check`, ...; new in
+//!   1.1.0): computes the tag for the supplied `(key, data)`, compares
+//!   it against an expected tag in **constant time**, and returns
+//!   `Err(Error::AuthenticationFailed)` on a mismatch.
 //! - **Streaming** (`HmacSha256`, `Blake3Mac`, ...): for inputs that
-//!   arrive in chunks.
+//!   arrive in chunks, finished with `check` (or `finalize`).
 //!
-//! # Constant-time verification — non-negotiable
+//! # Constant-time comparison — non-negotiable
 //!
 //! Comparing two tags with `==` leaks how many leading bytes matched via
 //! timing. That leak is enough to forge tags one byte at a time. The
-//! `*_verify` functions and the streaming hashers' [`HmacSha256::verify`]
-//! / [`HmacSha512::verify`] / [`Blake3Mac::verify`] methods all use
-//! upstream constant-time comparators ([`subtle::ConstantTimeEq`] via
-//! the `hmac` and `blake3` crates).
+//! `*_check` functions and the streaming types' `check` / `verify`
+//! methods all use constant-time comparators ([`subtle::ConstantTimeEq`]
+//! via the `hmac` crate, and `blake3::Hash` equality).
 //!
-//! **Never** compare a computed tag to an expected tag with `==`. Use
-//! the `verify` paths in this module.
+//! **Never** compare a computed tag to an expected tag with `==` on
+//! arrays. Use the `check` paths in this module, or wrap the computed
+//! tag in [`Tag`](crate::Tag), whose `==` is constant-time.
 //!
-//! # Check the `bool`, not just the `Result`
+//! # The deprecated `*_verify` functions
 //!
-//! [`hmac_sha256_verify`] and [`hmac_sha512_verify`] return
-//! `Result<bool>`: `Err` only when the MAC cannot be set up, and
-//! `Ok(false)` when the tag does not match. The `?` operator handles the
-//! `Err` and hands back the `bool`, so
+//! `hmac_sha256_verify` and `hmac_sha512_verify` return `Result<bool>`:
+//! `Err` only when the MAC cannot be set up, and `Ok(false)` when the
+//! tag does not match. The `?` operator handles the `Err` and hands
+//! back the `bool`, so
 //!
 //! ```text
 //! mac::hmac_sha256_verify(key, data, tag)?;   // WRONG: accepts forged tags
 //! ```
 //!
-//! compiles without a warning and accepts every tag. Always branch on
-//! the value:
+//! compiles and accepts every tag. They are deprecated since 1.1.0 (as
+//! is `blake3_keyed_verify`, for consistency) and stay available for
+//! the rest of 1.x. Switch to the `*_check` forms:
 //!
 //! ```text
-//! if !mac::hmac_sha256_verify(key, data, tag)? {
-//!     return Err(Error::AuthenticationFailed);
-//! }
+//! mac::hmac_sha256_check(key, data, tag)?;    // rejects forged tags
 //! ```
 //!
 //! # Choosing a MAC
@@ -72,9 +72,7 @@
 //! let data = b"message to authenticate";
 //!
 //! let tag = mac::hmac_sha256(key, data)?;
-//! if !mac::hmac_sha256_verify(key, data, &tag)? {
-//!     return Err(crypt_io::Error::AuthenticationFailed);
-//! }
+//! mac::hmac_sha256_check(key, data, &tag)?;
 //! # }
 //! # Ok::<(), crypt_io::Error>(())
 //! ```
@@ -85,10 +83,13 @@ mod blake3_impl;
 mod hmac_impl;
 
 #[cfg(feature = "mac-blake3")]
-pub use self::blake3_impl::{Blake3Mac, blake3_keyed, blake3_keyed_verify};
+#[allow(deprecated)]
+pub use self::blake3_impl::{Blake3Mac, blake3_keyed, blake3_keyed_check, blake3_keyed_verify};
 #[cfg(feature = "mac-hmac")]
+#[allow(deprecated)]
 pub use self::hmac_impl::{
-    HmacSha256, HmacSha512, hmac_sha256, hmac_sha256_verify, hmac_sha512, hmac_sha512_verify,
+    HmacSha256, HmacSha512, hmac_sha256, hmac_sha256_check, hmac_sha256_verify, hmac_sha512,
+    hmac_sha512_check, hmac_sha512_verify,
 };
 
 /// Length of an HMAC-SHA256 tag, in bytes. Equal to `32`.

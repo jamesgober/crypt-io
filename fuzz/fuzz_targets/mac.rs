@@ -11,9 +11,10 @@
 use libfuzzer_sys::fuzz_target;
 use arbitrary::Arbitrary;
 use crypt_io::mac::{
-    blake3_keyed, blake3_keyed_verify, hmac_sha256, hmac_sha256_verify, hmac_sha512,
-    hmac_sha512_verify, Blake3Mac, HmacSha256, HmacSha512,
+    blake3_keyed, blake3_keyed_check, hmac_sha256, hmac_sha256_check, hmac_sha512,
+    hmac_sha512_check, Blake3Mac, HmacSha256, HmacSha512,
 };
+use crypt_io::Tag;
 
 #[derive(Arbitrary, Debug)]
 struct Input {
@@ -27,23 +28,26 @@ struct Input {
 fuzz_target!(|input: Input| {
     // --- HMAC-SHA256 ---
     if let Ok(tag) = hmac_sha256(&input.key_var, &input.data) {
-        // Verify must return Ok(true) for our own tag.
-        assert!(hmac_sha256_verify(&input.key_var, &input.data, &tag).unwrap_or(false));
-        // Verify with a different expected tag — just exercise the
-        // length-handling / CT-compare paths. Don't panic.
-        let _ = hmac_sha256_verify(&input.key_var, &input.data, &input.expected_tag);
+        // Check must accept our own tag.
+        assert!(hmac_sha256_check(&input.key_var, &input.data, &tag).is_ok());
+        // Check against an arbitrary expected tag: must agree with a
+        // constant-time `Tag` comparison and never panic.
+        let ok = hmac_sha256_check(&input.key_var, &input.data, &input.expected_tag).is_ok();
+        assert_eq!(ok, Tag::from(tag).ct_eq(&input.expected_tag));
     }
 
     // --- HMAC-SHA512 ---
     if let Ok(tag) = hmac_sha512(&input.key_var, &input.data) {
-        assert!(hmac_sha512_verify(&input.key_var, &input.data, &tag).unwrap_or(false));
-        let _ = hmac_sha512_verify(&input.key_var, &input.data, &input.expected_tag);
+        assert!(hmac_sha512_check(&input.key_var, &input.data, &tag).is_ok());
+        let ok = hmac_sha512_check(&input.key_var, &input.data, &input.expected_tag).is_ok();
+        assert_eq!(ok, Tag::from(tag).ct_eq(&input.expected_tag));
     }
 
     // --- BLAKE3 keyed (typed 32-byte key, infallible) ---
     let tag = blake3_keyed(&input.key_fixed, &input.data);
-    assert!(blake3_keyed_verify(&input.key_fixed, &input.data, &tag));
-    let _ = blake3_keyed_verify(&input.key_fixed, &input.data, &input.expected_tag);
+    assert!(blake3_keyed_check(&input.key_fixed, &input.data, &tag).is_ok());
+    let ok = blake3_keyed_check(&input.key_fixed, &input.data, &input.expected_tag).is_ok();
+    assert_eq!(ok, Tag::from(tag).ct_eq(&input.expected_tag));
 
     // --- Streaming MAC equivalence ---
     let combined: Vec<u8> = input.chunks.iter().flatten().copied().collect();

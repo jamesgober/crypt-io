@@ -11,6 +11,17 @@
 //! key length" bugs at compile time.
 
 use super::{BLAKE3_MAC_KEY_LEN, BLAKE3_MAC_OUTPUT_LEN};
+use crate::error::{Error, Result};
+
+/// Constant-time comparison of a computed BLAKE3 hash with a tag slice
+/// of any length.
+fn tag_matches(computed: ::blake3::Hash, expected_tag: &[u8]) -> bool {
+    let Ok(expected) = <[u8; BLAKE3_MAC_OUTPUT_LEN]>::try_from(expected_tag) else {
+        return false;
+    };
+    // `blake3::Hash`'s `PartialEq` is constant-time.
+    computed == ::blake3::Hash::from_bytes(expected)
+}
 
 /// Compute a BLAKE3 keyed-mode tag over `data` under `key`.
 ///
@@ -29,7 +40,46 @@ pub fn blake3_keyed(key: &[u8; BLAKE3_MAC_KEY_LEN], data: &[u8]) -> [u8; BLAKE3_
     *::blake3::keyed_hash(key, data).as_bytes()
 }
 
+/// Check a BLAKE3 keyed-mode tag in constant time.
+///
+/// Returns `Ok(())` when `expected_tag` is the tag of `(key, data)` and
+/// `Err(`[`Error::AuthenticationFailed`]`)` otherwise (including when
+/// `expected_tag` is not 32 bytes long). The comparison is BLAKE3's
+/// constant-time `Hash` equality. New in 1.1.0; replaces
+/// [`blake3_keyed_verify`] so that all MAC checks have the same shape.
+///
+/// # Errors
+///
+/// [`Error::AuthenticationFailed`] if the tag does not match.
+///
+/// # Example
+///
+/// ```
+/// # #[cfg(feature = "mac-blake3")] {
+/// use crypt_io::mac;
+/// let key = [0x42u8; 32];
+/// let tag = mac::blake3_keyed(&key, b"message");
+/// mac::blake3_keyed_check(&key, b"message", &tag)?;
+/// assert!(mac::blake3_keyed_check(&key, b"tampered", &tag).is_err());
+/// # }
+/// # Ok::<(), crypt_io::Error>(())
+/// ```
+pub fn blake3_keyed_check(
+    key: &[u8; BLAKE3_MAC_KEY_LEN],
+    data: &[u8],
+    expected_tag: &[u8],
+) -> Result<()> {
+    if tag_matches(::blake3::keyed_hash(key, data), expected_tag) {
+        Ok(())
+    } else {
+        Err(Error::AuthenticationFailed)
+    }
+}
+
 /// Verify a BLAKE3 keyed-mode tag in constant time.
+///
+/// **Deprecated since 1.1.0:** use [`blake3_keyed_check`], which has
+/// the same `Result` shape as the other MAC and password checks.
 ///
 /// Computes the tag for `(key, data)` and compares it to `expected_tag`
 /// using BLAKE3's [`Hash`] equality, which is constant-time (the BLAKE3
@@ -45,6 +95,7 @@ pub fn blake3_keyed(key: &[u8; BLAKE3_MAC_KEY_LEN], data: &[u8]) -> [u8; BLAKE3_
 /// # Example
 ///
 /// ```
+/// # #![allow(deprecated)]
 /// # #[cfg(feature = "mac-blake3")] {
 /// use crypt_io::mac;
 /// let key = [0x42u8; 32];
@@ -53,27 +104,24 @@ pub fn blake3_keyed(key: &[u8; BLAKE3_MAC_KEY_LEN], data: &[u8]) -> [u8; BLAKE3_
 /// assert!(!mac::blake3_keyed_verify(&key, b"tampered", &tag));
 /// # }
 /// ```
+#[deprecated(
+    since = "1.1.0",
+    note = "use `blake3_keyed_check`, which returns Err(AuthenticationFailed) on a mismatch like the other MAC checks"
+)]
 #[must_use]
 pub fn blake3_keyed_verify(
     key: &[u8; BLAKE3_MAC_KEY_LEN],
     data: &[u8],
     expected_tag: &[u8],
 ) -> bool {
-    if expected_tag.len() != BLAKE3_MAC_OUTPUT_LEN {
-        return false;
-    }
-    let computed = ::blake3::keyed_hash(key, data);
-    let mut expected = [0u8; BLAKE3_MAC_OUTPUT_LEN];
-    expected.copy_from_slice(expected_tag);
-    let expected_hash = ::blake3::Hash::from_bytes(expected);
-    computed == expected_hash
+    tag_matches(::blake3::keyed_hash(key, data), expected_tag)
 }
 
 /// Streaming BLAKE3 keyed-mode MAC for inputs that don't fit in memory.
 ///
 /// Construct with [`Blake3Mac::new`], absorb data with
 /// [`update`](Self::update), and finalise with [`finalize`](Self::finalize)
-/// (returns the 32-byte tag) or [`verify`](Self::verify) (constant-time
+/// (returns the 32-byte tag) or [`check`](Self::check) (constant-time
 /// compare against an expected tag).
 ///
 /// # Example
@@ -127,13 +175,22 @@ impl Blake3Mac {
     /// Consumes the hasher.
     #[must_use]
     pub fn verify(self, expected_tag: &[u8]) -> bool {
-        if expected_tag.len() != BLAKE3_MAC_OUTPUT_LEN {
-            return false;
+        tag_matches(self.inner.finalize(), expected_tag)
+    }
+
+    /// Finalise and check against `expected_tag` in constant time.
+    /// Consumes the MAC. New in 1.1.0.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::AuthenticationFailed`] if the tag does not match
+    /// (including a tag that is not 32 bytes long).
+    pub fn check(self, expected_tag: &[u8]) -> Result<()> {
+        if tag_matches(self.inner.finalize(), expected_tag) {
+            Ok(())
+        } else {
+            Err(Error::AuthenticationFailed)
         }
-        let mut expected = [0u8; BLAKE3_MAC_OUTPUT_LEN];
-        expected.copy_from_slice(expected_tag);
-        let expected_hash = ::blake3::Hash::from_bytes(expected);
-        self.inner.finalize() == expected_hash
     }
 }
 
@@ -147,7 +204,7 @@ impl Drop for Blake3Mac {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, unused_results)]
+#[allow(clippy::unwrap_used, clippy::expect_used, unused_results, deprecated)]
 mod tests {
     use super::*;
 

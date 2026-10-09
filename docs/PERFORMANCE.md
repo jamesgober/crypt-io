@@ -69,6 +69,34 @@ the 1 GiB/s contract target for both algorithms at 1 MiB plaintext.
 
 <hr>
 
+### 1.1.0 against 1.0.1
+
+Measured with an interleaved A/B harness that links 1.0.1 and 1.1.0
+into one binary and alternates them for 41 rounds per case (median of
+the per-round time ratio), so background load affects both sides
+equally. Windows 11, same reference CPU, default features. Below 1.0
+means 1.1.0 is faster.
+
+| Case | 1.1.0 / 1.0.1 | Why |
+|---|---|---|
+| Stream round trip, 1 KiB | 0.21 – 0.29 | Drop wiped the whole 64 KiB buffer capacity; it now wipes only the bytes the buffer ever held. |
+| Stream round trip, 16 KiB | 0.69 – 0.75 | Same. |
+| `StreamDecryptor::update`, 10 MiB | 0.68 – 0.71 | Output is sized once up front instead of growing. |
+| `StreamEncryptor` 1 – 10 MiB | 0.88 – 0.97 | Full chunks are encrypted straight from the input. |
+| `Crypt::encrypt`, 64 KiB – 1 MiB | 0.50 – 0.78 | One allocation and no extra copy (was two allocations). |
+| `encrypt_into` / `decrypt` / `decrypt_into`, all sizes | 0.98 – 1.02 | Unchanged. |
+| `hmac_sha256_check` vs `hmac_sha256_verify` | 0.60 – 0.85 | |
+| SHA-512, HMAC-SHA512, BLAKE3, Argon2id | 0.96 – 1.04 | Within noise. |
+| SHA-256, 64 B / 1 KiB | 1.12 – 1.24 / 1.04 | About 6 – 18 ns per call: `sha2` 0.11 plus wiping the hash state on drop (`zeroize`). |
+| HKDF-SHA256, 32 B | 1.05 – 1.07 | About 20 – 35 ns, same cause. |
+
+The v2 stream key schedule (one HKDF-SHA256 per stream, about
+0.3 µs) is included in the stream rows. The small SHA-256 / HKDF cost
+comes from the `hmac` 0.13 / `sha2` 0.11 upgrade that 1.1.0 needs to
+wipe HMAC state, and from the wiping itself; building with
+`default-features = false` and without `zeroize` removes the wiping
+part.
+
 ## Reference machine
 
 | | |

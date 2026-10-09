@@ -47,7 +47,9 @@ Or:
 cargo add crypt-io
 ```
 
-**MSRV:** Rust 1.85 (edition 2024). Older toolchains will not build.
+**MSRV:** Rust 1.85 (edition 2024). Older toolchains will not build. On Rust 1.85 / 1.86 in a workspace that still uses resolver 2, run `cargo update -p ctutils --precise 0.4.2` (a dependency of `digest` 0.11 whose newest release needs 1.87).
+
+**`no_std`:** since 1.1.0, `default-features = false` builds as `no_std` + `alloc`; add the `getrandom` feature for anything that needs fresh randomness. See [`docs/PLATFORM-NOTES.md`](docs/PLATFORM-NOTES.md#no_std-110).
 
 <hr>
 
@@ -80,6 +82,22 @@ let recovered  = crypt.decrypt(&key, &ciphertext)?;
 # Ok::<(), crypt_io::Error>(())
 ```
 
+### XChaCha20-Poly1305, sealed buffers and fresh keys
+
+```rust
+use crypt_io::{generate_key, Algorithm, Crypt};
+
+let key = generate_key()?;                    // 32 random bytes, wiped on drop
+let crypt = Crypt::xchacha20_poly1305();      // 24-byte nonces: no 2^32-message limit
+
+// `seal` records the format version and algorithm in the output, so
+// `open` works whatever algorithm wrote it.
+let sealed = crypt.seal(&*key, b"record")?;
+assert_eq!(Crypt::sealed_algorithm(&sealed)?, Algorithm::XChaCha20Poly1305);
+let record = Crypt::new().open(&*key, &sealed)?;
+# Ok::<(), crypt_io::Error>(())
+```
+
 ### Hashing
 
 ```rust
@@ -91,7 +109,7 @@ let sha512 = hash::sha512(b"the quick brown fox");   // [u8; 64]
 let xof    = hash::blake3_long(b"input", 128);       // Vec<u8>, 128 bytes
 ```
 
-### MAC with constant-time verify
+### MAC with a constant-time check
 
 ```rust
 use crypt_io::mac;
@@ -100,23 +118,22 @@ let key  = b"shared secret";
 let data = b"message to authenticate";
 
 let tag = mac::hmac_sha256(key, data)?;
-if !mac::hmac_sha256_verify(key, data, &tag)? {
-    return Err(crypt_io::Error::AuthenticationFailed);
-}
-// Never `tag == expected_tag` against a secret — use the `*_verify` path.
+mac::hmac_sha256_check(key, data, &tag)?;   // Err(AuthenticationFailed) on a mismatch
+// Never `tag == expected_tag` on arrays: use `*_check`, or wrap the tag in `crypt_io::Tag`.
 # Ok::<(), crypt_io::Error>(())
 ```
 
-> **Check the `bool`.** `hmac_sha256_verify`, `hmac_sha512_verify` and `argon2_verify` return `Ok(false)` on a mismatch. `verify(..)?;` on its own compiles without a warning and accepts forged tags and wrong passwords. Always branch on the result: `if !verify(..)? { reject }`.
+> **Use `*_check`, not `*_verify`.** The 1.0 functions `hmac_sha256_verify`, `hmac_sha512_verify` and `argon2_verify` return `Ok(false)` on a mismatch, so `verify(..)?;` compiles and accepts forged tags and wrong passwords. They are deprecated since 1.1.0; the `*_check` replacements return an error instead.
 
-BLAKE3 keyed mode — typed key, infallible:
+BLAKE3 keyed mode, with a typed key:
 
 ```rust
 use crypt_io::mac;
 
 let key = [0x42u8; 32];
 let tag = mac::blake3_keyed(&key, b"message");
-assert!(mac::blake3_keyed_verify(&key, b"message", &tag));
+mac::blake3_keyed_check(&key, b"message", &tag)?;
+# Ok::<(), crypt_io::Error>(())
 ```
 
 ### Streaming (large or chunked inputs)
@@ -149,11 +166,11 @@ Hashing a password (Argon2id, OWASP-recommended defaults):
 use crypt_io::kdf;
 
 let phc = kdf::argon2_hash(b"correct horse battery staple")?;
-if !kdf::argon2_verify(&phc, b"correct horse battery staple")? {
-    return Err(crypt_io::Error::AuthenticationFailed);
-}
+kdf::argon2_check(&phc, b"correct horse battery staple")?;   // Err(AuthenticationFailed) if wrong
 # Ok::<(), crypt_io::Error>(())
 ```
+
+The PHC string's variant and costs are checked against a limit before any work is done; use `kdf::argon2_check_with_policy` with an `Argon2Policy` to raise or lower those limits.
 
 ### Encrypt a file
 
@@ -171,9 +188,8 @@ Chunked AEAD with the STREAM construction — works for files of any size, detec
 
 ### Usage limits
 
-- **Single-shot AEAD:** at most 2^32 messages per key (random 96-bit nonces).
-- **Streams and files:** at most about 2^12 (4,096) streams per key, or derive a per-file key with `kdf::hkdf_sha256`.
-- **`no_std`:** not supported in 1.0.x.
+- **Single-shot ChaCha20-Poly1305 / AES-256-GCM:** at most 2^32 messages per key (random 96-bit nonces). Use XChaCha20-Poly1305 above that.
+- **Streams and files:** no practical limit per key with stream format v2, the default since 1.1.0 (each stream gets its own subkey). Format v1, written by 1.0.x, is limited to about 2^12 (4,096) streams per key. crypt-io 1.0.x cannot read v2; see [`docs/FILE_FORMAT.md`](docs/FILE_FORMAT.md).
 
 See [`docs/SECURITY.md`](docs/SECURITY.md#known-caveats) for the numbers behind these limits.
 
@@ -188,8 +204,8 @@ See [`docs/API.md`](docs/API.md) for the full reference.
 - **One job:** symmetric crypto. Done well.
 - **No reinvention.** Primitives come from RustCrypto and BLAKE3 (battle-tested, widely audited).
 - **Simple API.** Encrypt in two lines. Hash in one. The easy path is the secure path.
-- **Algorithm agility.** ChaCha20-Poly1305 by default, AES-256-GCM when you want hardware acceleration. Same `Crypt` API either way.
-- **Constant-time discipline.** MAC verification uses upstream constant-time comparators, never `==`. Documented in module overviews.
+- **Algorithm agility.** ChaCha20-Poly1305 by default, AES-256-GCM when you want hardware acceleration, XChaCha20-Poly1305 for very high message counts. Same `Crypt` API either way.
+- **Constant-time discipline.** MAC checks use upstream constant-time comparators, never `==`, and `Tag` makes `==` constant-time when you compare tags yourself.
 - **Hash ≠ MAC.** `Blake3Hasher` has no `with_key`. The only way to produce a keyed tag is through the `mac` module. This separation is deliberate.
 - **Redaction-clean errors.** No variant of `Error` ever contains key material, plaintext, ciphertext, nonces, or tag bytes.
 - **REPS-disciplined.** Every commit passes `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all-features`, and `cargo doc` with `-D warnings`.
@@ -255,9 +271,9 @@ Reproduce: `cargo bench --all-features` (numbers vary by hardware — see PERFOR
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — module layout, algorithm dispatch, dependency rationale.
 - [`docs/PLATFORM-NOTES.md`](docs/PLATFORM-NOTES.md) — hardware acceleration per platform + cross-compile guide.
 - [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) — measured throughput, contract-check matrix, parameter-choice guidance.
-- [`docs/FILE_FORMAT.md`](docs/FILE_FORMAT.md) — stream wire format spec (frozen for the 1.x series).
+- [`docs/FILE_FORMAT.md`](docs/FILE_FORMAT.md) — stream (v1, v2) and sealed wire format specs, with test vectors.
 - [`CHANGELOG.md`](CHANGELOG.md) — per-version Added / Changed / Security entries.
-- [`docs/release/`](docs/release) — per-release notes (`v0.2.0.md`, `v0.3.0.md`, …, `v1.0.1.md`).
+- [`docs/release/`](docs/release) — per-release notes (`v0.2.0.md`, `v0.3.0.md`, …, `v1.1.0.md`).
 - [`.dev/ROADMAP.md`](.dev/ROADMAP.md) — milestone plan through 1.0 and beyond.
 
 <hr>

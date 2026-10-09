@@ -2,7 +2,7 @@
 //!
 //! ENCRYPTION SUITE FOR RUST
 //!
-//! AEAD encryption (ChaCha20-Poly1305, AES-256-GCM), hashing (BLAKE3, SHA-2), MAC
+//! AEAD encryption (ChaCha20-Poly1305, XChaCha20-Poly1305, AES-256-GCM), hashing (BLAKE3, SHA-2), MAC
 //! (HMAC, BLAKE3 keyed), and KDF (HKDF, Argon2id). Algorithm-agile. RustCrypto-backed
 //! primitives with REPS discipline. Simple API. Sub-microsecond throughput.
 //!
@@ -25,10 +25,11 @@
 //!
 //! In scope:
 //!
-//! - **Symmetric AEAD encryption** (ChaCha20-Poly1305, AES-256-GCM)
+//! - **Symmetric AEAD encryption** (ChaCha20-Poly1305, XChaCha20-Poly1305,
+//!   AES-256-GCM)
 //! - **Stream/file encryption** for large data (chunked AEAD with framing)
 //! - **Hashing** (BLAKE3, SHA-256, SHA-512)
-//! - **MAC** (HMAC-SHA256, BLAKE3 keyed)
+//! - **MAC** (HMAC-SHA256, HMAC-SHA512, BLAKE3 keyed)
 //! - **KDF** (HKDF for key derivation, Argon2id for password hashing)
 //!
 //! Out of scope (use other crates):
@@ -48,23 +49,36 @@
 //!
 //! # Platform support
 //!
-//! crypt-io 1.0.x requires `std`. The `std` feature exists, but building
-//! with it disabled does not produce a `no_std` library: several
-//! dependencies still pull in `std`. Real `no_std` support is planned for
-//! a later minor release.
+//! With default features crypt-io uses `std`. Since 1.1.0 it also
+//! builds as `no_std` + `alloc` (`default-features = false`, for
+//! example on `thumbv7em-none-eabihf`). Without `std`:
+//!
+//! - Hashing, MACs, HKDF, Argon2id verification, every decrypt path,
+//!   [`Crypt::open`], [`stream::StreamDecryptor`] and [`Tag`] work as
+//!   usual.
+//! - Anything that needs fresh randomness (`encrypt*`, `seal*`,
+//!   `StreamEncryptor::new*`, `argon2_hash*`, [`generate_key`]) needs
+//!   the `getrandom` feature. On targets without an OS random source,
+//!   register a `getrandom` custom backend that reads your hardware
+//!   RNG.
+//! - The file helpers `stream::encrypt_file` / `stream::decrypt_file`
+//!   need `std`.
+//!
+//! See `docs/PLATFORM-NOTES.md` for the feature lists.
 //!
 //! # Security notes
 //!
-//! - The `*_verify` functions that return `Result<bool>`
-//!   (`mac::hmac_sha256_verify`, `mac::hmac_sha512_verify`,
-//!   `kdf::argon2_verify`) report a mismatch as `Ok(false)`, not as an
-//!   error. Writing `verify(..)?;` discards that `bool` and accepts
-//!   forged tags and wrong passwords. Always branch on the value:
-//!   `if !verify(..)? { /* reject */ }`.
-//! - Random 96-bit nonces: keep each key below 2^32 single-shot
-//!   encryptions (NIST SP 800-38D). Stream encryption: keep each key
-//!   below about 2^12 (4,096) streams, or derive a per-stream key with
-//!   HKDF. See `docs/SECURITY.md`.
+//! - Check MACs and passwords with the `*_check` functions
+//!   (`mac::hmac_sha256_check`, `mac::blake3_keyed_check`,
+//!   `kdf::argon2_check`, ...), which return
+//!   `Err(Error::AuthenticationFailed)` on a mismatch. The older
+//!   `*_verify` functions (deprecated in 1.1.0) return `Ok(false)`, so
+//!   `verify(..)?;` silently accepts forged tags and wrong passwords.
+//! - Random 96-bit nonces (ChaCha20-Poly1305, AES-256-GCM): keep each
+//!   key below 2^32 single-shot encryptions (NIST SP 800-38D), or use
+//!   XChaCha20-Poly1305. Streams written by 1.1.0 (format v2) use a
+//!   fresh subkey per stream and have no practical streams-per-key
+//!   limit. See `docs/SECURITY.md`.
 //!
 //! # License
 //!
@@ -72,8 +86,6 @@
 
 #![doc(html_root_url = "https://docs.rs/crypt-io")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
-// `no_std` is not supported in 1.0.x (see "Platform support" above); the
-// attribute is kept so the 1.x `no_std` work has a starting point.
 #![cfg_attr(not(feature = "std"), no_std)]
 // REPS §Code Quality canonical lint set. `#![deny(warnings)]` is
 // intentionally NOT used at the crate root — new rustc versions can
@@ -101,6 +113,9 @@
 extern crate alloc;
 
 mod error;
+#[cfg(any(feature = "std", feature = "getrandom"))]
+mod rng;
+mod tag;
 
 #[cfg(any(feature = "aead-chacha20", feature = "aead-aes-gcm"))]
 mod wipe;
@@ -121,9 +136,23 @@ pub mod kdf;
 pub mod stream;
 
 pub use crate::error::{Error, Result};
+pub use crate::tag::Tag;
 
 #[cfg(any(feature = "aead-chacha20", feature = "aead-aes-gcm"))]
 pub use crate::aead::{Algorithm, Crypt};
+
+#[cfg(all(
+    any(feature = "aead-chacha20", feature = "aead-aes-gcm"),
+    feature = "zeroize",
+    any(feature = "std", feature = "getrandom")
+))]
+pub use crate::aead::generate_key;
+
+/// Re-export of [`zeroize::Zeroizing`], the wrapper that
+/// [`generate_key`] and [`Crypt::decrypt_zeroizing`] return. New in
+/// 1.1.0.
+#[cfg(feature = "zeroize")]
+pub use zeroize::Zeroizing;
 
 /// Crate version string, populated by Cargo at build time.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

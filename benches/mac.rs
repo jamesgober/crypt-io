@@ -66,12 +66,13 @@ fn bench_verify(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(1024));
     group.bench_function("hmac_sha256", |b| {
         b.iter(|| {
-            mac::hmac_sha256_verify(black_box(key), black_box(&data), black_box(&tag_hmac)).unwrap()
+            mac::hmac_sha256_check(black_box(key), black_box(&data), black_box(&tag_hmac)).unwrap()
         });
     });
     group.bench_function("blake3_keyed", |b| {
         b.iter(|| {
-            mac::blake3_keyed_verify(black_box(&key32), black_box(&data), black_box(&tag_b3))
+            mac::blake3_keyed_check(black_box(&key32), black_box(&data), black_box(&tag_b3))
+                .unwrap()
         });
     });
     group.finish();

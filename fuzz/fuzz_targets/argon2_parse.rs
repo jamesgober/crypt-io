@@ -1,4 +1,4 @@
-//! Fuzz `kdf::argon2_verify` with arbitrary PHC strings.
+//! Fuzz `kdf::argon2_check` with arbitrary PHC strings.
 //!
 //! This is the PHC-parser attack surface — an attacker can hand us
 //! any string and we need to either parse-and-verify cleanly
@@ -14,7 +14,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use arbitrary::Arbitrary;
-use crypt_io::kdf::{argon2_hash_with_params, argon2_verify, Argon2Params};
+use crypt_io::kdf::{argon2_check, argon2_hash_with_params, Argon2Params};
 
 #[derive(Arbitrary, Debug)]
 struct Input {
@@ -31,7 +31,7 @@ struct Input {
 fuzz_target!(|input: Input| {
     // PHC parse path — arbitrary string in, must not panic.
     if let Ok(phc_str) = core::str::from_utf8(&input.phc_attempt) {
-        let _ = argon2_verify(phc_str, &input.password);
+        let _ = argon2_check(phc_str, &input.password);
     }
 
     // Parameter validation path. Cap costs aggressively so the
@@ -44,6 +44,6 @@ fuzz_target!(|input: Input| {
         output_len: ((input.output_len as usize).max(4)).min(64),
     };
     if let Ok(phc) = argon2_hash_with_params(&input.password, params) {
-        assert!(argon2_verify(&phc, &input.password).unwrap_or(false));
+        assert!(argon2_check(&phc, &input.password).is_ok());
     }
 });

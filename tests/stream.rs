@@ -11,7 +11,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crypt_io::stream::{
-    DEFAULT_CHUNK_SIZE_LOG2, HEADER_LEN, StreamDecryptor, StreamEncryptor, TAG_LEN,
+    DEFAULT_CHUNK_SIZE_LOG2, HEADER_LEN, SALT_LEN, StreamDecryptor, StreamEncryptor, StreamFormat,
+    TAG_LEN,
 };
 use crypt_io::{Algorithm, Error};
 
@@ -282,9 +283,37 @@ fn tampered_header_algorithm_fails_authentication() {
 }
 
 #[test]
-fn tampered_header_nonce_prefix_fails_authentication() {
+fn tampered_v2_salt_fails_authentication() {
     let (key, mut wire) = encrypt_for_attack(Algorithm::ChaCha20Poly1305, b"data");
-    wire[16] ^= 0x01; // flip first byte of nonce prefix
+    // The 32-byte salt follows the 24-byte header in format v2.
+    wire[HEADER_LEN] ^= 0x01;
+    let err = try_decrypt(&key, &wire).unwrap_err();
+    assert_eq!(err, Error::AuthenticationFailed);
+}
+
+#[test]
+fn tampered_v2_reserved_header_byte_is_rejected() {
+    let (key, mut wire) = encrypt_for_attack(Algorithm::ChaCha20Poly1305, b"data");
+    wire[16] ^= 0x01; // reserved in v2 (the nonce prefix lived here in v1)
+    let err = try_decrypt(&key, &wire).unwrap_err();
+    assert!(matches!(err, Error::InvalidCiphertext(_)), "{err:?}");
+}
+
+#[test]
+fn tampered_v1_header_nonce_prefix_fails_authentication() {
+    let key = [0x11u8; 32];
+    let (mut enc, header) = StreamEncryptor::new_with_format(
+        &key,
+        Algorithm::ChaCha20Poly1305,
+        DEFAULT_CHUNK_SIZE_LOG2,
+        StreamFormat::V1,
+    )
+    .unwrap();
+    let mut wire = header.to_vec();
+    wire.extend(enc.update(b"data").unwrap());
+    wire.extend(enc.finalize().unwrap());
+    assert_eq!(try_decrypt(&key, &wire).unwrap(), b"data");
+    wire[16] ^= 0x01; // flip first byte of the v1 nonce prefix
     let err = try_decrypt(&key, &wire).unwrap_err();
     assert_eq!(err, Error::AuthenticationFailed);
 }
@@ -312,13 +341,35 @@ fn wrong_key_length_rejected() {
 }
 
 #[test]
-fn nonce_prefix_differs_per_stream() {
+fn salt_differs_per_stream() {
     let key = [0u8; 32];
-    let (_a, header_a) = StreamEncryptor::new(&key, Algorithm::ChaCha20Poly1305).unwrap();
-    let (_b, header_b) = StreamEncryptor::new(&key, Algorithm::ChaCha20Poly1305).unwrap();
-    // Nonce prefix is in bytes 16..23 of the header — should differ
+    let (mut a, header_a) = StreamEncryptor::new(&key, Algorithm::ChaCha20Poly1305).unwrap();
+    let (mut b, header_b) = StreamEncryptor::new(&key, Algorithm::ChaCha20Poly1305).unwrap();
+    // v2 headers carry no randomness; the per-stream salt is the first
+    // thing the encryptor outputs, and must differ between streams.
+    assert_eq!(header_a, header_b);
+    let out_a = a.update(b"x").unwrap();
+    let out_b = b.update(b"x").unwrap();
+    assert_eq!(out_a.len(), SALT_LEN);
+    assert_ne!(out_a, out_b);
+}
+
+#[test]
+fn v1_nonce_prefix_differs_per_stream() {
+    let key = [0u8; 32];
+    let v1 = |_: ()| {
+        StreamEncryptor::new_with_format(
+            &key,
+            Algorithm::ChaCha20Poly1305,
+            DEFAULT_CHUNK_SIZE_LOG2,
+            StreamFormat::V1,
+        )
+        .unwrap()
+        .1
+    };
+    // Nonce prefix is in bytes 16..23 of a v1 header — should differ
     // between two streams under the same key.
-    assert_ne!(&header_a[16..23], &header_b[16..23]);
+    assert_ne!(&v1(())[16..23], &v1(())[16..23]);
 }
 
 // ---------- File round-trip ----------

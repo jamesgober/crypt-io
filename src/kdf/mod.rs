@@ -1,6 +1,6 @@
 //! Key Derivation Functions (KDF).
 //!
-//! Two algorithms ship in 0.6.0, addressing different needs:
+//! Two algorithms ship, addressing different needs:
 //!
 //! | Algorithm   | Purpose                                            | Speed         | Feature       |
 //! |-------------|----------------------------------------------------|---------------|---------------|
@@ -43,13 +43,9 @@
 //! use crypt_io::kdf;
 //! let phc = kdf::argon2_hash(b"correct horse battery staple")?;
 //!
-//! // `argon2_verify` returns `Ok(false)` for a wrong password, so branch
-//! // on the bool. `kdf::argon2_verify(..)?;` on its own would accept
-//! // every password.
-//! if !kdf::argon2_verify(&phc, b"correct horse battery staple")? {
-//!     return Err(crypt_io::Error::AuthenticationFailed);
-//! }
-//! assert!(!kdf::argon2_verify(&phc, b"wrong guess")?);
+//! // A wrong password is `Err(AuthenticationFailed)`, so `?` rejects it.
+//! kdf::argon2_check(&phc, b"correct horse battery staple")?;
+//! assert!(kdf::argon2_check(&phc, b"wrong guess").is_err());
 //! # }
 //! # Ok::<(), crypt_io::Error>(())
 //! ```
@@ -60,11 +56,15 @@ mod argon2_impl;
 mod hkdf_impl;
 
 #[cfg(feature = "kdf-argon2")]
+#[allow(deprecated)]
 pub use self::argon2_impl::{
-    ARGON2_DEFAULT_OUTPUT_LEN, ARGON2_DEFAULT_SALT_LEN, Argon2Params, argon2_hash,
-    argon2_hash_with_params, argon2_verify,
+    ARGON2_DEFAULT_OUTPUT_LEN, ARGON2_DEFAULT_SALT_LEN, Argon2Params, Argon2Policy, argon2_check,
+    argon2_check_with_policy, argon2_verify,
 };
+#[cfg(all(feature = "kdf-argon2", any(feature = "std", feature = "getrandom")))]
+pub use self::argon2_impl::{argon2_hash, argon2_hash_with_params, argon2_hash_with_policy};
 #[cfg(feature = "kdf-hkdf")]
 pub use self::hkdf_impl::{
-    HKDF_MAX_OUTPUT_SHA256, HKDF_MAX_OUTPUT_SHA512, hkdf_sha256, hkdf_sha512,
+    HKDF_MAX_OUTPUT_SHA256, HKDF_MAX_OUTPUT_SHA512, hkdf_sha256, hkdf_sha256_into, hkdf_sha512,
+    hkdf_sha512_into,
 };

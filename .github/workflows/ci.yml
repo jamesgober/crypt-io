@@ -77,6 +77,34 @@ jobs:
       - run: cargo build --no-default-features --features std,hash-blake3
       - run: cargo build --no-default-features --features std,aead-aes-gcm
       - run: cargo build --no-default-features --features std,kdf-argon2
+      - run: cargo build --no-default-features --features std,zeroize,stream
+      - run: cargo build --no-default-features --features std,getrandom,aead-chacha20
+
+  no-std:
+    name: no_std (thumbv7em-none-eabihf)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: [stable, "1.85.0"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          targets: thumbv7em-none-eabihf
+      # Everything except the random-dependent APIs: no RNG at all.
+      - run: >-
+          cargo build --target thumbv7em-none-eabihf --no-default-features
+          --features aead-chacha20,aead-aes-gcm,hash-blake3,hash-sha2,mac-hmac,mac-blake3,kdf-hkdf,kdf-argon2,stream,zeroize
+      # With the `getrandom` source. Bare metal has no OS RNG, so the
+      # application registers a custom backend; a library build only
+      # needs the cfg.
+      - run: >-
+          cargo build --target thumbv7em-none-eabihf --no-default-features
+          --features getrandom,aead-chacha20,aead-aes-gcm,hash-blake3,hash-sha2,mac-hmac,mac-blake3,kdf-hkdf,kdf-argon2,stream,zeroize
+        env:
+          RUSTFLAGS: '-D warnings --cfg getrandom_backend="custom"'
 
   miri:
     name: Miri (subset)

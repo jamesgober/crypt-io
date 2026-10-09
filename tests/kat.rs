@@ -12,8 +12,8 @@
 ))]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use crypt_io::stream::{HEADER_LEN, StreamDecryptor};
-use crypt_io::{Crypt, Error};
+use crypt_io::stream::{HEADER_LEN, SALT_LEN, StreamDecryptor, StreamFormat};
+use crypt_io::{Algorithm, Crypt, Error};
 
 fn h(s: &str) -> Vec<u8> {
     hex::decode(s).expect("valid hex")
@@ -196,4 +196,80 @@ fn frozen_aes_stream_decrypts() {
         decrypt_stream(&wire, 7).unwrap(),
         b"crypt-io stream format v1 frozen vector"
     );
+}
+
+// ---- Stream format v2 (1.1.0) ----
+
+include!("../src/stream/test_vectors.rs");
+
+#[test]
+fn frozen_v2_aes_stream_decrypts() {
+    // Small enough for the Miri CI job.
+    let wire = h(STREAM_V2_AES_SHORT);
+    assert_eq!(
+        decrypt_stream(&wire, SALT_LEN / 2).unwrap(),
+        b"crypt-io stream format v2 frozen vector"
+    );
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "several KiB through three AEADs is slow under Miri")]
+fn frozen_v2_streams_decrypt() {
+    let cases: [(&str, Algorithm, Vec<u8>); 3] = [
+        (
+            STREAM_V2_CHACHA_1100,
+            Algorithm::ChaCha20Poly1305,
+            (0..1100u32)
+                .map(|i| u8::try_from(i % 251).unwrap())
+                .collect(),
+        ),
+        (
+            STREAM_V2_AES_SHORT,
+            Algorithm::Aes256Gcm,
+            b"crypt-io stream format v2 frozen vector".to_vec(),
+        ),
+        (
+            STREAM_V2_XCHACHA_2048,
+            Algorithm::XChaCha20Poly1305,
+            (0..2048u32)
+                .map(|i| u8::try_from((i * 7) % 256).unwrap())
+                .collect(),
+        ),
+    ];
+    for (hex_wire, alg, expected) in cases {
+        let wire = h(hex_wire);
+        let dec = StreamDecryptor::new(&stream_key(), &wire[..HEADER_LEN]).unwrap();
+        assert_eq!(dec.format(), StreamFormat::V2);
+        assert_eq!(dec.algorithm(), alg);
+        // Split points inside the salt, at its end, and inside chunks.
+        for split in [0, 1, SALT_LEN - 1, SALT_LEN, SALT_LEN + 1, 1000, wire.len()] {
+            assert_eq!(
+                decrypt_stream(&wire, split).unwrap(),
+                expected,
+                "{alg:?} split={split}"
+            );
+        }
+        // Any flipped bit in the salt or the last byte must fail.
+        for pos in [HEADER_LEN, HEADER_LEN + SALT_LEN - 1, wire.len() - 1] {
+            let mut bad = wire.clone();
+            bad[pos] ^= 1;
+            assert_eq!(
+                decrypt_stream(&bad, 0).unwrap_err(),
+                Error::AuthenticationFailed,
+                "{alg:?} pos={pos}"
+            );
+        }
+    }
+}
+
+#[test]
+fn v2_stream_cut_inside_the_salt_is_rejected() {
+    let wire = h(STREAM_V2_AES_SHORT);
+    for cut in [HEADER_LEN, HEADER_LEN + 1, HEADER_LEN + SALT_LEN - 1] {
+        let err = decrypt_stream(&wire[..cut], 0).unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidCiphertext(_)),
+            "cut={cut}: {err:?}"
+        );
+    }
 }

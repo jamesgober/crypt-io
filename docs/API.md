@@ -42,6 +42,9 @@
     - [`Crypt::decrypt`](#cryptdecrypt)
     - [`Crypt::decrypt_with_aad`](#cryptdecrypt_with_aad)
     - [`Crypt::encrypt_into` / `decrypt_into` (zero-alloc, 0.10.0)](#zero-alloc-into-paths)
+    - [`Crypt::decrypt_zeroizing` (1.1.0)](#cryptdecrypt_zeroizing)
+    - [`Crypt::seal` / `open` (sealed format, 1.1.0)](#cryptseal--open)
+    - [`generate_key` (1.1.0)](#generate_key)
   - [`Algorithm`](#algorithm)
     - [`Algorithm::name`](#algorithmname)
     - [`Algorithm::key_len`](#algorithmkey_len)
@@ -50,7 +53,7 @@
   - [Choosing an algorithm](#choosing-an-algorithm)
   - [`hash` module](#hash-module)
     - [`hash::blake3`](#hashblake3)
-    - [`hash::blake3_long`](#hashblake3_long)
+    - [`hash::blake3_long`](#hashblake3_long) / `blake3_long_into`
     - [`hash::sha256`](#hashsha256)
     - [`hash::sha512`](#hashsha512)
     - [`Blake3Hasher`](#blake3hasher)
@@ -59,11 +62,12 @@
     - [Choosing a hash](#choosing-a-hash)
   - [`mac` module](#mac-module)
     - [`mac::hmac_sha256`](#machmac_sha256)
-    - [`mac::hmac_sha256_verify`](#machmac_sha256_verify)
+    - [`mac::hmac_sha256_check`](#machmac_sha256_check)
     - [`mac::hmac_sha512`](#machmac_sha512)
-    - [`mac::hmac_sha512_verify`](#machmac_sha512_verify)
+    - [`mac::hmac_sha512_check`](#machmac_sha512_check)
     - [`mac::blake3_keyed`](#macblake3_keyed)
-    - [`mac::blake3_keyed_verify`](#macblake3_keyed_verify)
+    - [`mac::blake3_keyed_check`](#macblake3_keyed_check)
+    - [Deprecated `*_verify` functions](#deprecated-_verify-functions)
     - [`HmacSha256`](#hmacsha256)
     - [`HmacSha512`](#hmacsha512)
     - [`Blake3Mac`](#blake3mac)
@@ -71,9 +75,12 @@
   - [`kdf` module](#kdf-module)
     - [`kdf::hkdf_sha256`](#kdfhkdf_sha256)
     - [`kdf::hkdf_sha512`](#kdfhkdf_sha512)
+    - [`kdf::hkdf_sha256_into` / `hkdf_sha512_into`](#kdfhkdf_sha256_into--hkdf_sha512_into)
     - [`kdf::argon2_hash`](#kdfargon2_hash)
     - [`kdf::argon2_hash_with_params`](#kdfargon2_hash_with_params)
-    - [`kdf::argon2_verify`](#kdfargon2_verify)
+    - [`kdf::argon2_check`](#kdfargon2_check)
+    - [`Argon2Policy`](#argon2policy)
+    - [`kdf::argon2_verify` (deprecated)](#kdfargon2_verify)
     - [`Argon2Params`](#argon2params)
     - [Choosing a KDF](#choosing-a-kdf)
   - [`stream` module](#stream-module)
@@ -81,7 +88,9 @@
     - [`StreamDecryptor`](#streamdecryptor)
     - [`stream::encrypt_file`](#streamencrypt_file)
     - [`stream::decrypt_file`](#streamdecrypt_file)
+    - [`StreamFormat`](#streamformat)
     - [Stream wire format](#stream-wire-format)
+  - [`Tag`](#tag)
   - [`Error`](#error)
   - [`Result<T>`](#resultt)
   - [Module constants](#module-constants)
@@ -99,7 +108,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-crypt-io = "1"
+crypt-io = "1.1"
 ```
 
 ### Install via terminal
@@ -118,15 +127,15 @@ cargo add crypt-io
 
 ## Cargo features
 
-The 0.2.0 surface is gated behind a small subset of the feature plan
-documented in `Cargo.toml`. The full plan ships across the 0.3 →
-0.9 milestones; what's listed here is what 0.2.0 actually wires up.
+Everything below `std` and `zeroize` turns on one part of the
+surface. Defaults give the full toolkit.
 
 | Feature | Default | Effect |
 |---|---|---|
-| `std` | ✅ | Standard-library types. Required: 1.0.x does not build as `no_std` even with this feature off. |
-| `zeroize` | ✅ | Wipes the stream types' key copy and buffer on drop, the BLAKE3 keyed MAC state on drop, and `_into` buffers on failure with volatile writes; also enables the upstream `zeroize` support in `aes-gcm`, `argon2` and `blake3`. |
-| `aead-chacha20` | ✅ | ChaCha20-Poly1305 backend + [`Crypt::new`](#cryptnew). |
+| `std` | ✅ | Standard library: the file helpers, `mod-rand` as the random source, and the upstream `std` features (runtime SIMD detection in BLAKE3). Off: the crate is `no_std` + `alloc` (1.1.0; see [`PLATFORM-NOTES.md`](PLATFORM-NOTES.md#no_std-110)). |
+| `getrandom` |  | 1.1.0. Use the `getrandom` crate as the random source. Needed for anything that draws randomness (`encrypt*`, `seal*`, `StreamEncryptor::new*`, `argon2_hash*`, `generate_key`) in a `no_std` build; with `std` it replaces `mod-rand`. |
+| `zeroize` | ✅ | Wipes the stream types' key copy and buffer on drop, the BLAKE3 keyed MAC state on drop, and `_into` buffers on failure with volatile writes; also enables the upstream `zeroize` support in `aes` (round keys), `aes-gcm`, `sha2` and `hmac` (hash and MAC state), `argon2` and `blake3`. Provides `generate_key`, `decrypt_zeroizing` and the `Zeroizing` re-export. |
+| `aead-chacha20` | ✅ | ChaCha20-Poly1305 and XChaCha20-Poly1305 + [`Crypt::new`](#cryptnew). |
 | `aead-aes-gcm` | ✅ | AES-256-GCM backend + [`Crypt::aes_256_gcm`](#cryptaes_256_gcm). |
 | `aead-all` |  | Both AEADs (already in the 0.3.0+ default). |
 | `hash-blake3` | ✅ | BLAKE3 hashing + [`Blake3Hasher`](#blake3hasher) + XOF. |
@@ -136,9 +145,9 @@ documented in `Cargo.toml`. The full plan ships across the 0.3 →
 | `mac-blake3` | ✅ | BLAKE3 keyed mode + [`Blake3Mac`](#blake3mac). |
 | `mac-all` |  | Both MAC families (already in the 0.5.0+ default). |
 | `kdf-hkdf` | ✅ | [`kdf::hkdf_sha256`](#kdfhkdf_sha256) / [`kdf::hkdf_sha512`](#kdfhkdf_sha512). |
-| `kdf-argon2` | ✅ | [`kdf::argon2_hash`](#kdfargon2_hash) / [`kdf::argon2_verify`](#kdfargon2_verify) / [`Argon2Params`](#argon2params). |
+| `kdf-argon2` | ✅ | [`kdf::argon2_hash`](#kdfargon2_hash) / [`kdf::argon2_check`](#kdfargon2_check) / [`Argon2Policy`](#argon2policy) / [`Argon2Params`](#argon2params). |
 | `kdf-all` |  | Both KDF families (already in the 0.6.0+ default). |
-| `stream` | ✅ | [`StreamEncryptor`](#streamencryptor) / [`StreamDecryptor`](#streamdecryptor) + [`encrypt_file`](#streamencrypt_file) / [`decrypt_file`](#streamdecrypt_file). Pulls both AEAD backends. |
+| `stream` | ✅ | [`StreamEncryptor`](#streamencryptor) / [`StreamDecryptor`](#streamdecryptor) + [`encrypt_file`](#streamencrypt_file) / [`decrypt_file`](#streamdecrypt_file). Pulls both AEAD backends and HKDF-SHA256 (format v2 key schedule). |
 | `preset-minimal` |  | `std` + `aead-chacha20` only — the 0.2.0 surface. |
 | `preset-all` |  | All planned features enabled. Some are inert until their phase ships. |
 | `metrics`, `logging`, `async-trait` |  | Reserved. They enable nothing; 1.0.1 removed the unused dependencies they used to pull in. |
@@ -484,6 +493,92 @@ Stream `_into` variants are documented in [the `stream` module
 section](#stream-module) — same shape: `update_into(&mut self,
 data, out)` and `finalize_into(self, out)`.
 
+Since 1.1.0, when `decrypt_into` has to grow `out`, it wipes the old
+allocation before freeing it (`Vec::reserve` would leave the
+previous plaintext in freed memory).
+
+<a href="#top">↑ TOP</a>
+
+#### `Crypt::decrypt_zeroizing`
+
+```rust
+#[cfg(feature = "zeroize")]
+impl Crypt {
+    pub fn decrypt_zeroizing(&self, key: &[u8], ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>>;
+    pub fn decrypt_with_aad_zeroizing(&self, key: &[u8], ciphertext: &[u8], aad: &[u8]) -> Result<Zeroizing<Vec<u8>>>;
+}
+```
+
+New in 1.1.0. Same as `decrypt` / `decrypt_with_aad`, but the
+plaintext comes back in a `Zeroizing` buffer that is wiped when it
+is dropped. The plaintext is written once, into that buffer. Errors
+are the same as [`Crypt::decrypt`](#cryptdecrypt).
+
+<a href="#top">↑ TOP</a>
+
+#### `Crypt::seal` / `open`
+
+```rust
+impl Crypt {
+    pub fn xchacha20_poly1305() -> Crypt;                       // feature aead-chacha20
+    pub fn seal(&self, key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>>;
+    pub fn seal_with_aad(&self, key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>>;
+    pub fn open(&self, key: &[u8], sealed: &[u8]) -> Result<Vec<u8>>;
+    pub fn open_with_aad(&self, key: &[u8], sealed: &[u8], aad: &[u8]) -> Result<Vec<u8>>;
+    pub fn sealed_algorithm(sealed: &[u8]) -> Result<Algorithm>;
+}
+```
+
+New in 1.1.0. The **sealed** format records the format version and
+the algorithm in front of the 1.0 layout:
+
+```text
+0x01 || algorithm (0x00 ChaCha20-Poly1305, 0x01 AES-256-GCM, 0x02 XChaCha20-Poly1305) || nonce || ciphertext || tag
+```
+
+Both header bytes are authenticated (they are prepended to the
+associated data). `open` takes the algorithm from the header, not
+from the handle, so data written under one algorithm stays readable
+after you switch, and one store can hold a mix. Use `seal` for new
+data unless something else must read the plain
+`nonce || ciphertext || tag` layout.
+
+**Errors.** `seal`: as [`Crypt::encrypt`](#cryptencrypt). `open`:
+`InvalidCiphertext` for a short buffer or an unknown version or
+algorithm byte, `AlgorithmNotEnabled` if that algorithm's feature is
+off, otherwise as [`Crypt::decrypt`](#cryptdecrypt).
+
+```rust
+# #[cfg(feature = "aead-chacha20")] {
+use crypt_io::{Algorithm, Crypt};
+let key = [7u8; 32];
+let sealed = Crypt::xchacha20_poly1305().seal(&key, b"hi")?;
+assert_eq!(Crypt::sealed_algorithm(&sealed)?, Algorithm::XChaCha20Poly1305);
+assert_eq!(Crypt::new().open(&key, &sealed)?, b"hi");
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
+<a href="#top">↑ TOP</a>
+
+#### `generate_key`
+
+```rust
+#[cfg(all(feature = "zeroize", any(feature = "std", feature = "getrandom")))]
+pub fn generate_key() -> Result<Zeroizing<[u8; 32]>>;
+```
+
+New in 1.1.0. 32 bytes from the OS CSPRNG, wiped on drop. Also at
+`crypt_io::aead::generate_key`. Errors: `RandomFailure`.
+
+```rust
+# #[cfg(feature = "aead-chacha20")] {
+let key = crypt_io::generate_key()?;
+let ct = crypt_io::Crypt::new().encrypt(&*key, b"hello")?;
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
 <a href="#top">↑ TOP</a>
 
 ---
@@ -495,6 +590,7 @@ data, out)` and `finalize_into(self, out)`.
 pub enum Algorithm {
     ChaCha20Poly1305,
     Aes256Gcm,
+    XChaCha20Poly1305,   // 1.1.0
     // future variants
 }
 ```
@@ -513,7 +609,8 @@ when to pick which.
 pub const fn name(self) -> &'static str;
 ```
 
-Human-readable name. Returns `"ChaCha20-Poly1305"` or `"AES-256-GCM"`.
+Human-readable name: `"ChaCha20-Poly1305"`, `"AES-256-GCM"` or
+`"XChaCha20-Poly1305"`.
 
 #### `Algorithm::key_len`
 
@@ -521,8 +618,7 @@ Human-readable name. Returns `"ChaCha20-Poly1305"` or `"AES-256-GCM"`.
 pub const fn key_len(self) -> usize;
 ```
 
-Required key length in bytes. Returns `32` for every algorithm
-shipped in 0.3.0.
+Required key length in bytes. Returns `32` for every algorithm.
 
 #### `Algorithm::nonce_len`
 
@@ -530,8 +626,8 @@ shipped in 0.3.0.
 pub const fn nonce_len(self) -> usize;
 ```
 
-Nonce length in bytes that the algorithm consumes. Returns `12`
-for both `ChaCha20Poly1305` and `Aes256Gcm`.
+Nonce length in bytes that the algorithm consumes: `12` for
+`ChaCha20Poly1305` and `Aes256Gcm`, `24` for `XChaCha20Poly1305`.
 
 #### `Algorithm::tag_len`
 
@@ -540,7 +636,7 @@ pub const fn tag_len(self) -> usize;
 ```
 
 Authentication tag length in bytes the algorithm produces. Returns
-`16` for both algorithms.
+`16` for every algorithm.
 
 <a href="#top">↑ TOP</a>
 
@@ -548,9 +644,9 @@ Authentication tag length in bytes the algorithm produces. Returns
 
 ### Choosing an algorithm
 
-Both algorithms shipped in 0.3.0 are safe at 256-bit symmetric
-strength. The choice is about hardware utilisation and interop, not
-about cryptographic strength.
+All three algorithms are safe at 256-bit symmetric strength. The
+choice is about hardware utilisation, interop and message volume,
+not about cryptographic strength.
 
 | You want… | Pick |
 |---|---|
@@ -558,6 +654,7 @@ about cryptographic strength.
 | Maximum throughput on AES-NI / ARMv8 hardware | `Aes256Gcm` |
 | Interop with TLS, JWE A256GCM, FIPS-spec'd protocols | `Aes256Gcm` |
 | A target without hardware AES (older ARM, embedded, RISC-V) | `ChaCha20Poly1305` |
+| More than 2^32 messages under one key | `XChaCha20Poly1305` |
 | Constant-time guarantee without depending on hardware AES | `ChaCha20Poly1305` |
 
 The hardware-acceleration dispatch is handled by the upstream
@@ -638,6 +735,10 @@ assert_eq!(d.len(), 128);
 ```
 
 <a href="#top">↑ TOP</a>
+
+`blake3_long_into(data: &[u8], out: &mut [u8])` (1.1.0) writes the
+same output into a buffer you own, for when the XOF output is key
+material.
 
 #### `hash::sha256`
 
@@ -774,10 +875,10 @@ Hardware acceleration is automatic on both:
 > leading bytes matched. For non-secret comparisons (file
 > integrity checks, content-addressed storage keys), `==` is fine.
 >
-> For **MAC tags** specifically, don't even reach for `subtle`
-> directly — use the [`mac`](#mac-module) module's `*_verify`
-> paths, which already wrap the constant-time comparator and
-> handle wrong-length tags as rejections rather than panics.
+> For **MAC tags** specifically, use the [`mac`](#mac-module)
+> module's `*_check` functions, which wrap the constant-time
+> comparator and treat wrong-length tags as mismatches, or wrap the
+> value in [`Tag`](#tag).
 
 <a href="#top">↑ TOP</a>
 
@@ -785,22 +886,21 @@ Hardware acceleration is automatic on both:
 
 ### `mac` module
 
-Message Authentication Codes. New in 0.5.0. Three algorithms with
-a consistent compute / verify / streaming triad — and verification
-is **always** constant-time, by design.
+Message Authentication Codes. Three algorithms with a consistent
+compute / check / streaming triad — and checking is **always**
+constant-time, by design.
 
-| Algorithm        | Compute                          | Verify                                  | Streaming       | Tag    | Feature       |
+| Algorithm        | Compute                          | Check (1.1.0)                           | Streaming       | Tag    | Feature       |
 |------------------|----------------------------------|-----------------------------------------|-----------------|--------|---------------|
-| HMAC-SHA256      | [`mac::hmac_sha256`](#machmac_sha256) | [`mac::hmac_sha256_verify`](#machmac_sha256_verify) | [`HmacSha256`](#hmacsha256) | 32 B | `mac-hmac`   |
-| HMAC-SHA512      | [`mac::hmac_sha512`](#machmac_sha512) | [`mac::hmac_sha512_verify`](#machmac_sha512_verify) | [`HmacSha512`](#hmacsha512) | 64 B | `mac-hmac`   |
-| BLAKE3 keyed     | [`mac::blake3_keyed`](#macblake3_keyed) | [`mac::blake3_keyed_verify`](#macblake3_keyed_verify) | [`Blake3Mac`](#blake3mac) | 32 B | `mac-blake3` |
+| HMAC-SHA256      | [`mac::hmac_sha256`](#machmac_sha256) | [`mac::hmac_sha256_check`](#machmac_sha256_check) | [`HmacSha256`](#hmacsha256) | 32 B | `mac-hmac`   |
+| HMAC-SHA512      | [`mac::hmac_sha512`](#machmac_sha512) | [`mac::hmac_sha512_check`](#machmac_sha512_check) | [`HmacSha512`](#hmacsha512) | 64 B | `mac-hmac`   |
+| BLAKE3 keyed     | [`mac::blake3_keyed`](#macblake3_keyed) | [`mac::blake3_keyed_check`](#macblake3_keyed_check) | [`Blake3Mac`](#blake3mac) | 32 B | `mac-blake3` |
 
-> **Verify, don't `==`.** Comparing two MAC tags with `==` leaks
-> how many leading bytes matched via timing — that leak is enough
-> to forge tags one byte at a time. The `*_verify` functions and
-> the streaming hashers' `verify` methods all use upstream
-> constant-time comparators. **Never** compare a computed tag to
-> an expected tag with `==`.
+> **Check, don't `==`.** Comparing two MAC tags with `==` on arrays
+> leaks how many leading bytes matched via timing — that leak is
+> enough to forge tags one byte at a time. The `*_check` functions
+> and the streaming types' `check` / `verify` methods all use
+> constant-time comparators, and so does `==` on [`Tag`](#tag).
 
 <a href="#top">↑ TOP</a>
 
@@ -831,38 +931,30 @@ assert_eq!(tag.len(), 32);
 
 <a href="#top">↑ TOP</a>
 
-#### `mac::hmac_sha256_verify`
+#### `mac::hmac_sha256_check`
 
 ```rust
 #[cfg(feature = "mac-hmac")]
-pub fn hmac_sha256_verify(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Result<bool>;
+pub fn hmac_sha256_check(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Result<()>;
 ```
 
-Constant-time verification of an HMAC-SHA256 tag. Computes the tag
-for `(key, data)` and compares it to `expected_tag` via the
+New in 1.1.0. Constant-time check of an HMAC-SHA256 tag. Computes
+the tag for `(key, data)` and compares it to `expected_tag` via the
 `hmac` crate's `verify_slice` (which routes through `subtle`).
-Returns `Ok(true)` on match, `Ok(false)` otherwise (including when
-`expected_tag` is the wrong length).
+Returns `Ok(())` on a match and `Err(AuthenticationFailed)`
+otherwise, including when `expected_tag` is the wrong length — so
+`hmac_sha256_check(..)?;` rejects forged tags.
 
-**Always use this rather than `tag == expected`.**
-
-> **Check the `bool`.** A mismatch is `Ok(false)`, not an error.
-> `mac::hmac_sha256_verify(key, data, tag)?;` compiles without a
-> warning and accepts every tag, forged or not. Always write
-> `if !mac::hmac_sha256_verify(..)? { /* reject */ }`. The same
-> applies to `hmac_sha512_verify` and `kdf::argon2_verify`.
-
-**Errors.** Same as [`mac::hmac_sha256`](#machmac_sha256).
+**Errors.** [`Error::AuthenticationFailed`](#error) on a mismatch;
+[`Error::Mac`](#error) as for [`mac::hmac_sha256`](#machmac_sha256).
 
 ```rust
 # #[cfg(feature = "mac-hmac")] {
-use crypt_io::mac;
+use crypt_io::{mac, Error};
 let key = b"shared";
 let tag = mac::hmac_sha256(key, b"data")?;
-if !mac::hmac_sha256_verify(key, b"data", &tag)? {
-    return Err(crypt_io::Error::AuthenticationFailed);
-}
-assert!(!mac::hmac_sha256_verify(key, b"tampered", &tag)?);
+mac::hmac_sha256_check(key, b"data", &tag)?;
+assert_eq!(mac::hmac_sha256_check(key, b"tampered", &tag), Err(Error::AuthenticationFailed));
 # }
 # Ok::<(), crypt_io::Error>(())
 ```
@@ -884,15 +976,15 @@ tag.
 
 <a href="#top">↑ TOP</a>
 
-#### `mac::hmac_sha512_verify`
+#### `mac::hmac_sha512_check`
 
 ```rust
 #[cfg(feature = "mac-hmac")]
-pub fn hmac_sha512_verify(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Result<bool>;
+pub fn hmac_sha512_check(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Result<()>;
 ```
 
-Constant-time verification for HMAC-SHA512. Same shape as
-[`mac::hmac_sha256_verify`](#machmac_sha256_verify).
+New in 1.1.0. Same as [`mac::hmac_sha256_check`](#machmac_sha256_check)
+for HMAC-SHA512.
 
 <a href="#top">↑ TOP</a>
 
@@ -923,31 +1015,43 @@ assert_eq!(tag.len(), 32);
 
 <a href="#top">↑ TOP</a>
 
-#### `mac::blake3_keyed_verify`
+#### `mac::blake3_keyed_check`
 
 ```rust
 #[cfg(feature = "mac-blake3")]
-pub fn blake3_keyed_verify(key: &[u8; 32], data: &[u8], expected_tag: &[u8]) -> bool;
+pub fn blake3_keyed_check(key: &[u8; 32], data: &[u8], expected_tag: &[u8]) -> Result<()>;
 ```
 
-Constant-time verification of a BLAKE3 keyed-mode tag. Computes
-the tag for `(key, data)` and compares it to `expected_tag` via
-BLAKE3's `Hash::eq` (which is documented as constant time).
-
-Returns `true` on match, `false` otherwise (including when
-`expected_tag` is not 32 bytes long).
-
-**Always use this rather than `tag == expected`.**
+New in 1.1.0. Constant-time check of a BLAKE3 keyed-mode tag via
+BLAKE3's `Hash::eq`. `Err(AuthenticationFailed)` on a mismatch,
+including a tag that is not 32 bytes long.
 
 ```rust
 # #[cfg(feature = "mac-blake3")] {
 use crypt_io::mac;
 let key = [0x42u8; 32];
 let tag = mac::blake3_keyed(&key, b"message");
-assert!(mac::blake3_keyed_verify(&key, b"message", &tag));
-assert!(!mac::blake3_keyed_verify(&key, b"tampered", &tag));
+mac::blake3_keyed_check(&key, b"message", &tag)?;
+assert!(mac::blake3_keyed_check(&key, b"tampered", &tag).is_err());
 # }
+# Ok::<(), crypt_io::Error>(())
 ```
+
+<a href="#top">↑ TOP</a>
+
+#### Deprecated `*_verify` functions
+
+```rust
+#[deprecated(since = "1.1.0")] pub fn hmac_sha256_verify(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Result<bool>;
+#[deprecated(since = "1.1.0")] pub fn hmac_sha512_verify(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Result<bool>;
+#[deprecated(since = "1.1.0")] pub fn blake3_keyed_verify(key: &[u8; 32], data: &[u8], expected_tag: &[u8]) -> bool;
+```
+
+Still available for all of 1.x, and still constant-time. They report
+a mismatch as `Ok(false)` / `false`, so `hmac_sha256_verify(..)?;`
+compiles and accepts every tag, forged or not. Replace them with the
+`*_check` functions; if you keep them, always write
+`if !mac::hmac_sha256_verify(..)? { /* reject */ }`.
 
 <a href="#top">↑ TOP</a>
 
@@ -961,13 +1065,16 @@ impl HmacSha256 {
     pub fn new(key: &[u8]) -> Result<Self>;
     pub fn update(&mut self, data: &[u8]) -> &mut Self;
     pub fn finalize(self) -> [u8; 32];
+    pub fn check(self, expected_tag: &[u8]) -> Result<()>;   // 1.1.0
     pub fn verify(self, expected_tag: &[u8]) -> bool;
 }
 ```
 
 Streaming HMAC-SHA256. `update` is chainable; finalisation consumes
-the hasher and returns either the 32-byte tag (`finalize`) or a
-constant-time comparison against an expected tag (`verify`).
+the hasher and returns the 32-byte tag (`finalize`), or compares it
+in constant time against an expected tag (`check`, which returns
+`Err(AuthenticationFailed)` on a mismatch, or `verify`, which returns
+`bool`). With `zeroize`, the HMAC state is wiped on drop (1.1.0).
 
 ```rust
 # #[cfg(feature = "mac-hmac")] {
@@ -1004,6 +1111,7 @@ impl Blake3Mac {
     pub fn new(key: &[u8; 32]) -> Self;     // infallible
     pub fn update(&mut self, data: &[u8]) -> &mut Self;
     pub fn finalize(self) -> [u8; 32];
+    pub fn check(self, expected_tag: &[u8]) -> Result<()>;   // 1.1.0
     pub fn verify(self, expected_tag: &[u8]) -> bool;
 }
 ```
@@ -1040,8 +1148,8 @@ about interop and speed.
 | Variable-length key handled internally | `mac::hmac_*` (accepts any length) |
 | Tag is being transported over the wire | Any — they're all 32 B (or 64 B for SHA-512); pick by interop |
 
-> **Use the `verify` paths.** Never compare a computed tag to an
-> expected tag with `==`. The non-constant-time leak is enough to
+> **Use the `check` paths.** Never compare a computed tag to an
+> expected tag with `==` on arrays. The non-constant-time leak is enough to
 > forge tags. This applies to every algorithm in this table.
 
 <a href="#top">↑ TOP</a>
@@ -1135,6 +1243,30 @@ output.
 
 <a href="#top">↑ TOP</a>
 
+#### `kdf::hkdf_sha256_into` / `hkdf_sha512_into`
+
+```rust
+#[cfg(feature = "kdf-hkdf")]
+pub fn hkdf_sha256_into(ikm: &[u8], salt: Option<&[u8]>, info: &[u8], out: &mut [u8]) -> Result<()>;
+pub fn hkdf_sha512_into(ikm: &[u8], salt: Option<&[u8]>, info: &[u8], out: &mut [u8]) -> Result<()>;
+```
+
+New in 1.1.0. Same derivation as `hkdf_sha256` / `hkdf_sha512`, but
+written into `out` (its length is the output length). Use them for
+key material: derive straight into a `[u8; 32]` or a `Zeroizing`
+buffer and no unwiped copy is left on the heap. Errors: `Kdf` if
+`out` is longer than `255 * HashLen`.
+
+```rust
+# #[cfg(feature = "kdf-hkdf")] {
+let mut subkey = [0u8; 32];
+crypt_io::kdf::hkdf_sha256_into(&[0x42; 32], Some(b"salt"), b"app:v1", &mut subkey)?;
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
+<a href="#top">↑ TOP</a>
+
 #### `kdf::argon2_hash`
 
 ```rust
@@ -1190,53 +1322,106 @@ let phc = argon2_hash_with_params(b"service-token", params)?;
 
 <a href="#top">↑ TOP</a>
 
-#### `kdf::argon2_verify`
+#### `kdf::argon2_check`
 
 ```rust
 #[cfg(feature = "kdf-argon2")]
-pub fn argon2_verify(phc: &str, password: &[u8]) -> Result<bool>;
+pub fn argon2_check(phc: &str, password: &[u8]) -> Result<()>;
+pub fn argon2_check_with_policy(phc: &str, password: &[u8], policy: &Argon2Policy) -> Result<()>;
 ```
 
-Verify `password` against a PHC-encoded Argon2id hash. Returns
-`Ok(true)` on match, `Ok(false)` on wrong password, and
-[`Error::Kdf`](#error) if `phc` is not an acceptable Argon2id PHC
-string.
+New in 1.1.0. Check `password` against a PHC-encoded Argon2 hash.
+`Ok(())` on a match, `Err(AuthenticationFailed)` on a wrong password,
+so `argon2_check(..)?;` rejects it.
 
-> **Check the `bool`.** A wrong password is `Ok(false)`, not an
-> error. `kdf::argon2_verify(&phc, pw)?;` on its own logs everyone
-> in. Always write `if !kdf::argon2_verify(&phc, pw)? { /* reject */ }`.
-
-**Limits (1.0.1).** The cost parameters come from the PHC string, so
-before any work `argon2_verify` rejects (with `Error::Kdf`) any
-variant other than `argon2id`, and `m` above 1 GiB (1,048,576 KiB),
-`t` above 64 or `p` above 16. crypt-io has only ever produced
-`$argon2id$v=19$` strings. `argon2_hash_with_params` enforces the
-same limits so every hash it produces can be verified.
-
-The distinction matters: a *malformed* PHC string indicates
-corruption or a coding mistake (log as `error`); a *correctly-
-formatted* but wrong-password hash indicates an attacker or a user
-mistyping (log as `warn`).
+The cost parameters come from the PHC string, so before any work
+the string is checked against a policy: [`Argon2Policy::new()`](#argon2policy)
+for `argon2_check` (`argon2id` only, `m` at most 1 GiB, `t` at most
+64, `p` at most 16 — the 1.0.1 limits), or the one you pass to
+`argon2_check_with_policy`. crypt-io has only ever produced
+`$argon2id$v=19$` strings.
 
 Verification re-derives the hash under the parameters encoded in
 `phc` and compares in constant time. Cost is the same as computing
 a fresh hash with those parameters (~100 ms with the defaults).
 
-**Errors.** Returns [`Error::Kdf`](#error) when `phc` fails to
-parse, is not Argon2id, or exceeds the limits above. Wrong-password
-returns `Ok(false)`, not an error.
+**Errors.**
+
+- [`Error::AuthenticationFailed`](#error) — wrong password (log as
+  `warn`: an attacker or a typo).
+- [`Error::Kdf`](#error) — `phc` does not parse, names a variant
+  the policy does not allow, or has costs outside it (log as
+  `error`: corruption or a bug).
 
 ```rust
 # #[cfg(feature = "kdf-argon2")] {
-use crypt_io::kdf;
+use crypt_io::{kdf, Error};
 let phc = kdf::argon2_hash(b"hunter2")?;
-if !kdf::argon2_verify(&phc, b"hunter2")? {
-    return Err(crypt_io::Error::AuthenticationFailed);
-}
-assert!(!kdf::argon2_verify(&phc, b"hunter3")?);
+kdf::argon2_check(&phc, b"hunter2")?;
+assert_eq!(kdf::argon2_check(&phc, b"hunter3"), Err(Error::AuthenticationFailed));
 # }
 # Ok::<(), crypt_io::Error>(())
 ```
+
+<a href="#top">↑ TOP</a>
+
+#### `Argon2Policy`
+
+```rust
+#[cfg(feature = "kdf-argon2")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Argon2Policy { /* private */ }
+
+impl Argon2Policy {
+    pub const fn new() -> Self;                                   // = Default
+    pub const fn with_max_cost(self, m_cost: u32, t_cost: u32, p_cost: u32) -> Self;
+    pub const fn with_min_cost(self, m_cost: u32, t_cost: u32) -> Self;
+    pub const fn allow_argon2i(self, allow: bool) -> Self;
+    pub const fn allow_argon2d(self, allow: bool) -> Self;
+    // getters: max_m_cost, max_t_cost, max_p_cost, min_m_cost, min_t_cost,
+    //          argon2i_allowed, argon2d_allowed
+}
+
+pub fn argon2_hash_with_policy(password: &[u8], params: Argon2Params, policy: &Argon2Policy) -> Result<String>;
+```
+
+New in 1.1.0. What to accept when checking (and hashing). Defaults:
+`argon2id` only, `m` up to 1 GiB, `t` up to 64, `p` up to 16, no
+minimums.
+
+- **Raise the caps** if you stored hashes with higher costs before
+  1.0.1 introduced them (1.0.1 rejects those with `Error::Kdf`), or
+  want to hash above them with `argon2_hash_with_policy`.
+- **Set minimums** so a cheap hash planted in your store is
+  rejected.
+- **Allow `argon2i` / `argon2d`** only to migrate existing hashes.
+
+```rust
+# #[cfg(feature = "kdf-argon2")] {
+use crypt_io::kdf::{self, Argon2Policy};
+let legacy = Argon2Policy::new().with_max_cost(4 * 1024 * 1024, 64, 16); // 4 GiB
+let strict = Argon2Policy::new().with_min_cost(19 * 1024, 2);
+# let phc = kdf::argon2_hash(b"pw")?;
+kdf::argon2_check_with_policy(&phc, b"pw", &strict)?;
+# let _ = legacy;
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
+<a href="#top">↑ TOP</a>
+
+#### `kdf::argon2_verify`
+
+```rust
+#[cfg(feature = "kdf-argon2")]
+#[deprecated(since = "1.1.0")]
+pub fn argon2_verify(phc: &str, password: &[u8]) -> Result<bool>;
+```
+
+Deprecated in 1.1.0; use [`kdf::argon2_check`](#kdfargon2_check).
+Same checks, but a wrong password is `Ok(false)`, so
+`kdf::argon2_verify(&phc, pw)?;` on its own logs everyone in. If you
+keep it, always write `if !kdf::argon2_verify(&phc, pw)? { /* reject */ }`.
 
 <a href="#top">↑ TOP</a>
 
@@ -1254,6 +1439,7 @@ pub struct Argon2Params {
 
 impl Argon2Params {
     pub const fn new(m_cost: u32, t_cost: u32, p_cost: u32, output_len: usize) -> Self;
+    pub fn validate(&self) -> Result<()>;   // 1.1.0
 }
 
 impl Default for Argon2Params {
@@ -1276,6 +1462,14 @@ password hashing.
 | Tests | `Argon2Params { m_cost: 8, t_cost: 1, p_cost: 1, output_len: 32 }` |
 
 Reducing any parameter reduces resistance to brute force.
+
+**`validate()`** (1.1.0) checks custom values: Argon2 accepts them,
+`output_len` is at least 16, they meet one of the OWASP minimums for
+Argon2id (`m_cost` ≥ 47,104 KiB with `t_cost` 1, 19,456 with 2,
+12,288 with 3, 9,216 with 4, 7,168 with 5+), and they are within the
+default `Argon2Policy` caps. `argon2_hash_with_params` does not call
+it (tests use tiny parameters); call it on values that come from
+configuration.
 
 <a href="#top">↑ TOP</a>
 
@@ -1315,12 +1509,14 @@ concept of chunks.
 
 Wire format documented in [Stream wire format](#stream-wire-format).
 
-> **Streams per key.** Each stream uses a random 56-bit nonce prefix
-> directly under the caller's key. Two streams with the same prefix
-> reuse nonces (for AES-256-GCM that also exposes the GHASH key).
-> Keep one key below about 2^12 (4,096) streams, or derive a fresh
-> key per stream or file, for example with `kdf::hkdf_sha256` and a
-> random salt stored next to the ciphertext.
+> **Formats.** 1.1.0 writes stream format **v2** by default: each
+> stream starts with a 32-byte random salt and is encrypted under its
+> own HKDF-SHA256 subkey, so one key can encrypt any number of
+> streams. Format **v1** (1.0.x) used a random 56-bit nonce prefix
+> directly under the caller's key and is limited to about 2^12
+> streams per key. 1.1 reads both; 1.0.x cannot read v2, so write v1
+> with [`StreamFormat::V1`](#streamformat) while 1.0.x readers
+> remain.
 
 `StreamEncryptor` and `StreamDecryptor` overwrite their key copy and
 internal buffer on drop, and their `Debug` output shows only the
@@ -1342,13 +1538,27 @@ impl StreamEncryptor {
         chunk_size_log2: u8,
     ) -> Result<(Self, [u8; 24])>;
 
+    pub fn new_with_format(                      // 1.1.0
+        key: &[u8],
+        algorithm: Algorithm,
+        chunk_size_log2: u8,
+        format: StreamFormat,
+    ) -> Result<(Self, [u8; 24])>;
+
     pub fn chunk_size(&self) -> usize;
     pub fn chunk_size_log2(&self) -> u8;
+    pub fn algorithm(&self) -> Algorithm;        // 1.1.0
+    pub fn format(&self) -> StreamFormat;        // 1.1.0
 
     pub fn update(&mut self, data: &[u8]) -> Result<Vec<u8>>;
     pub fn finalize(self) -> Result<Vec<u8>>;
+    pub fn update_into(&mut self, data: &[u8], out: &mut Vec<u8>) -> Result<()>;
+    pub fn finalize_into(self, out: &mut Vec<u8>) -> Result<()>;
 }
 ```
+
+`new` and `new_with_chunk_size` write format v2. The constructors
+need a random source (`std` or `getrandom`).
 
 Buffers caller-supplied plaintext into fixed-size chunks, encrypts
 each chunk with a STREAM-construction nonce, and emits
@@ -1361,7 +1571,9 @@ each chunk with a STREAM-construction nonce, and emits
    header to the output sink before any encrypted chunks.
 2. Feed plaintext via `update()`. Returns zero or more complete
    encrypted chunks (each `chunk_size + 16` bytes) as buffer
-   fills are reached.
+   fills are reached. In v2 the first output (of `update`,
+   `update_into`, `finalize` or `finalize_into`) starts with the
+   32-byte salt; write every output to the sink in order.
 3. Call `finalize()` to emit any remaining buffered data as the
    final chunk. **Always** emitted (even if zero plaintext bytes
    remain) and **always** strictly smaller than `chunk_size + 16`
@@ -1375,8 +1587,13 @@ accepts `chunk_size_log2` in `MIN_CHUNK_SIZE_LOG2..=MAX_CHUNK_SIZE_LOG2`
 **Errors:**
 
 - [`Error::InvalidKey`](#error) — `key` is not 32 bytes.
-- [`Error::InvalidCiphertext`](#error) — `chunk_size_log2` out of range.
-- [`Error::RandomFailure`](#error) — OS RNG could not produce a nonce prefix.
+- [`Error::InvalidInput`](#error) — `chunk_size_log2` out of range, or
+  `StreamFormat::V1` with XChaCha20-Poly1305 (1.0.x returned
+  `InvalidCiphertext` for the chunk size).
+- [`Error::RandomFailure`](#error) — OS RNG could not produce the salt
+  (v2) or nonce prefix (v1).
+- [`Error::LimitExceeded`](#error) — from `update` / `finalize`, once a
+  stream reaches 2^32 chunks.
 
 ```rust
 # #[cfg(all(feature = "stream", feature = "aead-chacha20"))] {
@@ -1413,13 +1630,18 @@ impl StreamDecryptor {
     pub fn chunk_size(&self) -> usize;
     pub fn chunk_size_log2(&self) -> u8;
     pub fn algorithm(&self) -> Algorithm;
+    pub fn format(&self) -> StreamFormat;        // 1.1.0
 
     pub fn update(&mut self, data: &[u8]) -> Result<Vec<u8>>;
     pub fn finalize(self) -> Result<Vec<u8>>;
+    pub fn update_into(&mut self, data: &[u8], out: &mut Vec<u8>) -> Result<()>;
+    pub fn finalize_into(self, out: &mut Vec<u8>) -> Result<()>;
 }
 ```
 
-Symmetric inverse of [`StreamEncryptor`](#streamencryptor). Construct
+Reads both stream formats; works without `std` or a random source.
+Pass the first 24 bytes to `new` and everything after them (the v2
+salt included) to `update`. Symmetric inverse of [`StreamEncryptor`](#streamencryptor). Construct
 with `new(key, header_bytes)` — parses the header and configures the
 decryptor for the embedded algorithm and chunk size. Feed encrypted
 bytes via `update()`, call `finalize()` when no more bytes are
@@ -1445,14 +1667,15 @@ whatever it appended and leaves `out` as it was on entry.
 - [`Error::InvalidKey`](#error) — `key` is not 32 bytes.
 - [`Error::InvalidCiphertext`](#error) — header is malformed
   (wrong magic, unsupported version, unknown algorithm,
-  out-of-range chunk size).
+  out-of-range chunk size, non-zero reserved bytes in v2).
 
 **Errors on `update` / `finalize`:**
 
 - [`Error::AuthenticationFailed`](#error) for any cryptographic
   failure.
 - [`Error::InvalidCiphertext`](#error) on `finalize` when the
-  buffered tail is impossibly small (no room for a 16-byte tag).
+  buffered tail is impossibly small (no room for a 16-byte tag), or
+  a v2 stream ended inside its salt.
 
 <a href="#top">↑ TOP</a>
 
@@ -1469,18 +1692,21 @@ pub fn encrypt_file(
 ```
 
 Encrypt `input_path` into `output_path` using the default 64 KiB
-chunk size. Overwrites `output_path` if it exists. Rejects (with
-`Error::Mac`) an `output_path` that names the same file as
-`input_path`; 1.0.0 truncated the input instead.
+chunk size and stream format v2 (one subkey per file). Overwrites
+`output_path` if it exists. Rejects (with `Error::InvalidInput`) an
+`output_path` that names the same file as `input_path`; 1.0.0
+truncated the input instead.
 
 **Errors:**
 
 - [`Error::InvalidKey`](#error) — `key` is not 32 bytes.
-- [`Error::RandomFailure`](#error) — OS RNG could not produce a nonce.
-- [`Error::Mac`](#error) — I/O failure (file open, read, write,
-  flush). The variant carries a `&'static str` reason; the
+- [`Error::RandomFailure`](#error) — OS RNG could not produce the salt.
+- [`Error::Io`](#error) — I/O failure (file open, read, write,
+  flush). The variant carries a `&'static str` naming the step; the
   underlying `std::io::Error` is not surfaced (would risk leaking
-  path fragments through error rendering).
+  path fragments through error rendering). 1.0.x used `Error::Mac`.
+- [`Error::InvalidInput`](#error) — input and output are the same
+  file.
 
 ```rust,no_run
 # #[cfg(all(feature = "stream", feature = "aead-chacha20"))] {
@@ -1516,7 +1742,8 @@ which is flushed, `fsync`ed and renamed over `output_path` once the
 final chunk verifies. On any error the temporary file is overwritten
 and deleted, and `output_path` is left untouched. On Unix the
 decrypted file therefore has mode `0600`. An `output_path` that names
-the same file as `input_path` is rejected with `Error::Mac`.
+the same file as `input_path` is rejected with `Error::InvalidInput`.
+Both stream formats are accepted.
 
 **Errors:**
 
@@ -1525,7 +1752,9 @@ the same file as `input_path` is rejected with `Error::Mac`.
   the stream is truncated below the minimum frame.
 - [`Error::AuthenticationFailed`](#error) — any cryptographic
   failure.
-- [`Error::Mac`](#error) — I/O failure.
+- [`Error::Io`](#error) — I/O failure (1.0.x: `Error::Mac`).
+- [`Error::InvalidInput`](#error) — input and output are the same
+  file.
 
 ```rust,no_run
 # #[cfg(all(feature = "stream", feature = "aead-chacha20"))] {
@@ -1538,49 +1767,108 @@ stream::decrypt_file("input.enc", "output.bin", &key)?;
 
 <a href="#top">↑ TOP</a>
 
+#### `StreamFormat`
+
+```rust
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum StreamFormat {
+    V1,
+    #[default]
+    V2,
+}
+
+impl StreamFormat {
+    pub const fn version_byte(self) -> u8;   // 0x01 / 0x02
+}
+```
+
+New in 1.1.0. The stream format an encryptor writes; decryptors read
+the version from the header. `V2` (default) derives a subkey per
+stream from a 32-byte salt. `V1` is the 1.0 format, for fleets that
+still have 1.0.x readers; it supports ChaCha20-Poly1305 and
+AES-256-GCM only.
+
+<a href="#top">↑ TOP</a>
+
 #### Stream wire format
 
 ```text
-Header (24 bytes):
+Header (24 bytes, both versions):
    [0..8]   magic = b"\x89CRYPTIO"
-   [8]      version = 0x01
-   [9]      algorithm (0x00 ChaCha20-Poly1305, 0x01 AES-256-GCM)
+   [8]      version = 0x02 (v2) or 0x01 (v1)
+   [9]      algorithm (0x00 ChaCha20-Poly1305, 0x01 AES-256-GCM, 0x02 XChaCha20-Poly1305 [v2 only])
    [10]     chunk_size_log2 (default 16 = 64 KiB)
-   [11..16] reserved (zero)
-   [16..23] nonce_prefix (7 random bytes)
-   [23]     reserved (zero)
+   [11..24] v2: reserved, must be zero
+            v1: [11..16] reserved, [16..23] nonce_prefix (7 random bytes), [23] reserved
+
+v2 only: salt (32 random bytes), then
+   okm = HKDF-SHA256(ikm = key, salt, info = "crypt-io stream v2" || header, 32 + P)
+   subkey = okm[0..32], nonce_prefix = okm[32..32 + P], P = nonce_len - 5
 
 Body:
    [chunk_0 (chunk_size + 16 B)]    ── non-final, last_flag = 0
-   [chunk_1 (chunk_size + 16 B)]    ── non-final, last_flag = 0
    ...
-   [chunk_N-1 (chunk_size + 16 B)]  ── non-final, last_flag = 0
    [chunk_N (< chunk_size + 16 B)]  ── final, last_flag = 1
 
-Per-chunk nonce (12 bytes):
-   [0..7]   nonce_prefix (from header)
-   [7..11]  counter (u32 big-endian, starts at 0)
-   [11]     last_flag (0x00 for non-final, 0x01 for final)
+Per-chunk nonce (12 bytes; 24 for XChaCha20-Poly1305):
+   nonce_prefix (P bytes) || counter (u32 big-endian) || last_flag
+AAD: header || salt (v2), header (v1)
 ```
+
+Full specification and test vectors: [`FILE_FORMAT.md`](FILE_FORMAT.md).
 
 **Security properties:**
 
 - **Truncation** is detected because the `last_flag` byte is
-  part of the per-chunk nonce. A chunk encrypted as non-final
-  cannot be verified as final (and vice versa); cut the final
-  chunk off the stream and verification fails on the next-to-last.
+  part of the per-chunk nonce.
 - **Reorder / duplicate** is detected because the 32-bit counter
-  is part of the nonce. Swap or repeat any chunk and the counter
-  mismatch breaks verification.
-- **Header tampering** (algorithm / chunk-size / nonce prefix) is
-  detected because the 24 header bytes are AAD for every chunk.
-  Tampering surfaces as authentication failure on the first chunk.
+  is part of the nonce.
+- **Header and salt tampering** is detected because those bytes
+  are AAD for every chunk (and in v2 feed the subkey).
+- **Nonce reuse across streams** (v2) is ruled out by the
+  per-stream subkey.
 
 **Final-chunk-always invariant.** The encryptor always emits a
 final chunk (even if zero plaintext remains), and that final chunk
 is always strictly smaller than `chunk_size + 16` bytes. This makes
 EOF detection unambiguous: short read → final chunk; full read →
 expect more.
+
+<a href="#top">↑ TOP</a>
+
+---
+
+### `Tag`
+
+```rust
+#[derive(Clone, Copy)]
+pub struct Tag<const N: usize>(/* [u8; N] */);
+
+impl<const N: usize> Tag<N> {
+    pub const fn new(bytes: [u8; N]) -> Self;
+    pub const fn as_bytes(&self) -> &[u8; N];
+    pub const fn into_bytes(self) -> [u8; N];
+    pub fn ct_eq(&self, other: &[u8]) -> bool;
+}
+// From<[u8; N]>, TryFrom<&[u8]>, AsRef<[u8]>, Debug (hex),
+// PartialEq / Eq with Tag<N>, [u8; N], [u8] and &[u8] — all constant-time.
+```
+
+New in 1.1.0. Wrap a computed tag in `Tag` and `==` becomes a
+constant-time comparison (`subtle`). A slice of a different length
+compares unequal. `Tag` does not implement `Deref`, `Ord` or `Hash`,
+so it cannot be compared in variable time by accident.
+
+```rust
+# #[cfg(feature = "mac-hmac")] {
+use crypt_io::{mac, Tag};
+let received = mac::hmac_sha256(b"k", b"body")?;     // from the wire
+let expected = Tag::from(mac::hmac_sha256(b"k", b"body")?);
+assert!(expected == received);
+# }
+# Ok::<(), crypt_io::Error>(())
+```
 
 <a href="#top">↑ TOP</a>
 
@@ -1598,6 +1886,9 @@ pub enum Error {
     RandomFailure(&'static str),
     Mac(&'static str),
     Kdf(&'static str),
+    Io(&'static str),             // 1.1.0
+    InvalidInput(&'static str),   // 1.1.0
+    LimitExceeded(&'static str),  // 1.1.0
 }
 ```
 
@@ -1613,9 +1904,20 @@ Errors are **redaction-clean by design**:
   AAD-mismatch all surface as this variant). The narrower
   classification is intentionally not exposed.
 
-Implements `Debug + Clone + PartialEq + Eq + Display`. With the
-`std` feature (default on), it also implements
-`std::error::Error`.
+Implements `Debug + Clone + PartialEq + Eq + Display` and
+`core::error::Error` (the same trait as `std::error::Error`; since
+1.1.0 also in `no_std` builds).
+
+**Moved to the new variants in 1.1.0** (call sites that matched the
+old variant for these cases need updating):
+
+| Case | 1.0.x | 1.1.0 |
+|---|---|---|
+| File-helper I/O failure | `Mac("stream: ...")` | `Io("stream: ...")` |
+| Same file as input and output | `Mac(..)` | `InvalidInput(..)` |
+| Stream chunk size out of range (encrypt) | `InvalidCiphertext(..)` | `InvalidInput(..)` |
+| Plaintext / AAD longer than the cipher allows | `AuthenticationFailed` | `LimitExceeded(..)` |
+| Stream longer than 2^32 chunks (encrypt) | `InvalidCiphertext(..)` | `LimitExceeded(..)` |
 
 <a href="#top">↑ TOP</a>
 
@@ -1643,7 +1945,11 @@ From `crypt_io::aead`:
 | `CHACHA20_TAG_LEN` | `16` | Bytes of authentication tag ChaCha20-Poly1305 produces. |
 | `AES_GCM_NONCE_LEN` | `12` | Bytes of nonce AES-256-GCM consumes (the NIST default). |
 | `AES_GCM_TAG_LEN` | `16` | Bytes of authentication tag AES-256-GCM produces. |
-| `KEY_LEN` | `32` | Required key length for every AEAD shipped in 0.3.0+. |
+| `XCHACHA20_NONCE_LEN` | `24` | Bytes of nonce XChaCha20-Poly1305 consumes (1.1.0). |
+| `XCHACHA20_TAG_LEN` | `16` | Bytes of authentication tag XChaCha20-Poly1305 produces (1.1.0). |
+| `KEY_LEN` | `32` | Required key length for every AEAD. |
+| `SEALED_HEADER_LEN` | `2` | Header bytes of the sealed format (1.1.0). |
+| `SEALED_VERSION` | `0x01` | Version byte of the sealed format (1.1.0). |
 
 From `crypt_io::hash`:
 
@@ -1676,6 +1982,7 @@ From `crypt_io::stream`:
 | Constant | Value | Meaning | Feature |
 |---|---|---|---|
 | `HEADER_LEN` | `24` | Bytes of stream header prepended to every stream. | `stream` |
+| `SALT_LEN` | `32` | Bytes of salt after a v2 header (1.1.0). | `stream` |
 | `TAG_LEN` | `16` | Bytes of authentication tag per chunk. | `stream` |
 | `DEFAULT_CHUNK_SIZE_LOG2` | `16` | Default chunk size (`1 << 16` = 64 KiB). | `stream` |
 | `MIN_CHUNK_SIZE_LOG2` | `10` | Smallest chunk size (`1 << 10` = 1 KiB). | `stream` |
@@ -1697,7 +2004,10 @@ by `decrypt` / `decrypt_with_aad`:
 | 0 .. 12         | 12 .. 12+N               | 12+N .. 28+N     |
 ```
 
-Total size: `plaintext.len() + 28` bytes. The nonce is generated
+Total size: `plaintext.len() + 28` bytes (`+ 40` for
+XChaCha20-Poly1305, whose nonce is 24 bytes). The sealed format of
+`seal` / `open` adds two header bytes in front:
+`0x01 || algorithm || nonce || ciphertext || tag`. The nonce is generated
 internally per call and prepended so `decrypt` only needs the key
 and the buffer.
 
@@ -1721,6 +2031,12 @@ caller's responsibility to keep AAD addressable on the decrypt side
 - **`RandomFailure`** — OS random source failed to produce a nonce.
   Rare; usually indicates a misconfigured sandbox or a freshly-booted
   VM that has not yet collected entropy.
+- **`Mac`** / **`Kdf`** — MAC setup failure (unreachable in
+  practice) / KDF parameter, PHC or policy failure.
+- **`Io`** *(1.1.0)* — file-helper I/O failure.
+- **`InvalidInput`** *(1.1.0)* — an argument the call cannot accept.
+- **`LimitExceeded`** *(1.1.0)* — an encrypt-side size limit; not a
+  sign of tampering.
 
 <a href="#top">↑ TOP</a>
 
@@ -1733,23 +2049,25 @@ caller's responsibility to keep AAD addressable on the decrypt side
   nonce; there is no caller-supplied-nonce surface. Random nonces
   collide with probability about `n^2 / 2^97` after `n` messages
   under one key, and one collision is catastrophic for AES-256-GCM.
-- **Limit each key to 2^32 single-shot encryptions** (the NIST SP
-  800-38D cap for random 96-bit IVs; collision probability about
-  2^-33). `2^48` messages is not a safe limit: it is where a
-  collision becomes likely (about 39%). crypt-io does not count
-  messages; rotate keys or derive subkeys with HKDF before that.
-- **Limit each key to about 2^12 streams** (see the
+- **Limit each key to 2^32 single-shot ChaCha20-Poly1305 /
+  AES-256-GCM encryptions** (the NIST SP 800-38D cap for random
+  96-bit IVs; collision probability about 2^-33). `2^48` messages is
+  not a safe limit: it is where a collision becomes likely (about
+  39%). crypt-io does not count messages; use XChaCha20-Poly1305,
+  rotate keys or derive subkeys with HKDF before that.
+- **Streams:** format v2 (default) has no practical streams-per-key
+  limit; format v1 is limited to about 2^12 streams per key (see the
   [`stream` module](#stream-module) note).
 - **Constant-time tag verification** is preserved by deferring to
-  the upstream `chacha20poly1305` crate; no equality comparisons on
-  tag bytes happen in this wrapper.
-- **Plaintext is a plain `Vec<u8>`.** Wrap with
-  `zeroize::Zeroizing::new(_)` if you need zero-on-drop for the
-  recovered plaintext, or compose with `key-vault` for production
-  key handling. The same applies to HKDF output and
-  `StreamDecryptor` output. HMAC state (`HmacSha256`,
-  `HmacSha512`) and AES round keys inside the `aes` crate are not
-  wiped on drop in 1.0.x.
+  the upstream AEAD crates; no equality comparisons on tag bytes
+  happen in this wrapper.
+- **Plaintext is a plain `Vec<u8>`** from `decrypt`, `open`,
+  `hkdf_*` and the stream decryptor. Use `decrypt_zeroizing`,
+  `hkdf_*_into`, `blake3_long_into` or the stream `_into` methods
+  when the bytes are secret, or compose with `key-vault` for
+  production key handling. Since 1.1.0 the HMAC state and the AES
+  round keys are wiped on drop (with `zeroize`); the GHASH key
+  inside `polyval` 0.6 is not (see `SECURITY.md`).
 - **AES-256-GCM ships in 0.3.0** with NIST SP 800-38D vectors and
   hardware-acceleration verification (AES-NI on x86, crypto
   extensions on ARM).

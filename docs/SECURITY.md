@@ -40,8 +40,13 @@ reports.
 - **AAD mismatch** on `decrypt_with_aad` fails authentication —
   AAD is bound into the tag.
 - **Header tampering** on streams (algorithm byte, chunk size,
-  nonce prefix) fails authentication on the first chunk — the
-  24-byte header is AAD for every chunk.
+  salt, nonce prefix) fails authentication on the first chunk — the
+  header (and in format v2 the salt) is AAD for every chunk, and in
+  v2 the header and salt also feed the per-stream subkey. Non-zero
+  reserved bytes in a v2 header are rejected before any decryption.
+- **Sealed single-shot buffers** (`Crypt::seal`, 1.1.0) carry an
+  authenticated version and algorithm byte, so a buffer cannot be
+  reinterpreted under another algorithm.
 
 ### Stream-protocol attacks
 
@@ -63,6 +68,9 @@ shipped in `crypt_io::stream` defeats:
   (`hmac::Mac::verify_slice` for HMAC, `blake3::Hash::eq` for
   BLAKE3 keyed). Both route through `subtle::ConstantTimeEq`
   internally.
+- **`Tag<N>`** (1.1.0) wraps a tag with a constant-time `==`
+  (`subtle::ConstantTimeEq`), for callers who compare tags
+  themselves.
 - **AEAD tag verification** is the upstream crate's
   responsibility (constant-time per `chacha20poly1305` and
   `aes-gcm` docs).
@@ -89,20 +97,43 @@ note in `hash` both explicitly forbid `tag == expected` /
   `chacha20poly1305` 0.10 and `aes-gcm` 0.10.3 or later, upstream
   verifies the tag before decrypting, so those bytes were
   ciphertext; `aes-gcm` 0.10.0 to 0.10.2 decrypted first
-  (RUSTSEC-2023-0096), and 1.0.1 raises the dependency floor to
+  (RUSTSEC-2023-0096), and 1.0.1 raised the dependency floor to
   0.10.3. Stream `update_into` truncates `out` back to its entry
   length and wipes what it appended. Verified by
   `tests/regressions.rs`.
-- **`zeroize`** (default feature). `StreamEncryptor` and
-  `StreamDecryptor` overwrite their key copy and internal buffer on
-  drop, `Blake3Mac` wipes its keyed state on drop, and the `_into`
-  failure paths above use volatile writes. The feature also turns
-  on the upstream `zeroize` support in `aes-gcm` (GHASH key
-  setup), `argon2` (memory blocks) and `blake3`. Not covered in
-  1.0.x: AES round keys inside the `aes` crate, HMAC state, and
-  every `Vec<u8>` crypt-io returns to you (plaintext, HKDF output);
-  wrap those in `zeroize::Zeroizing` yourself. In 1.0.0 this feature
-  did nothing.
+- **Growing a buffer leaves no copy behind (1.1.0).** `Vec::reserve`
+  moves a buffer by copying its whole allocation and freeing the old
+  block without clearing it. Every decrypt path that writes
+  plaintext into a buffer (`decrypt_into`, the stream decryptor's
+  `update` / `update_into` / `finalize_into`) grows it with a helper
+  that wipes the old allocation first, and `StreamDecryptor::update`
+  sizes its output up front so it never reallocates.
+- **`zeroize`** (default feature). With it:
+  - `StreamEncryptor` and `StreamDecryptor` overwrite their key
+    copy (in format v2, the per-stream subkey) and internal buffer
+    on drop, and `Blake3Mac` wipes its keyed state on drop;
+  - the `_into` failure paths above use volatile writes;
+  - upstream `zeroize` support is on in `aes` (AES round keys,
+    1.1.0), `sha2` and `hmac` (hash and HMAC state, which is
+    derived from the key, 1.1.0), `aes-gcm`, `argon2` (memory
+    blocks) and `blake3`. A test checks that a dropped
+    `HmacSha256` / `HmacSha512` leaves only zeros behind.
+
+  Not covered: the GHASH key inside `polyval` 0.6, whose
+  runtime-dispatch backend has no `Drop` impl. `polyval` 0.7 wipes
+  it, but it only comes with `aes-gcm` 0.11 (the `aead` 0.6
+  generation). Measured against `aes-gcm` 0.10.3 on the reference
+  machine, 0.11.1 is about twice as fast on large inputs but about
+  40% slower on 64-byte messages (more per-key setup), and its `aes`
+  0.9.3 needs Rust 1.89, above crypt-io's 1.x MSRV of 1.85. crypt-io
+  stays on 0.10 for now. The GHASH key is left only in freed memory;
+  it allows forgeries under that key but does not reveal the AES
+  key. Plaintext that crypt-io returns as a plain `Vec<u8>` is
+  yours to wipe; use the 1.1.0 helpers instead where it matters:
+  `Crypt::decrypt_zeroizing`, `kdf::hkdf_sha256_into` /
+  `hkdf_sha512_into` (derive into a buffer you own),
+  `hash::blake3_long_into`, `StreamDecryptor::update_into`, and
+  `generate_key()` (returns `Zeroizing<[u8; 32]>`).
 - **No secrets in `Debug`.** The stream types print only the
   algorithm, chunk size, counter and buffered length (1.0.0 printed
   the raw key and buffered plaintext).
@@ -111,12 +142,15 @@ note in `hash` both explicitly forbid `tag == expected` /
 
 ## Algorithm choices
 
-### AEAD: ChaCha20-Poly1305 (default) + AES-256-GCM
+### AEAD: ChaCha20-Poly1305 (default) + XChaCha20-Poly1305 + AES-256-GCM
 
 - **ChaCha20-Poly1305** ([RFC 8439]). Fast in software on any
   CPU; no timing-side-channel risk on platforms without
   constant-time hardware AES. Post-quantum-safe at the 256-bit
   symmetric strength shipped. **The safe default.**
+- **XChaCha20-Poly1305** (1.1.0). ChaCha20-Poly1305 with a 192-bit
+  nonce, so random nonces never collide in practice. **Pick when
+  one key encrypts more than 2^32 messages.**
 - **AES-256-GCM** ([NIST SP 800-38D]). Hardware-accelerated on
   AES-NI (Intel/AMD, ~2010+) and ARMv8 with crypto extensions
   (modern Apple Silicon, AWS Graviton). 2-5× ChaCha20 on
@@ -187,10 +221,11 @@ and confidentiality against:
 - **Compromised endpoints** — a malware-infected host running
   `crypt-io` can read its own plaintext. We can't help with
   that; consider key storage (`key-vault`), enclaves, or HSMs.
-- **Key generation / storage / rotation** — out of scope.
-  `crypt-io` takes a key as a per-call argument and assumes
-  the caller obtained it from a sensible source (a KMS,
-  `key-vault`, an HKDF expansion of a master, etc.).
+- **Key storage / rotation** — out of scope. `crypt-io` takes a
+  key as a per-call argument and assumes the caller obtained it
+  from a sensible source (a KMS, `key-vault`, an HKDF expansion of
+  a master, or `generate_key()`, which draws 32 bytes from the OS
+  CSPRNG).
 - **Quantum attackers** with a fault-tolerant quantum computer
   large enough to run Grover on 256-bit symmetric keys (~2^128
   effective work). Not currently a threat; not in scope for
@@ -211,24 +246,37 @@ and confidentiality against:
   surface tag failures as `AuthenticationFailed`, must scrub
   partial decryptions from the output buffer on failure (the
   `_into` paths do this).
-- **The OS RNG (`mod_rand::tier3`) is trusted.** Failure to
-  produce randomness is a `RandomFailure` error — we don't
-  fall back to a non-CSPRNG.
-- **PHC strings passed to `argon2_verify` are not fully trusted.**
+- **The OS RNG is trusted.** With `std` it is read through
+  `mod_rand::tier3` (`getrandom(2)`, `getentropy`,
+  `BCryptGenRandom`); with the `getrandom` feature through the
+  `getrandom` crate, which on bare-metal targets calls the backend
+  you register. Failure to produce randomness is a `RandomFailure`
+  error — we never fall back to a non-CSPRNG.
+- **PHC strings passed to `argon2_check` are not fully trusted.**
   Their cost parameters are capped (`m` at most 1 GiB, `t` at most
   64, `p` at most 16) and only `argon2id` is accepted, so an
   imported or tampered hash cannot make one login allocate
-  gigabytes or burn minutes of CPU, or downgrade the variant.
+  gigabytes or burn minutes of CPU, or downgrade the variant. An
+  `Argon2Policy` (1.1.0) raises or lowers those caps (for hashes
+  made with higher costs before 1.0.1), adds minimums (so a planted
+  cheap hash is rejected), or allows `argon2i` / `argon2d` for
+  migration. `Argon2Params::validate()` checks custom hashing
+  parameters against the OWASP minimums.
 
 ### API misuse to avoid
 
 - **`verify(..)?;` accepts forgeries.** `mac::hmac_sha256_verify`,
   `mac::hmac_sha512_verify` and `kdf::argon2_verify` return
   `Result<bool>`, with a mismatch as `Ok(false)`. The `?` operator
-  only handles the `Err` case, so `verify(..)?;` compiles without a
-  warning and ignores the result. Always write
-  `if !verify(..)? { /* reject */ }`. A `Result<()>`-returning
-  check API is planned for 1.1.
+  only handles the `Err` case, so `verify(..)?;` ignores the
+  result. Since 1.1.0 these (and `blake3_keyed_verify`) are
+  deprecated, so the compiler warns at every call site; use the
+  `*_check` functions (`hmac_sha256_check`, `hmac_sha512_check`,
+  `blake3_keyed_check`, `argon2_check`, `argon2_check_with_policy`)
+  and the streaming types' `check` methods, which return
+  `Err(AuthenticationFailed)` on a mismatch, so `check(..)?;` is
+  correct. Changing the `verify` signatures themselves is a 2.0
+  change.
 - **Acting on `StreamDecryptor::update` output early.** Chunks are
   authenticated one by one, but truncation at a chunk boundary is
   only detected by `finalize`. `stream::decrypt_file` handles this
@@ -284,37 +332,45 @@ performance numbers are in [`PERFORMANCE.md`](PERFORMANCE.md).
   `m_cost` to 64 MiB+ via `argon2_hash_with_params`.** See
   [`PERFORMANCE.md`](PERFORMANCE.md) for the measurement and
   guidance.
-- **The `Crypt::encrypt` (allocating) path** is slower than
-  `Crypt::encrypt_into` for hot loops. Use the `_into` path
+- **The `Crypt::encrypt` (allocating) path** allocates once per
+  call and is slower than `Crypt::encrypt_into` for hot loops. Use the `_into` path
   whenever you call encrypt millions of times per second; the
   allocating path is for ergonomics-over-throughput cases.
   See [`PERFORMANCE.md`](PERFORMANCE.md) §"0.10.0 wrapping-
   overhead close".
-- **Single-shot encryption: at most 2^32 messages per key.**
-  Both shipped AEADs use a random 96-bit nonce per call. After `n`
-  messages under one key the chance of a repeated nonce is about
-  `n^2 / 2^97`: about 2^-33 at 2^32 messages (the NIST SP 800-38D
-  cap for random IVs), 7.6e-6 at 2^40, and 39% at 2^48. A repeated
-  nonce leaks the XOR of two plaintexts and, for AES-256-GCM, the
-  GHASH key, which allows forgeries. Earlier docs called 2^48 safe;
-  it is not. crypt-io does not count messages; rotate keys or
-  derive subkeys with HKDF. XChaCha20-Poly1305 (192-bit nonce) is a
-  1.x candidate.
-- **Stream encryption: at most about 2^12 (4,096) streams per
-  key.** Each stream uses a random 56-bit nonce prefix directly
-  under the caller's key, with no per-stream subkey. Two streams
-  with the same prefix reuse nonces for every chunk index they
-  share. The collision chance is about `n^2 / 2^57`: 2^-33 at 4,096
-  streams, 2^-17 at about one million, 0.2% at 16 million. For
-  "one key, many files" (for example `stream::encrypt_file` in a
-  loop), derive a fresh key per file with `kdf::hkdf_sha256` and a
-  random salt stored next to the file. A stream format with a
-  per-stream subkey is planned for 1.1; 1.x will keep decrypting
-  the current format.
-- **No `no_std` support in 1.0.x.** Building with
-  `default-features = false` still needs `std` (through
-  `mod-rand` and the RustCrypto/BLAKE3 crates' default features).
-  Earlier docs said otherwise.
+- **Single-shot ChaCha20-Poly1305 / AES-256-GCM: at most 2^32
+  messages per key.** Both use a random 96-bit nonce per call.
+  After `n` messages under one key the chance of a repeated nonce
+  is about `n^2 / 2^97`: about 2^-33 at 2^32 messages (the NIST SP
+  800-38D cap for random IVs), 7.6e-6 at 2^40, and 39% at 2^48. A
+  repeated nonce leaks the XOR of two plaintexts and, for
+  AES-256-GCM, the GHASH key, which allows forgeries. crypt-io does
+  not count messages. For higher volumes use XChaCha20-Poly1305
+  (1.1.0; 192-bit nonces, collision chance about 2^-65 even after
+  2^64 messages), rotate keys, or derive subkeys with HKDF.
+- **Stream format v1: at most about 2^12 (4,096) streams per
+  key.** v1 (written by 1.0.x, and by 1.1 only on request) uses a
+  random 56-bit nonce prefix directly under the caller's key. Two
+  streams with the same prefix reuse nonces for every chunk index
+  they share; the chance is about `n^2 / 2^57`. Format v2, the
+  default since 1.1.0, derives a subkey per stream from a 256-bit
+  salt and has no practical streams-per-key limit. Re-encrypt v1
+  files that share a key with many others
+  (`StreamDecryptor::format()` tells you which ones are v1).
+- **Mixed fleets.** crypt-io 1.0.x cannot read stream format v2.
+  Keep writing v1 (`StreamFormat::V1`) until every reader is on
+  1.1.
+- **`no_std` builds** (1.1.0) need the `getrandom` feature for any
+  API that draws randomness, and on bare-metal targets a
+  `getrandom` custom backend backed by a real hardware RNG. A weak
+  backend there weakens every nonce and salt. See
+  [`PLATFORM-NOTES.md`](PLATFORM-NOTES.md).
+- **Single-shot 1.0 format carries no algorithm id.** The same key
+  can be used with more than one AEAD, and nothing in a
+  `Crypt::encrypt` buffer says which one produced it. There is no
+  known attack from that, but use the sealed format
+  (`Crypt::seal` / `open`) for new data, and preferably one key per
+  algorithm.
 - **No deterministic encryption mode.** Every `encrypt` call
   draws a fresh nonce. Callers who need deterministic
   encryption (key-wrap, format-preserving encryption,

@@ -5,26 +5,32 @@ use core::fmt;
 
 use crate::aead::Algorithm;
 use crate::error::{Error, Result};
-use crate::wipe::{wipe_bytes, wipe_tail, wipe_vec};
+use crate::wipe::{reserve_wiping, wipe_bytes, wipe_tail, wipe_vec, wipe_vec_upto};
 
 use super::aead::decrypt_chunk_append;
 use super::frame::{
-    HEADER_LEN, NONCE_PREFIX_LEN, TAG_LEN, build_nonce, chunk_size_from_log2, parse_header,
+    HEADER_LEN, MAX_AAD_LEN, MAX_NONCE_LEN, NONCE_PREFIX_LEN, SALT_LEN, StreamFormat, TAG_LEN,
+    chunk_nonce, chunk_size_from_log2, derive_v2, parse_header,
 };
 
 /// Streaming AEAD decryptor — the inverse of [`super::StreamEncryptor`].
 ///
-/// Construct from the 24-byte header, feed encrypted chunk bytes via
+/// Construct from the 24-byte header, feed the rest of the stream via
 /// [`update`](Self::update), and finalise with
 /// [`finalize`](Self::finalize). The decryptor buffers exactly enough
 /// bytes to know whether the next chunk is final, so callers don't
 /// need to track chunk boundaries — only "this is all the bytes" (via
 /// `finalize`).
 ///
+/// Both stream formats are read: the version is taken from the header.
+/// For format v2 the 32-byte salt that follows the header is consumed
+/// by `update` like any other stream bytes, so callers pass everything
+/// after the first 24 bytes, exactly as for v1.
+///
 /// Authentication failures (tampered ciphertext, wrong key, tampered
-/// header, truncated stream, reordered chunks, duplicated chunks) all
-/// surface as [`Error::AuthenticationFailed`]. The variant is
-/// intentionally opaque — exposing which mode failed would leak
+/// header or salt, truncated stream, reordered chunks, duplicated
+/// chunks) all surface as [`Error::AuthenticationFailed`]. The variant
+/// is intentionally opaque — exposing which mode failed would leak
 /// information to an attacker.
 ///
 /// Plaintext returned before [`finalize`](Self::finalize) succeeds is
@@ -40,15 +46,27 @@ use super::frame::{
 /// See [`super::StreamEncryptor`] for a round-trip example.
 pub struct StreamDecryptor {
     algorithm: Algorithm,
+    format: StreamFormat,
+    /// v1: the caller's key. v2: the caller's key until the salt has
+    /// arrived, then the per-stream subkey.
     key: [u8; 32],
-    nonce_prefix: [u8; NONCE_PREFIX_LEN],
-    aad: [u8; HEADER_LEN],
+    nonce_base: [u8; MAX_NONCE_LEN],
+    nonce_len: usize,
+    /// `header` (v1) or `header || salt` (v2).
+    aad: [u8; MAX_AAD_LEN],
+    aad_len: usize,
+    /// v2: salt bytes received so far (`SALT_LEN` once keyed). Always
+    /// `SALT_LEN` for v1.
+    salt_have: usize,
     counter: u32,
     chunk_size: usize,
     chunk_size_log2: u8,
     /// Encrypted bytes awaiting decryption. Always holds at most
     /// `chunk_size + 16` bytes after each `update` returns.
     buffer: Vec<u8>,
+    /// Largest length `buffer` ever reached: on drop, only that many
+    /// bytes of its allocation can hold data and need wiping.
+    buffer_high_water: usize,
 }
 
 impl StreamDecryptor {
@@ -60,7 +78,8 @@ impl StreamDecryptor {
     /// - [`Error::InvalidKey`] if `key` is not 32 bytes.
     /// - [`Error::InvalidCiphertext`] if the header is malformed
     ///   (wrong magic, unsupported version, unknown algorithm,
-    ///   out-of-range chunk size).
+    ///   out-of-range chunk size, or non-zero reserved bytes in a v2
+    ///   header).
     pub fn new(key: &[u8], header_bytes: &[u8]) -> Result<Self> {
         if key.len() != 32 {
             return Err(Error::InvalidKey {
@@ -71,22 +90,33 @@ impl StreamDecryptor {
         let parsed = parse_header(header_bytes)?;
         let chunk_size = chunk_size_from_log2(parsed.chunk_size_log2);
 
-        let mut key_arr = [0u8; 32];
-        key_arr.copy_from_slice(key);
-
-        let dec = Self {
+        let mut dec = Self {
             algorithm: parsed.algorithm,
-            key: key_arr,
-            nonce_prefix: parsed.nonce_prefix,
-            aad: parsed.raw,
+            format: parsed.format,
+            key: [0u8; 32],
+            nonce_base: [0u8; MAX_NONCE_LEN],
+            nonce_len: parsed.algorithm.nonce_len(),
+            aad: [0u8; MAX_AAD_LEN],
+            aad_len: HEADER_LEN,
+            salt_have: SALT_LEN,
             counter: 0,
             chunk_size,
             chunk_size_log2: parsed.chunk_size_log2,
             // capacity = one non-final chunk's worth
             buffer: Vec::with_capacity(chunk_size + TAG_LEN),
+            buffer_high_water: 0,
         };
-        // `[u8; 32]` is `Copy`: wipe the stack temporary too.
-        wipe_bytes(&mut key_arr);
+        dec.key.copy_from_slice(key);
+        dec.aad[..HEADER_LEN].copy_from_slice(&parsed.raw);
+        match parsed.format {
+            StreamFormat::V1 => {
+                dec.nonce_base[..NONCE_PREFIX_LEN].copy_from_slice(&parsed.nonce_prefix);
+            }
+            StreamFormat::V2 => {
+                dec.aad_len = HEADER_LEN + SALT_LEN;
+                dec.salt_have = 0;
+            }
+        }
         Ok(dec)
     }
 
@@ -106,6 +136,13 @@ impl StreamDecryptor {
     #[must_use]
     pub fn algorithm(&self) -> Algorithm {
         self.algorithm
+    }
+
+    /// Format version of the stream (read from the header). Use it to
+    /// find v1 streams worth re-encrypting. New in 1.1.0.
+    #[must_use]
+    pub fn format(&self) -> StreamFormat {
+        self.format
     }
 
     /// Feed encrypted-stream bytes. Returns zero or more decrypted
@@ -139,7 +176,9 @@ impl StreamDecryptor {
     ///   chunk-counter desync, etc. Plaintext already decrypted by this
     ///   call is wiped before the error is returned.
     pub fn update(&mut self, data: &[u8]) -> Result<Vec<u8>> {
-        let mut out = Vec::new();
+        // Sized up front so the output never reallocates (a
+        // reallocation would leave a plaintext copy in freed memory).
+        let mut out = Vec::with_capacity(self.buffer.len().saturating_add(data.len()));
         if let Err(e) = self.process(data, &mut out) {
             wipe_vec(&mut out);
             return Err(e);
@@ -153,15 +192,16 @@ impl StreamDecryptor {
     /// # Errors
     ///
     /// - [`Error::InvalidCiphertext`] if the buffer is shorter than 16
-    ///   bytes (cannot contain a tag) — typically caused by a stream
-    ///   that lost its final chunk entirely.
+    ///   bytes (cannot contain a tag), or a v2 stream ended inside its
+    ///   salt — typically caused by a stream that lost its final chunk
+    ///   entirely.
     /// - [`Error::AuthenticationFailed`] if the buffered bytes do not
     ///   verify as the final chunk under the expected nonce. This
     ///   covers truncation (a buffered chunk that the encoder wrote
     ///   as non-final being treated as final by the decoder),
     ///   tampering, and wrong key.
     pub fn finalize(self) -> Result<Vec<u8>> {
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(self.buffer.len());
         self.finalize_core(&mut out)?;
         Ok(out)
     }
@@ -174,7 +214,8 @@ impl StreamDecryptor {
     /// The same end-authentication caveat as [`update`](Self::update)
     /// applies. On error, anything this call appended is wiped and
     /// `out` is truncated back to the length it had on entry; bytes
-    /// that were already in `out` are left alone.
+    /// that were already in `out` are left alone. If `out` has to
+    /// grow, its old allocation is wiped before it is freed.
     ///
     /// New in 0.10.0.
     ///
@@ -182,6 +223,7 @@ impl StreamDecryptor {
     ///
     /// Same as [`update`](Self::update).
     pub fn update_into(&mut self, data: &[u8], out: &mut Vec<u8>) -> Result<()> {
+        reserve_wiping(out, self.buffer.len().saturating_add(data.len()));
         let start = out.len();
         let result = self.process(data, out);
         if result.is_err() {
@@ -202,17 +244,48 @@ impl StreamDecryptor {
         self.finalize_core(out)
     }
 
+    /// v2: collect salt bytes from the front of `data`; once all 32
+    /// have arrived, swap the caller's key for the stream subkey.
+    /// Returns the bytes of `data` that follow the salt.
+    fn take_salt<'a>(&mut self, data: &'a [u8]) -> Result<&'a [u8]> {
+        let need = SALT_LEN - self.salt_have;
+        let take = need.min(data.len());
+        let at = HEADER_LEN + self.salt_have;
+        self.aad[at..at + take].copy_from_slice(&data[..take]);
+        self.salt_have += take;
+        if self.salt_have == SALT_LEN {
+            let mut header = [0u8; HEADER_LEN];
+            header.copy_from_slice(&self.aad[..HEADER_LEN]);
+            let mut master = self.key;
+            let derived = derive_v2(
+                &master,
+                &header,
+                &self.aad[HEADER_LEN..HEADER_LEN + SALT_LEN],
+                self.nonce_len,
+                &mut self.key,
+                &mut self.nonce_base,
+            );
+            wipe_bytes(&mut master);
+            derived?;
+        }
+        Ok(&data[take..])
+    }
+
     /// Shared body of `update` / `update_into`. Appends plaintext to
     /// `out`. A chunk is known to be non-final once more than one
     /// full frame (`chunk_size + 16` bytes) is available, because the
     /// encryptor guarantees the final chunk is strictly shorter.
     fn process(&mut self, mut data: &[u8], out: &mut Vec<u8>) -> Result<()> {
+        if self.salt_have < SALT_LEN {
+            data = self.take_salt(data)?;
+        }
         let frame = self.chunk_size + TAG_LEN;
 
         // 1. Top up a partially-filled buffer first.
         if !self.buffer.is_empty() {
             let take = (frame - self.buffer.len()).min(data.len());
             self.buffer.extend_from_slice(&data[..take]);
+            self.buffer_high_water = self.buffer_high_water.max(self.buffer.len());
             data = &data[take..];
             if self.buffer.len() < frame || data.is_empty() {
                 // Either not a full frame yet, or a full frame with
@@ -220,15 +293,7 @@ impl StreamDecryptor {
                 return Ok(());
             }
             // A full frame with more bytes after it: non-final.
-            let nonce = build_nonce(&self.nonce_prefix, self.counter, false);
-            decrypt_chunk_append(
-                self.algorithm,
-                &self.key,
-                &nonce,
-                &self.buffer,
-                &self.aad,
-                out,
-            )?;
+            self.open_chunk(&self.buffer, false, out)?;
             self.advance_counter()?;
             self.buffer.clear();
         }
@@ -236,15 +301,27 @@ impl StreamDecryptor {
         // 2. Decrypt complete non-final frames directly from `data`.
         while data.len() > frame {
             let (chunk, rest) = data.split_at(frame);
-            let nonce = build_nonce(&self.nonce_prefix, self.counter, false);
-            decrypt_chunk_append(self.algorithm, &self.key, &nonce, chunk, &self.aad, out)?;
+            self.open_chunk(chunk, false, out)?;
             self.advance_counter()?;
             data = rest;
         }
 
         // 3. Keep the tail (at most one frame) for the next call.
         self.buffer.extend_from_slice(data);
+        self.buffer_high_water = self.buffer_high_water.max(self.buffer.len());
         Ok(())
+    }
+
+    fn open_chunk(&self, chunk: &[u8], is_final: bool, out: &mut Vec<u8>) -> Result<()> {
+        let nonce = chunk_nonce(&self.nonce_base, self.nonce_len, self.counter, is_final);
+        decrypt_chunk_append(
+            self.algorithm,
+            &self.key,
+            &nonce[..self.nonce_len],
+            chunk,
+            &self.aad[..self.aad_len],
+            out,
+        )
     }
 
     fn advance_counter(&mut self) -> Result<()> {
@@ -257,6 +334,12 @@ impl StreamDecryptor {
     /// Shared body of `finalize` / `finalize_into`. Appends to `out`;
     /// on error `out` is left as it was on entry.
     fn finalize_core(&self, out: &mut Vec<u8>) -> Result<()> {
+        if self.salt_have < SALT_LEN {
+            return Err(Error::InvalidCiphertext(alloc::format!(
+                "stream ended inside the v2 salt ({} of {SALT_LEN} bytes)",
+                self.salt_have
+            )));
+        }
         let frame = self.chunk_size + TAG_LEN;
         if self.buffer.len() > frame {
             // `process` holds at most one frame; unreachable.
@@ -271,16 +354,7 @@ impl StreamDecryptor {
                 self.buffer.len()
             )));
         }
-
-        let nonce = build_nonce(&self.nonce_prefix, self.counter, true);
-        decrypt_chunk_append(
-            self.algorithm,
-            &self.key,
-            &nonce,
-            &self.buffer,
-            &self.aad,
-            out,
-        )
+        self.open_chunk(&self.buffer, true, out)
     }
 }
 
@@ -290,6 +364,7 @@ impl fmt::Debug for StreamDecryptor {
         // bytes can never reach logs through `{:?}`.
         f.debug_struct("StreamDecryptor")
             .field("algorithm", &self.algorithm)
+            .field("format", &self.format)
             .field("chunk_size", &self.chunk_size)
             .field("counter", &self.counter)
             .field("buffered_len", &self.buffer.len())
@@ -300,7 +375,7 @@ impl fmt::Debug for StreamDecryptor {
 impl Drop for StreamDecryptor {
     fn drop(&mut self) {
         wipe_bytes(&mut self.key);
-        wipe_vec(&mut self.buffer);
+        wipe_vec_upto(&mut self.buffer, self.buffer_high_water);
     }
 }
 

@@ -64,11 +64,47 @@ pub fn hkdf_sha256(ikm: &[u8], salt: Option<&[u8]>, info: &[u8], len: usize) -> 
     if len > HKDF_MAX_OUTPUT_SHA256 {
         return Err(Error::Kdf("hkdf-sha256 output > 255 * 32 bytes"));
     }
-    let hk = Hkdf::<Sha256>::new(salt, ikm);
     let mut out = vec![0u8; len];
-    hk.expand(info, &mut out)
-        .map_err(|_| Error::Kdf("hkdf-sha256 expand"))?;
+    hkdf_sha256_into(ikm, salt, info, &mut out)?;
     Ok(out)
+}
+
+/// HKDF-SHA256 that writes the derived key into `out` (any length up to
+/// [`HKDF_MAX_OUTPUT_SHA256`]) instead of returning a `Vec`.
+///
+/// Use this when the output is key material: derive straight into a
+/// fixed array, or a `Zeroizing` buffer, and no unwiped copy is left on
+/// the heap. New in 1.1.0.
+///
+/// # Errors
+///
+/// [`Error::Kdf`] if `out` is longer than `255 * 32` bytes. `out` is
+/// left untouched in that case.
+///
+/// # Example
+///
+/// ```
+/// # #[cfg(feature = "kdf-hkdf")] {
+/// use crypt_io::kdf;
+/// let master = [0x42u8; 32];
+/// let mut subkey = [0u8; 32];
+/// kdf::hkdf_sha256_into(&master, Some(b"salt"), b"app:session:v1", &mut subkey)?;
+/// assert_eq!(subkey.to_vec(), kdf::hkdf_sha256(&master, Some(b"salt"), b"app:session:v1", 32)?);
+/// # }
+/// # Ok::<(), crypt_io::Error>(())
+/// ```
+pub fn hkdf_sha256_into(
+    ikm: &[u8],
+    salt: Option<&[u8]>,
+    info: &[u8],
+    out: &mut [u8],
+) -> Result<()> {
+    if out.len() > HKDF_MAX_OUTPUT_SHA256 {
+        return Err(Error::Kdf("hkdf-sha256 output > 255 * 32 bytes"));
+    }
+    Hkdf::<Sha256>::new(salt, ikm)
+        .expand(info, out)
+        .map_err(|_| Error::Kdf("hkdf-sha256 expand"))
 }
 
 /// Derive `len` bytes of output keying material via HKDF-SHA512.
@@ -97,11 +133,30 @@ pub fn hkdf_sha512(ikm: &[u8], salt: Option<&[u8]>, info: &[u8], len: usize) -> 
     if len > HKDF_MAX_OUTPUT_SHA512 {
         return Err(Error::Kdf("hkdf-sha512 output > 255 * 64 bytes"));
     }
-    let hk = Hkdf::<Sha512>::new(salt, ikm);
     let mut out = vec![0u8; len];
-    hk.expand(info, &mut out)
-        .map_err(|_| Error::Kdf("hkdf-sha512 expand"))?;
+    hkdf_sha512_into(ikm, salt, info, &mut out)?;
     Ok(out)
+}
+
+/// HKDF-SHA512 that writes into `out` (up to
+/// [`HKDF_MAX_OUTPUT_SHA512`] bytes). See [`hkdf_sha256_into`]. New in
+/// 1.1.0.
+///
+/// # Errors
+///
+/// [`Error::Kdf`] if `out` is longer than `255 * 64` bytes.
+pub fn hkdf_sha512_into(
+    ikm: &[u8],
+    salt: Option<&[u8]>,
+    info: &[u8],
+    out: &mut [u8],
+) -> Result<()> {
+    if out.len() > HKDF_MAX_OUTPUT_SHA512 {
+        return Err(Error::Kdf("hkdf-sha512 output > 255 * 64 bytes"));
+    }
+    Hkdf::<Sha512>::new(salt, ikm)
+        .expand(info, out)
+        .map_err(|_| Error::Kdf("hkdf-sha512 expand"))
 }
 
 #[cfg(test)]

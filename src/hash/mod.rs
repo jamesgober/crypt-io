@@ -1,12 +1,12 @@
 //! Cryptographic hash functions.
 //!
-//! Three algorithms ship in 0.4.0, exposed through a consistent free-function
+//! Three algorithms ship, exposed through a consistent free-function
 //! API plus matching streaming hashers for inputs that don't fit in memory:
 //!
 //! | Algorithm  | One-shot              | Streaming         | Output | Feature       |
 //! |------------|-----------------------|-------------------|--------|---------------|
 //! | BLAKE3     | [`blake3()`]          | [`Blake3Hasher`]  | 32 B   | `hash-blake3` |
-//! | BLAKE3 XOF | [`blake3_long()`]     | [`Blake3Hasher`]  | N B    | `hash-blake3` |
+//! | BLAKE3 XOF | [`blake3_long()`], [`blake3_long_into()`] | [`Blake3Hasher`] | N B | `hash-blake3` |
 //! | SHA-256    | [`sha256()`]          | [`Sha256Hasher`]  | 32 B   | `hash-sha2`   |
 //! | SHA-512    | [`sha512()`]          | [`Sha512Hasher`]  | 64 B   | `hash-sha2`   |
 //!
@@ -29,9 +29,8 @@
 //! # No-key, no-MAC
 //!
 //! These functions hash data only. For keyed hashing (BLAKE3 keyed mode,
-//! HMAC-SHA2), see the [`mac`](../mac/index.html) module — that's the
-//! Phase 0.5.0 surface and is the right home for authentication-tag
-//! semantics. Using a raw hash function as a MAC is a security mistake;
+//! HMAC-SHA2), see the [`mac`](../mac/index.html) module, the right home
+//! for authentication-tag semantics. Using a raw hash function as a MAC is a security mistake;
 //! we do not expose `Hash::with_key` here for that reason.
 //!
 //! # Example
@@ -65,7 +64,7 @@ mod blake3_impl;
 mod sha2_impl;
 
 #[cfg(feature = "hash-blake3")]
-pub use self::blake3_impl::{Blake3Hasher, blake3, blake3_long};
+pub use self::blake3_impl::{Blake3Hasher, blake3, blake3_long, blake3_long_into};
 #[cfg(feature = "hash-sha2")]
 pub use self::sha2_impl::{Sha256Hasher, Sha512Hasher, sha256, sha512};
 

@@ -1,4 +1,4 @@
-//! Hash and verify a password with Argon2id — the use case for any
+//! Hash and check a password with Argon2id — the use case for any
 //! login flow.
 //!
 //! Run with:
@@ -8,9 +8,10 @@
 //! is intentionally slow (~100 ms per hash). A debug build can take
 //! several seconds.
 
-use crypt_io::kdf;
+use crypt_io::Error;
+use crypt_io::kdf::{self, Argon2Params, Argon2Policy};
 
-fn main() -> Result<(), crypt_io::Error> {
+fn main() -> Result<(), Error> {
     // On user registration / password change:
     let user_password = b"correct horse battery staple";
     let phc_string = kdf::argon2_hash(user_password)?;
@@ -24,47 +25,49 @@ fn main() -> Result<(), crypt_io::Error> {
     // row remembers what params it was hashed with).
     println!("Hash: {phc_string}");
 
-    // On login attempt:
-    let supplied_correct = b"correct horse battery staple";
-    let supplied_wrong = b"hunter2";
+    // On login attempt. A wrong password is `Err(AuthenticationFailed)`,
+    // so `?` rejects it.
+    kdf::argon2_check(&phc_string, b"correct horse battery staple")?;
+    println!("Correct password: accepted");
 
-    // A wrong password is `Ok(false)`, not an error: branch on the
-    // bool. `kdf::argon2_verify(..)?;` alone would log everyone in.
-    if !kdf::argon2_verify(&phc_string, supplied_correct)? {
-        return Err(crypt_io::Error::AuthenticationFailed);
-    }
-    println!("Correct password verifies: true");
+    let result = kdf::argon2_check(&phc_string, b"hunter2");
+    println!("Wrong password:   {result:?}");
+    assert_eq!(result, Err(Error::AuthenticationFailed));
 
-    let ok = kdf::argon2_verify(&phc_string, supplied_wrong)?;
-    println!("Wrong password verifies:   {ok}");
-    assert!(!ok);
-
-    // Verification distinguishes between:
+    // `argon2_check` distinguishes between:
     //
-    //   - wrong password               → Ok(false)
+    //   - wrong password               → Err(Error::AuthenticationFailed)
     //   - malformed / corrupted PHC    → Err(Error::Kdf(...))
-    //   - non-argon2id PHC, or costs above the verify limits
-    //     (m > 1 GiB, t > 64, p > 16)  → Err(Error::Kdf(...))
+    //   - a variant or costs outside the policy (default: argon2id,
+    //     m <= 1 GiB, t <= 64, p <= 16) → Err(Error::Kdf(...))
     //
     // Log these differently. Wrong password is "attacker / typo"
     // (warn). Malformed PHC is "corruption / bug" (error).
-    match kdf::argon2_verify("definitely not a phc string", user_password) {
-        Ok(_) => unreachable!("malformed PHC shouldn't parse"),
-        Err(e) => println!("Malformed PHC: {e}"),
+    match kdf::argon2_check("definitely not a phc string", user_password) {
+        Err(Error::Kdf(why)) => println!("Malformed PHC:    {why}"),
+        other => unreachable!("malformed PHC shouldn't parse: {other:?}"),
     }
 
     // For higher-cost use cases (machine-to-machine credentials,
-    // long-lived service tokens), tune the parameters explicitly:
-    use crypt_io::kdf::{Argon2Params, argon2_hash_with_params};
-    let strong = Argon2Params {
-        m_cost: 64 * 1024, // 64 MiB
-        t_cost: 3,
-        p_cost: 1,
-        output_len: 32,
-    };
-    let phc = argon2_hash_with_params(b"service-token", strong)?;
-    assert!(kdf::argon2_verify(&phc, b"service-token")?);
-    println!("Custom-params hash verified.");
+    // long-lived service tokens), tune the parameters explicitly and
+    // check them before use.
+    let strong = Argon2Params::new(64 * 1024, 3, 1, 32); // 64 MiB, 3 passes
+    strong.validate()?;
+    let phc = kdf::argon2_hash_with_params(b"service-token", strong)?;
+    kdf::argon2_check(&phc, b"service-token")?;
+    println!("Custom-params hash: accepted");
+
+    // A policy changes what `argon2_check_with_policy` accepts: here,
+    // reject anything cheaper than 32 MiB / 2 passes, which stops a
+    // planted low-cost hash.
+    let policy = Argon2Policy::new().with_min_cost(32 * 1024, 2);
+    kdf::argon2_check_with_policy(&phc, b"service-token", &policy)?;
+    let weak = kdf::argon2_hash_with_params(b"service-token", Argon2Params::new(8, 1, 1, 32))?;
+    assert!(matches!(
+        kdf::argon2_check_with_policy(&weak, b"service-token", &policy),
+        Err(Error::Kdf(_))
+    ));
+    println!("Policy rejects the weak hash.");
 
     Ok(())
 }

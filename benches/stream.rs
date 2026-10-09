@@ -104,8 +104,27 @@ fn bench_stream_encrypt_into(c: &mut Criterion) {
     group.finish();
 }
 
+// --- Small streams: per-stream setup cost (header, key schedule) is a
+// visible share of the work here. ---
+
+fn bench_stream_small(c: &mut Criterion) {
+    let mut group = c.benchmark_group("stream_round_trip_small");
+    for &(size, label) in &[(1024usize, "1KiB"), (16 * 1024, "16KiB")] {
+        let plaintext = vec![0xa5u8; size];
+        group.throughput(Throughput::Bytes(size as u64));
+        group.bench_with_input(format!("chacha20_{label}"), &plaintext, |b, pt| {
+            b.iter(|| stream_decrypt(&stream_encrypt(Algorithm::ChaCha20Poly1305, black_box(pt))));
+        });
+        group.bench_with_input(format!("aes_gcm_{label}"), &plaintext, |b, pt| {
+            b.iter(|| stream_decrypt(&stream_encrypt(Algorithm::Aes256Gcm, black_box(pt))));
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    bench_stream_small,
     bench_stream_encrypt,
     bench_stream_decrypt,
     bench_stream_encrypt_into,

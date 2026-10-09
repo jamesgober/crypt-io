@@ -1,178 +1,24 @@
-//! ChaCha20-Poly1305 backend (RFC 8439).
+//! ChaCha20-Poly1305 (RFC 8439) and XChaCha20-Poly1305
+//! (draft-irtf-cfrg-xchacha) backends.
 //!
-//! This module is a thin wrapper over the `chacha20poly1305` crate
-//! (`RustCrypto`). The wrapper's responsibilities are:
+//! Both come from the `chacha20poly1305` crate (RustCrypto). The
+//! wrapping (key-length check, OS-CSPRNG nonce, `nonce || ciphertext ||
+//! tag` layout, error mapping and buffer hygiene) is shared with
+//! AES-256-GCM and lives in [`super::backend`]. This module holds the
+//! known-answer tests that pin the upstream primitives.
 //!
-//! - Length-check the supplied key.
-//! - Generate a fresh 96-bit nonce via `mod_rand::tier3::fill_bytes`.
-//! - Prepend the nonce to the ciphertext, producing the wire layout
-//!   `nonce || ciphertext || tag` documented in [`super`].
-//! - Map upstream `aead::Error` (intentionally opaque in upstream) onto
-//!   [`Error::AuthenticationFailed`].
-//!
-//! No cryptographic math lives in this module — that all happens inside
-//! `chacha20poly1305::ChaCha20Poly1305`, which itself defers to the
-//! `chacha20` stream cipher and the `poly1305` MAC primitives.
-
-use alloc::vec::Vec;
-
-use chacha20poly1305::aead::{Aead, AeadInPlace, KeyInit, Payload};
-use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
-
-use super::{CHACHA20_NONCE_LEN, CHACHA20_TAG_LEN, KEY_LEN};
-use crate::error::{Error, Result};
-use crate::wipe::wipe_vec;
-
-/// Encrypt `plaintext` with associated data `aad` under `key`. Returns
-/// `nonce || ciphertext || tag`.
-pub(super) fn encrypt(key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
-    check_key_len(key)?;
-
-    // Fresh nonce per call — see RFC 8439 §3.
-    let mut nonce_bytes = [0u8; CHACHA20_NONCE_LEN];
-    mod_rand::tier3::fill_bytes(&mut nonce_bytes)
-        .map_err(|_| Error::RandomFailure("mod_rand::tier3::fill_bytes"))?;
-
-    let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let ct_and_tag = cipher
-        .encrypt(
-            nonce,
-            Payload {
-                msg: plaintext,
-                aad,
-            },
-        )
-        // The encrypt-side of `aead::Error` is a generic capacity / size
-        // signal; the underlying crypto is infallible. Surface it as an
-        // internal-grade authentication failure rather than leaking
-        // upstream's opaque error type.
-        .map_err(|_| Error::AuthenticationFailed)?;
-
-    // Layout: nonce || (ciphertext || tag).
-    let mut out = Vec::with_capacity(CHACHA20_NONCE_LEN + ct_and_tag.len());
-    out.extend_from_slice(&nonce_bytes);
-    out.extend_from_slice(&ct_and_tag);
-    Ok(out)
-}
-
-/// Encrypt into a caller-supplied buffer. Buffer is cleared and grown to
-/// hold `nonce_len + plaintext.len() + tag_len` bytes. Reusing the same
-/// buffer across calls amortises the allocation away.
-pub(super) fn encrypt_into(
-    key: &[u8],
-    plaintext: &[u8],
-    aad: &[u8],
-    out: &mut Vec<u8>,
-) -> Result<()> {
-    out.clear();
-    check_key_len(key)?;
-
-    let mut nonce_bytes = [0u8; CHACHA20_NONCE_LEN];
-    mod_rand::tier3::fill_bytes(&mut nonce_bytes)
-        .map_err(|_| Error::RandomFailure("mod_rand::tier3::fill_bytes"))?;
-
-    out.reserve(CHACHA20_NONCE_LEN + plaintext.len() + CHACHA20_TAG_LEN);
-    out.extend_from_slice(&nonce_bytes);
-    out.extend_from_slice(plaintext);
-
-    let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let tag = cipher
-        .encrypt_in_place_detached(nonce, aad, &mut out[CHACHA20_NONCE_LEN..])
-        .map_err(|_| {
-            // Upstream rejects over-long inputs *after* we copied the
-            // plaintext into `out`. Do not hand the caller a
-            // "ciphertext" buffer that still holds plaintext.
-            wipe_vec(out);
-            Error::AuthenticationFailed
-        })?;
-    out.extend_from_slice(&tag);
-    Ok(())
-}
-
-/// Decrypt a `nonce || ciphertext || tag` buffer with associated data `aad`
-/// under `key`.
-pub(super) fn decrypt(key: &[u8], wire: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
-    check_key_len(key)?;
-
-    if wire.len() < CHACHA20_NONCE_LEN + CHACHA20_TAG_LEN {
-        return Err(Error::InvalidCiphertext(alloc::format!(
-            "buffer too short ({} bytes, need at least {})",
-            wire.len(),
-            CHACHA20_NONCE_LEN + CHACHA20_TAG_LEN
-        )));
-    }
-
-    let (nonce_bytes, ct_and_tag) = wire.split_at(CHACHA20_NONCE_LEN);
-    let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
-    let nonce = Nonce::from_slice(nonce_bytes);
-    cipher
-        .decrypt(
-            nonce,
-            Payload {
-                msg: ct_and_tag,
-                aad,
-            },
-        )
-        .map_err(|_| Error::AuthenticationFailed)
-}
-
-/// Decrypt into a caller-supplied buffer. Buffer is cleared and grown to
-/// hold `wire.len() - nonce_len - tag_len` bytes (the recovered plaintext).
-pub(super) fn decrypt_into(key: &[u8], wire: &[u8], aad: &[u8], out: &mut Vec<u8>) -> Result<()> {
-    // Clear first so that no early-return error path below hands the
-    // caller's previous plaintext back to it.
-    out.clear();
-    check_key_len(key)?;
-
-    if wire.len() < CHACHA20_NONCE_LEN + CHACHA20_TAG_LEN {
-        return Err(Error::InvalidCiphertext(alloc::format!(
-            "buffer too short ({} bytes, need at least {})",
-            wire.len(),
-            CHACHA20_NONCE_LEN + CHACHA20_TAG_LEN
-        )));
-    }
-
-    let (nonce_bytes, ct_and_tag) = wire.split_at(CHACHA20_NONCE_LEN);
-    let (ct, tag_bytes) = ct_and_tag.split_at(ct_and_tag.len() - CHACHA20_TAG_LEN);
-
-    out.reserve(ct.len());
-    out.extend_from_slice(ct);
-
-    let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
-    let nonce = Nonce::from_slice(nonce_bytes);
-    let tag = chacha20poly1305::Tag::from_slice(tag_bytes);
-    cipher
-        .decrypt_in_place_detached(nonce, aad, out, tag)
-        .map_err(|_| {
-            // Upstream verifies the tag before decrypting, but wipe
-            // the whole allocation anyway (length and spare capacity)
-            // so nothing derived from this failed message stays in
-            // the caller's buffer. `clear()` alone only resets the
-            // length.
-            wipe_vec(out);
-            Error::AuthenticationFailed
-        })?;
-    Ok(())
-}
-
-#[inline]
-fn check_key_len(key: &[u8]) -> Result<()> {
-    if key.len() == KEY_LEN {
-        Ok(())
-    } else {
-        Err(Error::InvalidKey {
-            expected: KEY_LEN,
-            actual: key.len(),
-        })
-    }
-}
+//! No cryptographic math lives here: it all happens inside
+//! `chacha20poly1305`, which defers to the `chacha20` stream cipher and
+//! the `poly1305` MAC.
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::*;
+    use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+    use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce, XChaCha20Poly1305, XNonce};
+
+    use super::super::backend::{decrypt, encrypt};
+    use super::super::{CHACHA20_NONCE_LEN, CHACHA20_TAG_LEN};
 
     // RFC 8439 §2.8.2 (Poly1305 Construction) test vector for the
     // ChaCha20-Poly1305 AEAD. Verifies that our wrapping does not alter
@@ -227,26 +73,52 @@ mod tests {
         assert_eq!(recovered, plaintext);
     }
 
+    // draft-irtf-cfrg-xchacha-03, appendix A.3.1 (XChaCha20-Poly1305
+    // AEAD). Also checked against an independent HChaCha20 + RFC 8439
+    // implementation.
+    #[test]
+    fn xchacha20_poly1305_draft_a31_known_answer() {
+        let key = hex_to_bytes("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f");
+        let nonce = hex_to_bytes("404142434445464748494a4b4c4d4e4f5051525354555657");
+        let aad = hex_to_bytes("50515253c0c1c2c3c4c5c6c7");
+        let plaintext = b"Ladies and Gentlemen of the class of '99: \
+            If I could offer you only one tip for the future, sunscreen would be it.";
+        let expected = hex_to_bytes(
+            "bd6d179d3e83d43b9576579493c0e939572a1700252bfaccbed2902c21396cbb\
+             731c7f1b0b4aa6440bf3a82f4eda7e39ae64c6708c54c216cb96b72e1213b452\
+             2f8c9ba40db5d945b11b69b982c1bb9e3f3fac2bc369488f76b2383565d3fff9\
+             21f9664c97637da9768812f615c68b13b52e\
+             c0875924c1c7987947deafd8780acf49",
+        );
+        let cipher = XChaCha20Poly1305::new(Key::from_slice(&key));
+        let n = XNonce::from_slice(&nonce);
+        let got = cipher
+            .encrypt(
+                n,
+                Payload {
+                    msg: plaintext.as_ref(),
+                    aad: &aad,
+                },
+            )
+            .unwrap();
+        assert_eq!(got, expected);
+
+        // The same vector through crypt-io's wire format.
+        let mut wire = nonce.clone();
+        wire.extend_from_slice(&expected);
+        let recovered = decrypt::<XChaCha20Poly1305>(&key, &wire, &aad).unwrap();
+        assert_eq!(recovered, plaintext);
+    }
+
     #[test]
     fn round_trip_via_module_wrapper() {
         let key = [0xa1u8; 32];
         let pt = b"the wrapper layers nonce-prepend on top of the upstream primitive";
-        let wire = encrypt(&key, pt, &[]).unwrap();
+        let wire = encrypt::<ChaCha20Poly1305>(&key, pt, &[], &[]).unwrap();
         // Wire layout sanity: nonce + ciphertext + tag.
         assert_eq!(wire.len(), CHACHA20_NONCE_LEN + pt.len() + CHACHA20_TAG_LEN);
-        let recovered = decrypt(&key, &wire, &[]).unwrap();
+        let recovered = decrypt::<ChaCha20Poly1305>(&key, &wire, &[]).unwrap();
         assert_eq!(recovered, pt);
-    }
-
-    #[test]
-    fn check_key_len_accepts_exactly_32() {
-        assert!(check_key_len(&[0u8; 32]).is_ok());
-    }
-
-    #[test]
-    fn check_key_len_rejects_off_by_one() {
-        assert!(check_key_len(&[0u8; 31]).is_err());
-        assert!(check_key_len(&[0u8; 33]).is_err());
     }
 
     // Minimal hex → bytes helper kept local to the KAT so we don't take a

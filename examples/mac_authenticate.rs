@@ -1,13 +1,13 @@
-//! Authenticate a message with HMAC-SHA256, then verify in constant
-//! time. The right way to put a "this came from someone with the
-//! key" tag on a message.
+//! Authenticate a message with HMAC-SHA256, then check the tag in
+//! constant time. The right way to put a "this came from someone with
+//! the key" tag on a message.
 //!
 //! Run with:
 //!     cargo run --example mac_authenticate
 
-use crypt_io::mac;
+use crypt_io::{Error, Tag, mac};
 
-fn main() -> Result<(), crypt_io::Error> {
+fn main() -> Result<(), Error> {
     let shared_key = b"shared-secret-between-parties";
     let message = b"please transfer $100 to account 12345";
 
@@ -18,48 +18,48 @@ fn main() -> Result<(), crypt_io::Error> {
     // The sender ships `message || tag` to the receiver. The MAC
     // does not encrypt — it authenticates. Anyone can read the
     // message; only someone with the shared key can produce a tag
-    // that verifies.
+    // that checks out.
 
     // ---- Receiver ----
-    // ALWAYS use `*_verify` for the comparison — never `tag == expected`.
-    // The non-constant-time leak is enough to forge tags one byte
-    // at a time.
-    //
-    // A mismatch is `Ok(false)`, not an error, so branch on the bool.
-    // `mac::hmac_sha256_verify(..)?;` alone would accept forged tags.
-    if !mac::hmac_sha256_verify(shared_key, message, &tag)? {
-        return Err(crypt_io::Error::AuthenticationFailed);
-    }
-    println!("Authentic message verifies: true");
+    // Use `*_check` for the comparison — never `tag == expected` on
+    // arrays. The non-constant-time leak is enough to forge tags one
+    // byte at a time. A mismatch is `Err(AuthenticationFailed)`, so
+    // `?` rejects it.
+    mac::hmac_sha256_check(shared_key, message, &tag)?;
+    println!("Authentic message:  accepted");
 
     // Tampered message → rejected.
     let tampered = b"please transfer $1000000 to account 99999";
-    let ok = mac::hmac_sha256_verify(shared_key, tampered, &tag)?;
-    println!("Tampered message verifies:  {ok}");
-    assert!(!ok);
+    let result = mac::hmac_sha256_check(shared_key, tampered, &tag);
+    println!("Tampered message:   {result:?}");
+    assert_eq!(result, Err(Error::AuthenticationFailed));
 
     // Wrong key → rejected.
     let wrong_key = b"different-key";
-    let ok = mac::hmac_sha256_verify(wrong_key, message, &tag)?;
-    println!("Wrong key verifies:         {ok}");
-    assert!(!ok);
+    let result = mac::hmac_sha256_check(wrong_key, message, &tag);
+    println!("Wrong key:          {result:?}");
+    assert_eq!(result, Err(Error::AuthenticationFailed));
+
+    // If you need to compare tags yourself, wrap them in `Tag`, whose
+    // `==` is constant-time.
+    let expected = Tag::from(mac::hmac_sha256(shared_key, message)?);
+    assert!(expected == tag);
 
     // BLAKE3 keyed mode — faster than HMAC-SHA256 on modern
     // hardware, type-checked 32-byte key. Use this when both sides
     // are yours and there's no interop requirement.
     let key32 = [0x42u8; 32];
     let tag = mac::blake3_keyed(&key32, message);
-    assert!(mac::blake3_keyed_verify(&key32, message, &tag));
-    println!("BLAKE3 keyed tag verifies.");
+    mac::blake3_keyed_check(&key32, message, &tag)?;
+    println!("BLAKE3 keyed tag:   accepted");
 
     // Streaming MAC for large or chunked inputs:
     let mut m = mac::HmacSha256::new(shared_key)?;
     m.update(b"first chunk ");
     m.update(b"second chunk ");
     m.update(b"third chunk");
-    let streamed_tag = m.finalize();
     let one_shot_tag = mac::hmac_sha256(shared_key, b"first chunk second chunk third chunk")?;
-    assert_eq!(streamed_tag, one_shot_tag);
+    m.check(&one_shot_tag)?;
     println!("Streaming MAC matches one-shot.");
 
     Ok(())

@@ -18,10 +18,14 @@ crypt-io/
 ├── src/
 │   ├── lib.rs            ← module wiring, lint set, public re-exports
 │   ├── error.rs          ← Error enum + Result alias
+│   ├── tag.rs            ← Tag<N> with constant-time equality
+│   ├── rng.rs            ← OS random source (mod-rand or getrandom)
+│   ├── wipe.rs           ← buffer wiping helpers
 │   ├── aead/             ← Algorithm-agile AEAD surface
-│   │   ├── mod.rs        ← Crypt + Algorithm + dispatch
-│   │   ├── chacha20.rs   ← ChaCha20-Poly1305 backend (encrypt/_into/decrypt/_into)
-│   │   └── aes_gcm.rs    ← AES-256-GCM backend (same shape)
+│   │   ├── mod.rs        ← Crypt + Algorithm + dispatch + sealed format + generate_key
+│   │   ├── backend.rs    ← one implementation, generic over the cipher type
+│   │   ├── chacha20.rs   ← ChaCha20 / XChaCha20-Poly1305 known-answer tests
+│   │   └── aes_gcm.rs    ← AES-256-GCM known-answer tests
 │   ├── hash/             ← Hash functions
 │   │   ├── mod.rs        ← Module docs, re-exports, output-length constants
 │   │   ├── blake3_impl.rs← BLAKE3 + Blake3Hasher + XOF
@@ -33,18 +37,18 @@ crypt-io/
 │   ├── kdf/              ← Key Derivation Functions
 │   │   ├── mod.rs        ← Module docs, re-exports
 │   │   ├── hkdf_impl.rs  ← HKDF-SHA256 / HKDF-SHA512
-│   │   └── argon2_impl.rs← Argon2id + Argon2Params + PHC parse/verify
+│   │   └── argon2_impl.rs← Argon2id + Argon2Params + Argon2Policy + PHC check
 │   └── stream/           ← Chunked AEAD with STREAM construction
 │       ├── mod.rs        ← Re-exports, public constants
-│       ├── frame.rs      ← Header layout + per-chunk nonce derivation
+│       ├── frame.rs      ← Header layout, v2 key schedule, per-chunk nonce
 │       ├── aead.rs       ← Per-chunk encrypt/decrypt primitives
 │       ├── encryptor.rs  ← StreamEncryptor (with _into variants)
 │       ├── decryptor.rs  ← StreamDecryptor (with _into variants)
 │       └── file.rs       ← encrypt_file / decrypt_file (std-only)
 ├── benches/              ← criterion benches (aead, hash, mac, kdf, stream)
 ├── examples/             ← runnable examples (aead, mac, kdf, stream, profile_alloc)
-├── fuzz/                 ← cargo-fuzz workspace (8 targets)
-├── tests/                ← integration tests (stream, into_apis)
+├── fuzz/                 ← cargo-fuzz workspace (9 targets)
+├── tests/                ← integration tests (stream, into_apis, kat, regressions, properties, v1_1)
 └── docs/                 ← public docs (API, PERFORMANCE, SECURITY, this file, ...)
 ```
 
@@ -60,19 +64,21 @@ never key bytes. Per-call:
 
 1. `Crypt::encrypt(key, plaintext)` calls
    `Crypt::encrypt_with_aad(key, plaintext, &[])`.
-2. Dispatch matches on `self.algorithm`:
-   - `ChaCha20Poly1305` → `chacha20::encrypt(key, plaintext, aad)`
-   - `Aes256Gcm` → `aes_gcm::encrypt(key, plaintext, aad)`
-3. Backend functions:
+2. Dispatch matches on `self.algorithm` and calls
+   `backend::encrypt::<C>` with `C` = `ChaCha20Poly1305`,
+   `XChaCha20Poly1305` or `Aes256Gcm`.
+3. `backend` (one generic implementation for every cipher):
    - check key length (must be 32 bytes)
-   - generate a fresh 12-byte nonce via `mod_rand::tier3::fill_bytes`
-   - call upstream `encrypt(nonce, Payload { msg, aad })`
-   - prepend the nonce to the returned ciphertext
-   - return `nonce || ciphertext || tag` as `Vec<u8>`
+   - draw a fresh nonce of the cipher's length (12 or 24 bytes)
+     from the OS CSPRNG (`rng::fill`)
+   - write `nonce || plaintext` into one buffer and encrypt in
+     place with `encrypt_in_place_detached`
+   - append the tag and return `nonce || ciphertext || tag`
 
-The `_into` variants do the same but use
-`encrypt_in_place_detached` against the caller-supplied buffer
-to avoid allocating a fresh `Vec` per call. See
+The `_into` variants write into a caller-supplied buffer instead
+of a fresh `Vec`. `seal` / `open` use the same backend with a
+2-byte `version || algorithm` prefix that is also fed into the
+associated data. See
 [`PERFORMANCE.md`](PERFORMANCE.md) for the measured impact.
 
 ### `hash/` — one-shot + streaming hashes
@@ -105,9 +111,11 @@ Two algorithms with different threat models:
 - **HKDF** (`hkdf_sha256`, `hkdf_sha512`) for deriving subkeys
   from high-entropy input. Single-call extract-then-expand;
   optional salt, mandatory `info` context for domain separation.
-- **Argon2id** (`argon2_hash` + `argon2_verify`) for password
-  hashing. Salt is generated internally per-call via
-  `mod_rand::tier3` and embedded in the returned PHC string.
+- **Argon2id** (`argon2_hash` + `argon2_check`) for password
+  hashing. Salt is generated internally per call from the OS
+  CSPRNG and embedded in the returned PHC string. A PHC string's
+  variant and costs are checked against an `Argon2Policy` before
+  any work is done.
 
 The module overview explicitly distinguishes the two and points
 callers at the right one for their input shape.
@@ -120,8 +128,11 @@ AEAD with a counter + last-flag byte in the nonce. Defeats:
 
 - **Truncation** (cutting off the end) via the last-flag byte
 - **Reordering / duplication** via the chunk counter
-- **Header tampering** by binding the 24-byte header into every
-  chunk's AAD
+- **Header tampering** by binding the header (and the v2 salt)
+  into every chunk's AAD
+- **Nonce reuse across streams** (format v2) by encrypting each
+  stream under its own HKDF-SHA256 subkey, derived from the
+  caller's key and a 32-byte random salt
 
 Frame format documented in detail in
 [`FILE_FORMAT.md`](FILE_FORMAT.md).
@@ -135,40 +146,27 @@ hot loop.
 
 ## Algorithm dispatch
 
-`Algorithm` is a `#[non_exhaustive]` enum with two variants in
-1.0. Dispatch in `Crypt::encrypt_with_aad` (and the `_into`
-variants) is a simple `match`:
+`Algorithm` is a `#[non_exhaustive]` enum with three variants in
+1.1 (`XChaCha20Poly1305` was added in 1.1.0). Dispatch goes
+through one macro, `with_cipher!`, which binds a type name to the
+cipher for the algorithm (or returns `AlgorithmNotEnabled` when its
+feature is off):
 
 ```rust
-match self.algorithm {
-    Algorithm::ChaCha20Poly1305 => chacha20::encrypt(...),
-    Algorithm::Aes256Gcm        => aes_gcm::encrypt(...),
-}
+with_cipher!(self.algorithm, C => backend::encrypt::<C>(key, plaintext, aad, &[]))
 ```
 
-Both backends present the same internal signature:
-
-```rust
-pub(super) fn encrypt(key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>>;
-pub(super) fn encrypt_into(key: &[u8], plaintext: &[u8], aad: &[u8], out: &mut Vec<u8>) -> Result<()>;
-pub(super) fn decrypt(key: &[u8], wire: &[u8], aad: &[u8]) -> Result<Vec<u8>>;
-pub(super) fn decrypt_into(key: &[u8], wire: &[u8], aad: &[u8], out: &mut Vec<u8>) -> Result<()>;
-```
-
-This pattern keeps adding a new algorithm in 1.x mechanically
-simple: implement the four backend functions, add the
-`Algorithm` variant, add the four match arms, add KAT tests.
-
-The streaming module has the same shape in
-`src/stream/aead.rs` — `encrypt_chunk` / `decrypt_chunk` plus
-`_into` variants — and the same `match self.algorithm` dispatch
-in the encryptor and decryptor.
+`backend` is generic over any RustCrypto `aead` 0.5 cipher
+(`KeyInit + AeadInPlace`), so a new algorithm in 1.x needs a new
+`Algorithm` variant, one arm in `with_cipher!`, an algorithm byte,
+and KAT tests. The stream module's per-chunk primitives
+(`src/stream/aead.rs`) use the same macro.
 
 <hr>
 
 ## Error handling
 
-`Error` is `#[non_exhaustive]` with seven variants in 1.0:
+`Error` is `#[non_exhaustive]` with ten variants in 1.1:
 
 - `InvalidKey { expected, actual }` — wrong key length
 - `InvalidCiphertext(String)` — malformed input that's not a
@@ -184,12 +182,22 @@ in the encryptor and decryptor.
   a typed key)
 - `Kdf(&'static str)` — KDF parameter validation or PHC parse
   failure
+- `Io(&'static str)` *(1.1.0)* — file-helper I/O failure (1.0.x
+  used `Mac`)
+- `InvalidInput(&'static str)` *(1.1.0)* — a bad argument, such as
+  an out-of-range chunk size or the same file as input and output
+- `LimitExceeded(&'static str)` *(1.1.0)* — an encrypt-side size
+  limit (1.0.x reported these as `AuthenticationFailed` or
+  `InvalidCiphertext`, which looked like tampering)
 
 **Redaction-clean by design.** No variant carries key bytes,
-plaintext, nonces, or tag bytes. The `*_verify` family returns
-`bool` (or `Result<bool>`) rather than `Result<()>` so callers
-don't accidentally panic on a wrong tag — the API contract is
-"tag mismatch is not an error, it's a result."
+plaintext, nonces, or tag bytes.
+
+**A mismatch is an error.** The `*_check` functions (1.1.0) return
+`Err(AuthenticationFailed)` when a tag or password does not match,
+so `check(..)?;` rejects it. The older `*_verify` functions return
+`Ok(false)` instead, which `?` silently discards; they are
+deprecated.
 
 **`AuthenticationFailed` opacity is intentional.** Wrong key,
 tampered ciphertext, tampered tag, AAD mismatch, header
@@ -212,8 +220,15 @@ Every dependency is a deliberate choice. The full list:
 | `hmac` | Generic HMAC with constant-time `verify_slice`. RustCrypto. |
 | `hkdf` | RFC 5869 HKDF. RustCrypto. |
 | `argon2` | Argon2id with PHC framework. RustCrypto. |
-| `mod-rand` | Portfolio CSPRNG (Tier 3 = OS-backed). |
-| `zeroize` *(opt)* | Volatile wiping of the stream types' key copy and buffer, the BLAKE3 keyed MAC state and `_into` failure buffers; enables upstream `zeroize` in `aes-gcm`, `argon2`, `blake3` (default on). |
+| `aes` | Direct dependency only so `zeroize` can turn on `aes/zeroize` (AES round keys). RustCrypto. |
+| `subtle` | Constant-time equality for `Tag`. |
+| `mod-rand` *(with `std`)* | Portfolio CSPRNG (Tier 3 = OS-backed). |
+| `getrandom` *(opt)* | OS CSPRNG for `no_std` builds, or in place of `mod-rand`. |
+| `zeroize` *(opt)* | Volatile wiping of the stream types' key copy and buffer, the BLAKE3 keyed MAC state and `_into` failure buffers; enables upstream `zeroize` in `aes`, `aes-gcm`, `sha2`, `hmac`, `argon2`, `blake3` (default on). |
+
+All RustCrypto and BLAKE3 dependencies have their default
+features off; crypt-io's `std` feature forwards to their `std`
+features, so a `default-features = false` build is `no_std`.
 
 1.0.1 removed `error-forge`, `log-io`, `metrics-lib` and
 `async-trait`: no code used them. The `logging`, `metrics` and
@@ -259,17 +274,19 @@ Documented elsewhere but worth restating in one place:
   the relevant focused crate.
 - **No PGP / GPG**. Use `sequoia-openpgp`.
 - **No TLS**. Use `rustls`.
-- **No RNG surface**. Use `mod-rand` directly — this crate uses
-  it internally for nonces/salts only.
+- **No general RNG surface**. Use `mod-rand` or `getrandom`
+  directly. The only randomness crypt-io hands out is
+  `generate_key()` for 256-bit keys.
 - **No `Crypt::with_key`** that stores a key. Keys are per-call
   arguments by design; key storage is `key-vault`'s job.
 - **No `hash::*::with_key`**. Keyed hashing lives in `mac::*`.
 - **No "raw" / "unauthenticated" cipher modes** (CTR, CBC).
   Authentication is non-negotiable.
-- **No nonce-misuse-resistant variants** in 1.0 (SIV modes).
+- **No nonce-misuse-resistant variants** (SIV modes).
   Internally generated random nonces remove caller nonce
-  mistakes, but they can still collide: keep each key below
-  2^32 single-shot messages and about 2^12 streams (see
+  mistakes, but 96-bit ones can still collide: keep each key
+  below 2^32 single-shot ChaCha20-Poly1305 / AES-256-GCM messages
+  or use XChaCha20-Poly1305 (see
   [`SECURITY.md`](SECURITY.md#known-caveats)).
 
 <hr>

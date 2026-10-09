@@ -54,6 +54,27 @@ pub fn blake3_long(data: &[u8], len: usize) -> Vec<u8> {
     out
 }
 
+/// Fill `out` with BLAKE3 extended output (XOF) over `data`. The same
+/// bytes as [`blake3_long`]`(data, out.len())`, written into a buffer
+/// the caller owns (for example a `Zeroizing` array when the output is
+/// used as key material). New in 1.1.0.
+///
+/// # Example
+///
+/// ```
+/// # #[cfg(feature = "hash-blake3")] {
+/// use crypt_io::hash;
+/// let mut out = [0u8; 64];
+/// hash::blake3_long_into(b"seed", &mut out);
+/// assert_eq!(out.to_vec(), hash::blake3_long(b"seed", 64));
+/// # }
+/// ```
+pub fn blake3_long_into(data: &[u8], out: &mut [u8]) {
+    let mut hasher = ::blake3::Hasher::new();
+    let _ = hasher.update(data);
+    hasher.finalize_xof().fill(out);
+}
+
 /// Streaming BLAKE3 hasher for inputs that don't fit in memory or arrive
 /// in chunks.
 ///

@@ -79,7 +79,7 @@ fn bench_argon2_default(c: &mut Criterion) {
     let phc = kdf::argon2_hash(b"correct horse battery staple").unwrap();
     group.bench_function("verify", |b| {
         b.iter(|| {
-            kdf::argon2_verify(black_box(&phc), black_box(b"correct horse battery staple")).unwrap()
+            kdf::argon2_check(black_box(&phc), black_box(b"correct horse battery staple")).unwrap()
         });
     });
     group.finish();
@@ -102,7 +102,7 @@ fn bench_argon2_fast(c: &mut Criterion) {
     });
     let phc = kdf::argon2_hash_with_params(b"hunter2", fast).unwrap();
     group.bench_function("verify", |b| {
-        b.iter(|| kdf::argon2_verify(black_box(&phc), black_box(b"hunter2")).unwrap());
+        b.iter(|| kdf::argon2_check(black_box(&phc), black_box(b"hunter2")).unwrap());
     });
     group.finish();
 }

@@ -17,13 +17,25 @@
 //! - [`encrypt_file`] / [`decrypt_file`] *(requires `std`)* — the
 //!   common "encrypt this file into that file" workflow.
 //!
+//! [`StreamDecryptor`] works in any build. [`StreamEncryptor`]'s
+//! constructors need a random source (`std` or the `getrandom`
+//! feature).
+//!
 //! # Wire format
 //!
-//! See [`frame`] for the on-the-wire layout: 24-byte header, then
-//! N-1 non-final chunks of `chunk_size + 16` bytes each, then 1
-//! final chunk of strictly less than `chunk_size + 16` bytes. The
-//! final chunk is always emitted (even if it carries zero plaintext)
-//! so the decoder can detect end-of-stream unambiguously.
+//! See [`frame`] and `docs/FILE_FORMAT.md` for the on-the-wire layout:
+//! a 24-byte header, a 32-byte salt (format v2), then N-1 non-final
+//! chunks of `chunk_size + 16` bytes each, then 1 final chunk of
+//! strictly less than `chunk_size + 16` bytes. The final chunk is
+//! always emitted (even if it carries zero plaintext) so the decoder
+//! can detect end-of-stream unambiguously.
+//!
+//! crypt-io 1.1 writes **format v2** by default: every stream gets a
+//! random 256-bit salt and its chunks are encrypted under a subkey
+//! derived with HKDF-SHA256 from the caller's key and that salt. 1.0.x
+//! wrote **format v1** (chunks directly under the caller's key with a
+//! random 56-bit nonce prefix), which 1.1 still reads. Readers on
+//! crypt-io 1.0.x cannot read v2; see [`StreamFormat`].
 //!
 //! # Security properties
 //!
@@ -36,18 +48,19 @@
 //!   includes a 32-bit counter; swapping or repeating produces a
 //!   counter mismatch and an authentication failure.
 //! - **Header tampering** (flipping the algorithm byte, the chunk
-//!   size, or the nonce prefix) → the header bytes are bound into
-//!   every chunk's AAD; tampering shows up as authentication failure
-//!   on the first chunk.
+//!   size, the nonce prefix or the v2 salt) → the header (and salt)
+//!   bytes are bound into every chunk's AAD and, in v2, into the
+//!   subkey; tampering shows up as authentication failure on the
+//!   first chunk, or as `InvalidCiphertext` for a malformed header.
 //! - **Wrong key** → authentication failure on the first chunk.
 //!
 //! # Limits and caveats
 //!
-//! - **Streams per key.** Every stream uses a random 56-bit nonce
-//!   prefix directly under the caller's key. Keep one key below about
-//!   2^12 (4,096) streams, or derive a per-stream key (for example
-//!   `kdf::hkdf_sha256` with a random salt stored next to the
-//!   ciphertext). See [`StreamEncryptor`](StreamEncryptor#limits).
+//! - **Streams per key.** Format v2 (the default) has no practical
+//!   limit: two streams only share nonces if their 256-bit salts
+//!   collide. Format v1 streams use a random 56-bit nonce prefix
+//!   directly under the caller's key; keep one key below about 2^12
+//!   (4,096) of those. See [`StreamEncryptor`](StreamEncryptor#limits).
 //! - **Early output is not end-authenticated.** Plaintext returned by
 //!   [`StreamDecryptor::update`] is authentic chunk by chunk, but
 //!   truncation at a chunk boundary is only detected by
@@ -87,6 +100,7 @@
 
 mod aead;
 mod decryptor;
+#[cfg(any(feature = "std", feature = "getrandom"))]
 mod encryptor;
 pub mod frame;
 
@@ -94,6 +108,7 @@ pub mod frame;
 mod file;
 
 pub use self::decryptor::StreamDecryptor;
+#[cfg(any(feature = "std", feature = "getrandom"))]
 pub use self::encryptor::StreamEncryptor;
 
 #[cfg(feature = "std")]
@@ -103,5 +118,6 @@ pub use self::file::{decrypt_file, encrypt_file};
 // reason about. Keep the rest of `frame` crate-private — it's
 // implementation detail of the wire format.
 pub use self::frame::{
-    DEFAULT_CHUNK_SIZE_LOG2, HEADER_LEN, MAX_CHUNK_SIZE_LOG2, MIN_CHUNK_SIZE_LOG2, TAG_LEN,
+    DEFAULT_CHUNK_SIZE_LOG2, HEADER_LEN, MAX_CHUNK_SIZE_LOG2, MIN_CHUNK_SIZE_LOG2, SALT_LEN,
+    StreamFormat, TAG_LEN,
 };

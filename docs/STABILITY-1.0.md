@@ -117,9 +117,46 @@ Frozen free functions and types (feature-gated as documented in
 - `stream::decrypt_file(in, out, key) -> Result<()>` *(feature `std`)*
 - Constants: `HEADER_LEN`, `TAG_LEN`, `DEFAULT_CHUNK_SIZE_LOG2`,
   `MIN_CHUNK_SIZE_LOG2`, `MAX_CHUNK_SIZE_LOG2`.
-- Wire format: see [`FILE_FORMAT.md`](FILE_FORMAT.md). The
-  on-the-wire bytes are frozen — a `crypt-io 1.0` decrypt of a
-  `crypt-io 1.x` encrypt is guaranteed.
+- Wire format: see [`FILE_FORMAT.md`](FILE_FORMAT.md). Every
+  stream written by a 1.x release decrypts with every later 1.x
+  release. 1.0 originally also promised the reverse (a 1.0 reader
+  for 1.x output). 1.1.0 withdraws that for streams: it writes
+  stream format v2 by default, which removes v1's limit of about
+  2^12 streams per key, and 1.0.x readers reject v2 cleanly with
+  `InvalidCiphertext`. 1.1 can still write v1
+  (`StreamFormat::V1`) for fleets that have 1.0.x readers.
+
+### Added in 1.1.0 (covered by the same promise)
+
+- `Algorithm::XChaCha20Poly1305`, `Crypt::xchacha20_poly1305()`,
+  `XCHACHA20_NONCE_LEN`, `XCHACHA20_TAG_LEN`.
+- Sealed single-shot format: `Crypt::seal`, `seal_with_aad`,
+  `open`, `open_with_aad`, `sealed_algorithm`; constants
+  `SEALED_HEADER_LEN`, `SEALED_VERSION`.
+- `Crypt::decrypt_zeroizing`, `decrypt_with_aad_zeroizing`,
+  `generate_key()`, re-export `Zeroizing` *(feature `zeroize`)*.
+- `Tag<N>` with constant-time equality.
+- `Error::Io`, `Error::InvalidInput`, `Error::LimitExceeded`.
+- `mac::hmac_sha256_check`, `hmac_sha512_check`,
+  `blake3_keyed_check`, and `check` on `HmacSha256`, `HmacSha512`,
+  `Blake3Mac`.
+- `kdf::argon2_check`, `argon2_check_with_policy`,
+  `argon2_hash_with_policy`, `Argon2Policy`,
+  `Argon2Params::validate`, `hkdf_sha256_into`, `hkdf_sha512_into`.
+- `hash::blake3_long_into`.
+- `stream::StreamFormat`, `StreamEncryptor::new_with_format`,
+  `algorithm()` and `format()` on both stream types,
+  `stream::SALT_LEN`, `frame::VERSION_2`, `frame::SALT_LEN`,
+  `frame::V2_KDF_INFO`.
+- Features `getrandom`; `default-features = false` builds as
+  `no_std` + `alloc`.
+
+### Deprecated in 1.1.0 (kept for all of 1.x)
+
+- `mac::hmac_sha256_verify`, `mac::hmac_sha512_verify`,
+  `mac::blake3_keyed_verify`, `kdf::argon2_verify`. Use the
+  `*_check` functions. They return `Ok(false)` / `false` on a
+  mismatch, so `verify(..)?;` accepts forgeries.
 
 <hr>
 
@@ -137,14 +174,19 @@ Frozen free functions and types (feature-gated as documented in
 
 ## Wire format guarantees
 
-- **Stream-encrypt wire format** ([`FILE_FORMAT.md`](FILE_FORMAT.md))
-  is frozen for the 1.x series. A file encrypted by 1.0.0
-  decrypts cleanly with 1.x.y for any x ≥ 0, y ≥ 0.
+- **Stream-encrypt wire formats** ([`FILE_FORMAT.md`](FILE_FORMAT.md))
+  are frozen for the 1.x series. A file encrypted by 1.0.0
+  decrypts cleanly with 1.x.y for any x ≥ 0, y ≥ 0, and a v2
+  file written by 1.1 decrypts with every later 1.x. New formats
+  use a new version byte, which older readers reject.
 - **Single-shot AEAD wire format** (`nonce || ciphertext || tag`)
-  is frozen — both ChaCha20-Poly1305 and AES-256-GCM use a
-  12-byte nonce + 16-byte tag. Algorithm choice is **not** stored
-  in the wire bytes; callers are responsible for routing
-  ciphertexts to the right algorithm.
+  is frozen — ChaCha20-Poly1305 and AES-256-GCM use a 12-byte
+  nonce, XChaCha20-Poly1305 a 24-byte nonce, all a 16-byte tag.
+  Algorithm choice is **not** stored in these bytes; callers are
+  responsible for routing ciphertexts to the right algorithm, or
+  use the sealed format.
+- **Sealed single-shot format** (1.1.0;
+  `0x01 || algorithm || nonce || ciphertext || tag`) is frozen.
 - **Argon2id PHC string format** is whatever the upstream
   `password-hash` crate emits — currently
   `$argon2id$v=19$m=...,t=...,p=...$<salt>$<hash>`. This is
