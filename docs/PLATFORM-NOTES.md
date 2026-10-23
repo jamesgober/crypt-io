@@ -150,7 +150,7 @@ builds it for `thumbv7em-none-eabihf` (Cortex-M4F) on every push.
 
 ```toml
 [dependencies]
-crypt-io = { version = "1.1", default-features = false, features = [
+crypt-io = { version = "1.2", default-features = false, features = [
     "aead-chacha20", "hash-sha2", "mac-hmac", "kdf-hkdf", "zeroize",
     "getrandom",   # only if you need to encrypt; see below
 ] }
@@ -165,6 +165,7 @@ You need a global allocator (`alloc`). What works without `std`:
 | `hash::*`, `mac::*` (compute and `*_check`) | `kdf::argon2_hash*` | |
 | `kdf::hkdf_*`, `kdf::argon2_check*`, `Argon2Params::validate` | `generate_key` (also needs `zeroize`) | |
 | `Tag`, `Error` (implements `core::error::Error`) | | |
+| `wipe`, `wipe_vec` (1.2.0) | | |
 
 Without `std` and without `getrandom`, the functions in the middle
 column are not compiled at all, so a build can never fall back to a

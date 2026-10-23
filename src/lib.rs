@@ -31,6 +31,7 @@
 //! - **Hashing** (BLAKE3, SHA-256, SHA-512)
 //! - **MAC** (HMAC-SHA256, HMAC-SHA512, BLAKE3 keyed)
 //! - **KDF** (HKDF for key derivation, Argon2id for password hashing)
+//! - **Wiping** buffers that held secrets ([`wipe`], [`wipe_vec`])
 //!
 //! Out of scope (use other crates):
 //!
@@ -54,8 +55,8 @@
 //! example on `thumbv7em-none-eabihf`). Without `std`:
 //!
 //! - Hashing, MACs, HKDF, Argon2id verification, every decrypt path,
-//!   [`Crypt::open`], [`stream::StreamDecryptor`] and [`Tag`] work as
-//!   usual.
+//!   [`Crypt::open`], [`stream::StreamDecryptor`], [`Tag`], [`wipe`]
+//!   and [`wipe_vec`] work as usual.
 //! - Anything that needs fresh randomness (`encrypt*`, `seal*`,
 //!   `StreamEncryptor::new*`, `argon2_hash*`, [`generate_key`]) needs
 //!   the `getrandom` feature. On targets without an OS random source,
@@ -117,7 +118,6 @@ mod error;
 mod rng;
 mod tag;
 
-#[cfg(any(feature = "aead-chacha20", feature = "aead-aes-gcm"))]
 mod wipe;
 
 #[cfg(any(feature = "aead-chacha20", feature = "aead-aes-gcm"))]
@@ -137,6 +137,7 @@ pub mod stream;
 
 pub use crate::error::{Error, Result};
 pub use crate::tag::Tag;
+pub use crate::wipe::{wipe, wipe_vec};
 
 #[cfg(any(feature = "aead-chacha20", feature = "aead-aes-gcm"))]
 pub use crate::aead::{Algorithm, Crypt};

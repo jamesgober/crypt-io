@@ -291,7 +291,7 @@ pub(super) fn derive_v2(
         subkey.copy_from_slice(&okm[..32]);
         nonce_base[..prefix_len].copy_from_slice(&okm[32..32 + prefix_len]);
     }
-    crate::wipe::wipe_bytes(&mut okm);
+    crate::wipe::wipe(&mut okm);
     result
 }
 

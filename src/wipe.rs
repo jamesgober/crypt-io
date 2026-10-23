@@ -1,4 +1,7 @@
-//! Crate-internal helpers for overwriting secret bytes.
+//! Overwriting secret bytes.
+//!
+//! [`wipe`] and [`wipe_vec`] are public (re-exported at the crate
+//! root since 1.2.0); the other helpers are crate-internal.
 //!
 //! With the `zeroize` feature (default on) every helper goes through
 //! the `zeroize` crate, whose volatile writes the optimiser cannot
@@ -8,10 +11,64 @@
 
 use alloc::vec::Vec;
 
+/// Overwrite every byte of `bytes` with zeros.
+///
+/// With the `zeroize` feature (default on) the writes are volatile,
+/// so the compiler cannot remove them even when `bytes` is never read
+/// again. Without the feature the bytes are zeroed with plain writes
+/// followed by `core::hint::black_box`, which stops the optimiser in
+/// practice but is not guaranteed; enable `zeroize` for any buffer
+/// that held secrets.
+///
+/// Only the bytes of the slice itself are touched. Copies left
+/// elsewhere (an earlier `Vec` reallocation, a moved value) are out of
+/// reach; for a `Vec` use [`wipe_vec`], which also clears its spare
+/// capacity.
+///
+/// New in 1.2.0.
+///
+/// # Example
+///
+/// ```
+/// let mut secret = *b"session token";
+/// crypt_io::wipe(&mut secret);
+/// assert!(secret.iter().all(|&b| b == 0));
+/// ```
+#[inline]
+pub fn wipe(bytes: &mut [u8]) {
+    #[cfg(feature = "zeroize")]
+    {
+        zeroize::Zeroize::zeroize(bytes);
+    }
+    #[cfg(not(feature = "zeroize"))]
+    {
+        bytes.fill(0);
+        let _ = core::hint::black_box(bytes);
+    }
+}
+
 /// Overwrite every byte of `v`'s allocation (its length *and* its
-/// spare capacity) with zeros, then set its length to zero. The
-/// allocation itself is kept so callers can reuse it.
-pub(crate) fn wipe_vec(v: &mut Vec<u8>) {
+/// spare capacity) with zeros, then set its length to zero.
+///
+/// The allocation is kept, so the buffer can be reused without a new
+/// allocation. Bytes past the current length can still hold data from
+/// before a `truncate` or `clear`; this function wipes them too.
+///
+/// Same guarantee as [`wipe`]: volatile writes with the `zeroize`
+/// feature (default on), best effort without it.
+///
+/// New in 1.2.0.
+///
+/// # Example
+///
+/// ```
+/// let mut buf = b"response body".to_vec();
+/// let capacity = buf.capacity();
+/// crypt_io::wipe_vec(&mut buf);
+/// assert!(buf.is_empty());
+/// assert_eq!(buf.capacity(), capacity);
+/// ```
+pub fn wipe_vec(v: &mut Vec<u8>) {
     #[cfg(feature = "zeroize")]
     {
         // `Zeroize for Vec<u8>` zeroes the full capacity and clears.
@@ -37,6 +94,7 @@ pub(crate) fn wipe_vec(v: &mut Vec<u8>) {
 /// copies the live bytes across, and wipes the old allocation before
 /// it is freed. Growth is amortised (at least doubling), like
 /// `Vec::reserve`.
+#[cfg(any(feature = "aead-chacha20", feature = "aead-aes-gcm"))]
 #[inline]
 pub(crate) fn reserve_wiping(v: &mut Vec<u8>, additional: usize) {
     if v.capacity() - v.len() < additional {
@@ -44,6 +102,7 @@ pub(crate) fn reserve_wiping(v: &mut Vec<u8>, additional: usize) {
     }
 }
 
+#[cfg(any(feature = "aead-chacha20", feature = "aead-aes-gcm"))]
 #[cold]
 #[inline(never)]
 fn grow_wiping(v: &mut Vec<u8>, additional: usize) {
@@ -57,20 +116,6 @@ fn grow_wiping(v: &mut Vec<u8>, additional: usize) {
     grown.extend_from_slice(v);
     wipe_vec(v);
     *v = grown;
-}
-
-/// Overwrite `bytes` with zeros.
-#[cfg(feature = "stream")]
-pub(crate) fn wipe_bytes(bytes: &mut [u8]) {
-    #[cfg(feature = "zeroize")]
-    {
-        zeroize::Zeroize::zeroize(bytes);
-    }
-    #[cfg(not(feature = "zeroize"))]
-    {
-        bytes.fill(0);
-        let _ = core::hint::black_box(bytes);
-    }
 }
 
 /// Wipe the first `high_water` bytes of `v`'s allocation (whether they
@@ -89,7 +134,7 @@ pub(crate) fn wipe_vec_upto(v: &mut Vec<u8>, high_water: usize) {
         // Within capacity, so no reallocation.
         v.resize(n, 0);
     }
-    wipe_bytes(v);
+    wipe(v);
     v.clear();
 }
 
@@ -98,7 +143,7 @@ pub(crate) fn wipe_vec_upto(v: &mut Vec<u8>, high_water: usize) {
 #[cfg(feature = "stream")]
 pub(crate) fn wipe_tail(v: &mut Vec<u8>, start: usize) {
     if let Some(tail) = v.get_mut(start..) {
-        wipe_bytes(tail);
+        wipe(tail);
     }
     v.truncate(start);
 }
@@ -108,6 +153,77 @@ pub(crate) fn wipe_tail(v: &mut Vec<u8>, start: usize) {
 mod tests {
     use super::*;
     use alloc::vec;
+
+    #[test]
+    fn wipe_zeroes_every_byte() {
+        let mut buf: [u8; 256] = core::array::from_fn(|i| u8::try_from(i).unwrap() | 1);
+        wipe(&mut buf);
+        assert!(buf.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn wipe_empty_slice_is_a_no_op() {
+        let mut empty: [u8; 0] = [];
+        wipe(&mut empty);
+        let mut v: Vec<u8> = Vec::new();
+        wipe(&mut v);
+        assert_eq!(v.len(), 0);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn wipe_large_slice() {
+        let mut big = vec![0xffu8; 4 * 1024 * 1024 + 7];
+        wipe(&mut big);
+        assert_eq!(big.len(), 4 * 1024 * 1024 + 7);
+        assert!(big.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn wipe_touches_only_the_given_slice() {
+        let mut buf = [7u8; 16];
+        wipe(&mut buf[4..12]);
+        assert_eq!(buf[..4], [7; 4]);
+        assert_eq!(buf[4..12], [0; 8]);
+        assert_eq!(buf[12..], [7; 4]);
+    }
+
+    #[test]
+    fn wipe_vec_zeroes_the_whole_capacity() {
+        let mut v = Vec::with_capacity(4096);
+        v.extend(core::iter::repeat_n(0xa5u8, 3000));
+        v.truncate(100);
+        let cap = v.capacity();
+        wipe_vec(&mut v);
+        assert_eq!(v.len(), 0);
+        assert_eq!(v.capacity(), cap);
+        let spare = v.spare_capacity_mut();
+        assert_eq!(spare.len(), cap);
+        for b in spare.iter() {
+            // SAFETY: `wipe_vec` writes a zero to every byte of the
+            // capacity, including the bytes that were never written
+            // before, so the whole allocation is initialised.
+            assert_eq!(unsafe { b.assume_init() }, 0);
+        }
+    }
+
+    #[test]
+    fn wipe_vec_on_an_empty_vec() {
+        let mut v: Vec<u8> = Vec::new();
+        wipe_vec(&mut v);
+        assert_eq!(v.len(), 0);
+        assert_eq!(v.capacity(), 0);
+    }
+
+    #[test]
+    fn wipe_vec_leaves_the_buffer_reusable() {
+        let mut v = b"first response".to_vec();
+        let cap = v.capacity();
+        wipe_vec(&mut v);
+        v.extend_from_slice(b"second");
+        assert_eq!(v, b"second");
+        assert_eq!(v.capacity(), cap);
+    }
 
     #[test]
     fn wipe_vec_zeroes_spare_capacity_and_keeps_allocation() {
@@ -127,6 +243,7 @@ mod tests {
         }
     }
 
+    #[cfg(any(feature = "aead-chacha20", feature = "aead-aes-gcm"))]
     #[test]
     fn reserve_wiping_keeps_contents_and_grows() {
         let mut v = vec![9u8; 8];

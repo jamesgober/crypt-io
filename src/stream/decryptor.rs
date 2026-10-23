@@ -5,7 +5,7 @@ use core::fmt;
 
 use crate::aead::Algorithm;
 use crate::error::{Error, Result};
-use crate::wipe::{reserve_wiping, wipe_bytes, wipe_tail, wipe_vec, wipe_vec_upto};
+use crate::wipe::{reserve_wiping, wipe, wipe_tail, wipe_vec, wipe_vec_upto};
 
 use super::aead::decrypt_chunk_append;
 use super::frame::{
@@ -265,7 +265,7 @@ impl StreamDecryptor {
                 &mut self.key,
                 &mut self.nonce_base,
             );
-            wipe_bytes(&mut master);
+            wipe(&mut master);
             derived?;
         }
         Ok(&data[take..])
@@ -374,7 +374,7 @@ impl fmt::Debug for StreamDecryptor {
 
 impl Drop for StreamDecryptor {
     fn drop(&mut self) {
-        wipe_bytes(&mut self.key);
+        wipe(&mut self.key);
         wipe_vec_upto(&mut self.buffer, self.buffer_high_water);
     }
 }

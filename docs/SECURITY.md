@@ -113,6 +113,9 @@ note in `hash` both explicitly forbid `tag == expected` /
     copy (in format v2, the per-stream subkey) and internal buffer
     on drop, and `Blake3Mac` wipes its keyed state on drop;
   - the `_into` failure paths above use volatile writes;
+  - `wipe` and `wipe_vec` (1.2.0, public) use volatile writes;
+    without `zeroize` they fall back to plain writes plus
+    `core::hint::black_box`, which is best effort only;
   - upstream `zeroize` support is on in `aes` (AES round keys,
     1.1.0), `sha2` and `hmac` (hash and HMAC state, which is
     derived from the key, 1.1.0), `aes-gcm`, `argon2` (memory
@@ -133,7 +136,9 @@ note in `hash` both explicitly forbid `tag == expected` /
   `Crypt::decrypt_zeroizing`, `kdf::hkdf_sha256_into` /
   `hkdf_sha512_into` (derive into a buffer you own),
   `hash::blake3_long_into`, `StreamDecryptor::update_into`, and
-  `generate_key()` (returns `Zeroizing<[u8; 32]>`).
+  `generate_key()` (returns `Zeroizing<[u8; 32]>`). For buffers of
+  your own, `crypt_io::wipe` / `wipe_vec` (1.2.0) do the same
+  volatile wipe crypt-io uses internally.
 - **No secrets in `Debug`.** The stream types print only the
   algorithm, chunk size, counter and buffered length (1.0.0 printed
   the raw key and buffered plaintext).
