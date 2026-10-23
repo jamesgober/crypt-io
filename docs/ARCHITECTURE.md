@@ -20,7 +20,7 @@ crypt-io/
 │   ├── error.rs          ← Error enum + Result alias
 │   ├── tag.rs            ← Tag<N> with constant-time equality
 │   ├── rng.rs            ← OS random source (mod-rand or getrandom)
-│   ├── wipe.rs           ← buffer wiping helpers
+│   ├── wipe.rs           ← buffer wiping: public wipe / wipe_vec, internal helpers
 │   ├── aead/             ← Algorithm-agile AEAD surface
 │   │   ├── mod.rs        ← Crypt + Algorithm + dispatch + sealed format + generate_key
 │   │   ├── backend.rs    ← one implementation, generic over the cipher type
@@ -224,7 +224,7 @@ Every dependency is a deliberate choice. The full list:
 | `subtle` | Constant-time equality for `Tag`. |
 | `mod-rand` *(with `std`)* | Portfolio CSPRNG (Tier 3 = OS-backed). |
 | `getrandom` *(opt)* | OS CSPRNG for `no_std` builds, or in place of `mod-rand`. |
-| `zeroize` *(opt)* | Volatile wiping of the stream types' key copy and buffer, the BLAKE3 keyed MAC state and `_into` failure buffers; enables upstream `zeroize` in `aes`, `aes-gcm`, `sha2`, `hmac`, `argon2`, `blake3` (default on). |
+| `zeroize` *(opt)* | Volatile writes for `wipe` / `wipe_vec`; wiping of the stream types' key copy and buffer, the BLAKE3 keyed MAC state and `_into` failure buffers; enables upstream `zeroize` in `aes`, `aes-gcm`, `sha2`, `hmac`, `argon2`, `blake3` (default on). |
 
 All RustCrypto and BLAKE3 dependencies have their default
 features off; crypt-io's `std` feature forwards to their `std`

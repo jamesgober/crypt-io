@@ -151,6 +151,12 @@ Frozen free functions and types (feature-gated as documented in
 - Features `getrandom`; `default-features = false` builds as
   `no_std` + `alloc`.
 
+### Added in 1.2.0 (covered by the same promise)
+
+- `wipe(&mut [u8])` and `wipe_vec(&mut Vec<u8>)` at the crate root,
+  available with every feature set. With `zeroize` the writes are
+  volatile; without it they are best effort.
+
 ### Deprecated in 1.1.0 (kept for all of 1.x)
 
 - `mac::hmac_sha256_verify`, `mac::hmac_sha512_verify`,

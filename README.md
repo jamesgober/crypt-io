@@ -186,6 +186,19 @@ stream::decrypt_file("output.enc", "decrypted.bin", &key)?;
 
 Chunked AEAD with the STREAM construction — works for files of any size, detects tampering / truncation / reordering. `decrypt_file` writes to a temporary file and only renames it into place once the whole stream has been authenticated. For in-memory streaming (network sockets, buffered I/O), use `StreamEncryptor` / `StreamDecryptor` directly; their `update` output is not end-authenticated until `finalize` returns `Ok`.
 
+### Wiping secrets
+
+```rust
+let mut token = *b"session token";
+crypt_io::wipe(&mut token);                  // every byte is now zero
+
+let mut body = b"response body".to_vec();
+crypt_io::wipe_vec(&mut body);               // zeroes the whole capacity, length 0
+assert!(body.is_empty());
+```
+
+With the default `zeroize` feature the writes are volatile, so the compiler cannot drop them. Both functions work without `std` (`default-features = false, features = ["zeroize"]`). New in 1.2.0.
+
 ### Usage limits
 
 - **Single-shot ChaCha20-Poly1305 / AES-256-GCM:** at most 2^32 messages per key (random 96-bit nonces). Use XChaCha20-Poly1305 above that.
@@ -273,7 +286,7 @@ Reproduce: `cargo bench --all-features` (numbers vary by hardware — see PERFOR
 - [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) — measured throughput, contract-check matrix, parameter-choice guidance.
 - [`docs/FILE_FORMAT.md`](docs/FILE_FORMAT.md) — stream (v1, v2) and sealed wire format specs, with test vectors.
 - [`CHANGELOG.md`](CHANGELOG.md) — per-version Added / Changed / Security entries.
-- [`docs/release/`](docs/release) — per-release notes (`v0.2.0.md`, `v0.3.0.md`, …, `v1.1.0.md`).
+- [`docs/release/`](docs/release) — per-release notes (`v0.2.0.md`, `v0.3.0.md`, …, `v1.2.0.md`).
 - [`.dev/ROADMAP.md`](.dev/ROADMAP.md) — milestone plan through 1.0 and beyond.
 
 <hr>

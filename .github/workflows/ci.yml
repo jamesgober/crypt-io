@@ -79,6 +79,7 @@ jobs:
       - run: cargo build --no-default-features --features std,kdf-argon2
       - run: cargo build --no-default-features --features std,zeroize,stream
       - run: cargo build --no-default-features --features std,getrandom,aead-chacha20
+      - run: cargo build --no-default-features --features zeroize,mac-blake3
 
   no-std:
     name: no_std (thumbv7em-none-eabihf)
@@ -97,6 +98,15 @@ jobs:
       - run: >-
           cargo build --target thumbv7em-none-eabihf --no-default-features
           --features aead-chacha20,aead-aes-gcm,hash-blake3,hash-sha2,mac-hmac,mac-blake3,kdf-hkdf,kdf-argon2,stream,zeroize
+      # The smallest no_std set a downstream crate uses for `wipe` plus
+      # the keyed BLAKE3 MAC.
+      - run: >-
+          cargo build --target thumbv7em-none-eabihf --no-default-features
+          --features zeroize,mac-blake3
+      # The same set and the no-`zeroize` fallback, tested on the host.
+      - run: cargo test --no-default-features --features zeroize,mac-blake3 --lib
+      - run: cargo test --no-default-features --features zeroize,mac-blake3 --doc
+      - run: cargo test --no-default-features --features mac-blake3 --lib
       # With the `getrandom` source. Bare metal has no OS RNG, so the
       # application registers a custom backend; a library build only
       # needs the cfg.

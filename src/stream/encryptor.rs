@@ -5,7 +5,7 @@ use core::fmt;
 
 use crate::aead::Algorithm;
 use crate::error::{Error, Result};
-use crate::wipe::{wipe_bytes, wipe_vec_upto};
+use crate::wipe::{wipe, wipe_vec_upto};
 
 use super::aead::encrypt_chunk_append;
 use super::frame::{
@@ -214,7 +214,7 @@ impl StreamEncryptor {
                     &mut nonce_base,
                 );
                 if derived.is_err() {
-                    wipe_bytes(&mut key_arr);
+                    wipe(&mut key_arr);
                 }
                 derived?;
                 aad[HEADER_LEN..].copy_from_slice(random);
@@ -227,7 +227,7 @@ impl StreamEncryptor {
         enc.aad = aad;
         enc.nonce_base = nonce_base;
         // `[u8; 32]` is `Copy`: wipe the stack temporary as well.
-        wipe_bytes(&mut key_arr);
+        wipe(&mut key_arr);
         Ok((enc, header))
     }
 
@@ -417,7 +417,7 @@ impl fmt::Debug for StreamEncryptor {
 
 impl Drop for StreamEncryptor {
     fn drop(&mut self) {
-        wipe_bytes(&mut self.key);
+        wipe(&mut self.key);
         wipe_vec_upto(&mut self.buffer, self.buffer_high_water);
     }
 }

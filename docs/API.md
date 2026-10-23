@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-    <i>Complete public-API reference for <code>crypt-io</code> 0.10.0.</i>
+    <i>Complete public-API reference for <code>crypt-io</code> 1.2.0.</i>
     <br>
     <i>For per-version notes see <a href="../CHANGELOG.md"><code>CHANGELOG.md</code></a>.</i>
 </p>
@@ -90,6 +90,7 @@
     - [`stream::decrypt_file`](#streamdecrypt_file)
     - [`StreamFormat`](#streamformat)
     - [Stream wire format](#stream-wire-format)
+  - [`wipe` / `wipe_vec` (1.2.0)](#wipe--wipe_vec)
   - [`Tag`](#tag)
   - [`Error`](#error)
   - [`Result<T>`](#resultt)
@@ -108,7 +109,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-crypt-io = "1.1"
+crypt-io = "1.2"
 ```
 
 ### Install via terminal
@@ -134,7 +135,7 @@ surface. Defaults give the full toolkit.
 |---|---|---|
 | `std` | ✅ | Standard library: the file helpers, `mod-rand` as the random source, and the upstream `std` features (runtime SIMD detection in BLAKE3). Off: the crate is `no_std` + `alloc` (1.1.0; see [`PLATFORM-NOTES.md`](PLATFORM-NOTES.md#no_std-110)). |
 | `getrandom` |  | 1.1.0. Use the `getrandom` crate as the random source. Needed for anything that draws randomness (`encrypt*`, `seal*`, `StreamEncryptor::new*`, `argon2_hash*`, `generate_key`) in a `no_std` build; with `std` it replaces `mod-rand`. |
-| `zeroize` | ✅ | Wipes the stream types' key copy and buffer on drop, the BLAKE3 keyed MAC state on drop, and `_into` buffers on failure with volatile writes; also enables the upstream `zeroize` support in `aes` (round keys), `aes-gcm`, `sha2` and `hmac` (hash and MAC state), `argon2` and `blake3`. Provides `generate_key`, `decrypt_zeroizing` and the `Zeroizing` re-export. |
+| `zeroize` | ✅ | Wipes the stream types' key copy and buffer on drop, the BLAKE3 keyed MAC state on drop, and `_into` buffers on failure with volatile writes; also enables the upstream `zeroize` support in `aes` (round keys), `aes-gcm`, `sha2` and `hmac` (hash and MAC state), `argon2` and `blake3`. Provides `generate_key`, `decrypt_zeroizing` and the `Zeroizing` re-export. [`wipe` / `wipe_vec`](#wipe--wipe_vec) are always available; this feature makes their writes volatile. |
 | `aead-chacha20` | ✅ | ChaCha20-Poly1305 and XChaCha20-Poly1305 + [`Crypt::new`](#cryptnew). |
 | `aead-aes-gcm` | ✅ | AES-256-GCM backend + [`Crypt::aes_256_gcm`](#cryptaes_256_gcm). |
 | `aead-all` |  | Both AEADs (already in the 0.3.0+ default). |
@@ -1834,6 +1835,49 @@ final chunk (even if zero plaintext remains), and that final chunk
 is always strictly smaller than `chunk_size + 16` bytes. This makes
 EOF detection unambiguous: short read → final chunk; full read →
 expect more.
+
+<a href="#top">↑ TOP</a>
+
+---
+
+### `wipe` / `wipe_vec`
+
+```rust
+pub fn wipe(bytes: &mut [u8]);
+pub fn wipe_vec(v: &mut Vec<u8>);
+```
+
+New in 1.2.0. Overwrite a buffer that held secrets with zeros.
+`wipe` zeroes every byte of the slice. `wipe_vec` zeroes the whole
+allocation of a `Vec` (its length and its spare capacity, where
+bytes from before a `truncate` or `clear` can still sit), sets the
+length to 0 and keeps the allocation for reuse.
+
+Both are always compiled, need no other feature and work without
+`std`. With the `zeroize` feature (default on) the writes go through
+the `zeroize` crate's volatile writes, which the compiler cannot
+remove even when the buffer is never read again. Without `zeroize`
+they are plain writes followed by `core::hint::black_box`: this stops
+the optimiser in practice but is not a guarantee, so keep `zeroize`
+on for secrets.
+
+Neither function can reach copies made elsewhere: a `Vec` that grew
+with `push` or `reserve` may have left its old contents in freed
+memory, and a value moved on the stack leaves its old bytes behind.
+Size buffers up front (`Vec::with_capacity`) when their contents are
+secret.
+
+```rust
+let mut token = *b"session token";
+crypt_io::wipe(&mut token);
+assert!(token.iter().all(|&b| b == 0));
+
+let mut body = Vec::with_capacity(4096);
+body.extend_from_slice(b"response body");
+crypt_io::wipe_vec(&mut body);
+assert!(body.is_empty());
+assert_eq!(body.capacity(), 4096);
+```
 
 <a href="#top">↑ TOP</a>
 

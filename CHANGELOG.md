@@ -19,6 +19,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] - 2026-10-23
+
+Minor release. Makes the volatile wipe that crypt-io uses on its own
+buffers public, so code that keeps secrets in plain byte buffers can
+clear them without `unsafe` and without its own dependency on
+`zeroize`. Additive only; nothing else changes.
+
+Release notes: [`docs/release/v1.2.0.md`](docs/release/v1.2.0.md).
+
+### Added
+
+- `crypt_io::wipe(&mut [u8])` overwrites every byte of a slice with
+  zeros.
+- `crypt_io::wipe_vec(&mut Vec<u8>)` overwrites the whole allocation
+  of a `Vec` (length and spare capacity), sets its length to 0 and
+  keeps the allocation for reuse.
+- Both are compiled with every feature set, including
+  `default-features = false`, and work without `std`. With the
+  `zeroize` feature (default on) the writes are volatile and cannot
+  be removed by the optimiser; without it they are plain writes plus
+  `core::hint::black_box`, which is best effort only.
+- CI builds `default-features = false, features = ["zeroize",
+  "mac-blake3"]` for `thumbv7em-none-eabihf` and with
+  `-Zminimal-versions`, and runs the unit and doc tests for that set
+  and for `mac-blake3` without `zeroize`.
+
+### Changed
+
+- The stream types and the v2 key schedule wipe their key material
+  through the same `wipe` function. No behaviour change.
+
+[1.2.0]: https://github.com/jamesgober/crypt-io/compare/v1.1.0...v1.2.0
+
+---
+
 ## [1.1.0] - 2026-10-09
 
 Minor release. Finishes the work 1.0.1 deferred: a stream format with
@@ -1217,5 +1252,5 @@ the deliberate stable cut.
 - Feature flags for AEAD (chacha20, aes-gcm), hashing (blake3, sha2), MAC (hmac, blake3 keyed), KDF (hkdf, argon2), stream encryption.
 - Dependencies wired: `mod-rand` for CSPRNG, `error-forge` for errors, optional `log-io` and `metrics-lib`.
 
-[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v1.2.0...HEAD
 [0.1.0]: https://github.com/jamesgober/crypt-io/releases/tag/v0.1.0
