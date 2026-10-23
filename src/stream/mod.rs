@@ -10,14 +10,36 @@
 //!
 //! # Quick API tour
 //!
-//! - [`StreamEncryptor`] — buffer plaintext, emit chunks of `chunk_size`
+#![cfg_attr(
+    any(feature = "std", feature = "getrandom"),
+    doc = " - [`StreamEncryptor`] — buffer plaintext, emit chunks of `chunk_size`"
+)]
+#![cfg_attr(
+    not(any(feature = "std", feature = "getrandom")),
+    doc = " - `StreamEncryptor` — buffer plaintext, emit chunks of `chunk_size`"
+)]
 //!   ciphertext + 16 bytes of authentication tag.
 //! - [`StreamDecryptor`] — feed encrypted bytes, get plaintext as
 //!   complete chunks decrypt.
-//! - [`encrypt_file`] / [`decrypt_file`] *(requires `std`)* — the
+#![cfg_attr(
+    feature = "std",
+    doc = " - [`encrypt_file`] / [`decrypt_file`] *(requires `std`)* — the"
+)]
+#![cfg_attr(
+    not(feature = "std"),
+    doc = " - `encrypt_file` / `decrypt_file` *(requires `std`)* — the"
+)]
 //!   common "encrypt this file into that file" workflow.
 //!
-//! [`StreamDecryptor`] works in any build. [`StreamEncryptor`]'s
+//! [`StreamDecryptor`] works in any build.
+#![cfg_attr(
+    any(feature = "std", feature = "getrandom"),
+    doc = " [`StreamEncryptor`]'s"
+)]
+#![cfg_attr(
+    not(any(feature = "std", feature = "getrandom")),
+    doc = " `StreamEncryptor`'s"
+)]
 //! constructors need a random source (`std` or the `getrandom`
 //! feature).
 //!
@@ -60,7 +82,15 @@
 //!   limit: two streams only share nonces if their 256-bit salts
 //!   collide. Format v1 streams use a random 56-bit nonce prefix
 //!   directly under the caller's key; keep one key below about 2^12
-//!   (4,096) of those. See [`StreamEncryptor`](StreamEncryptor#limits).
+//!   (4,096) of those.
+#![cfg_attr(
+    any(feature = "std", feature = "getrandom"),
+    doc = "   See [`StreamEncryptor`](StreamEncryptor#limits)."
+)]
+#![cfg_attr(
+    not(any(feature = "std", feature = "getrandom")),
+    doc = "   See `StreamEncryptor`."
+)]
 //! - **Early output is not end-authenticated.** Plaintext returned by
 //!   [`StreamDecryptor::update`] is authentic chunk by chunk, but
 //!   truncation at a chunk boundary is only detected by

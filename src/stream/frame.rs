@@ -128,7 +128,14 @@ pub(super) const MAX_NONCE_LEN: usize = 24;
 /// Longest AAD: a v2 header plus its salt.
 pub(super) const MAX_AAD_LEN: usize = HEADER_LEN + SALT_LEN;
 
-/// Stream format version written by [`StreamEncryptor`](super::StreamEncryptor).
+#[cfg_attr(
+    any(feature = "std", feature = "getrandom"),
+    doc = " Stream format version written by [`StreamEncryptor`](super::StreamEncryptor)."
+)]
+#[cfg_attr(
+    not(any(feature = "std", feature = "getrandom")),
+    doc = " Stream format version written by `StreamEncryptor`."
+)]
 ///
 /// New in 1.1.0. Decryptors detect the version from the header, so this
 /// only matters when encrypting.

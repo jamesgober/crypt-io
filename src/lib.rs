@@ -55,10 +55,10 @@
 //! example on `thumbv7em-none-eabihf`). Without `std`:
 //!
 //! - Hashing, MACs, HKDF, Argon2id verification, every decrypt path,
-//!   [`Crypt::open`], [`stream::StreamDecryptor`], [`Tag`], [`wipe`]
+//!   `Crypt::open`, `stream::StreamDecryptor`, [`Tag`], [`wipe`]
 //!   and [`wipe_vec`] work as usual.
 //! - Anything that needs fresh randomness (`encrypt*`, `seal*`,
-//!   `StreamEncryptor::new*`, `argon2_hash*`, [`generate_key`]) needs
+//!   `StreamEncryptor::new*`, `argon2_hash*`, `generate_key`) needs
 //!   the `getrandom` feature. On targets without an OS random source,
 //!   register a `getrandom` custom backend that reads your hardware
 //!   RNG.
@@ -150,7 +150,20 @@ pub use crate::aead::{Algorithm, Crypt};
 pub use crate::aead::generate_key;
 
 /// Re-export of [`zeroize::Zeroizing`], the wrapper that
-/// [`generate_key`] and [`Crypt::decrypt_zeroizing`] return. New in
+#[cfg_attr(
+    all(
+        any(feature = "aead-chacha20", feature = "aead-aes-gcm"),
+        any(feature = "std", feature = "getrandom")
+    ),
+    doc = " [`generate_key`] and [`Crypt::decrypt_zeroizing`] return. New in"
+)]
+#[cfg_attr(
+    not(all(
+        any(feature = "aead-chacha20", feature = "aead-aes-gcm"),
+        any(feature = "std", feature = "getrandom")
+    )),
+    doc = " `generate_key` and `Crypt::decrypt_zeroizing` return. New in"
+)]
 /// 1.1.0.
 #[cfg(feature = "zeroize")]
 pub use zeroize::Zeroizing;

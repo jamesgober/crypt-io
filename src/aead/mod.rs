@@ -18,7 +18,14 @@
 //!
 //! # Wire formats
 //!
-//! [`Crypt::encrypt`] / [`Crypt::encrypt_with_aad`] return the 1.0
+#![cfg_attr(
+    any(feature = "std", feature = "getrandom"),
+    doc = " [`Crypt::encrypt`] / [`Crypt::encrypt_with_aad`] return the 1.0"
+)]
+#![cfg_attr(
+    not(any(feature = "std", feature = "getrandom")),
+    doc = " `Crypt::encrypt` / `Crypt::encrypt_with_aad` return the 1.0"
+)]
 //! format `nonce || ciphertext || tag`:
 //!
 //! - `nonce` is a fresh value from the OS CSPRNG (12 bytes, or 24 for
@@ -28,7 +35,15 @@
 //!   covering the ciphertext and any associated data.
 //!
 //! That format does not record which algorithm produced it, so the
-//! reader must already know. [`Crypt::seal`] / [`Crypt::open`] (new in
+//! reader must already know.
+#![cfg_attr(
+    any(feature = "std", feature = "getrandom"),
+    doc = " [`Crypt::seal`] / [`Crypt::open`] (new in"
+)]
+#![cfg_attr(
+    not(any(feature = "std", feature = "getrandom")),
+    doc = " `Crypt::seal` / [`Crypt::open`] (new in"
+)]
 //! 1.1.0) write a **sealed** format that does:
 //!
 //! ```text
@@ -94,9 +109,9 @@
 //! # Without a random source
 //!
 //! Encryption needs fresh nonces, so `encrypt*`, `seal*` and
-//! [`generate_key`] are only available with the `std` feature or the
-//! `getrandom` feature. Decryption (`decrypt*`, `open*`) works in any
-//! build.
+//! `generate_key` are only available with the `std` feature or the
+//! `getrandom` feature (`generate_key` also needs `zeroize`).
+//! Decryption (`decrypt*`, `open*`) works in any build.
 //!
 //! # Example
 //!
@@ -154,12 +169,13 @@ pub const AES_GCM_TAG_LEN: usize = 16;
 /// in bytes. Equal to `32` (256-bit keys).
 pub const KEY_LEN: usize = 32;
 
-/// Length of the header [`Crypt::seal`] writes in front of the nonce:
-/// one version byte and one algorithm byte. Equal to `2`. New in 1.1.0.
+/// Length of the header that `seal` writes and [`Crypt::open`] reads in
+/// front of the nonce: one version byte and one algorithm byte. Equal
+/// to `2`. New in 1.1.0.
 pub const SEALED_HEADER_LEN: usize = 2;
 
-/// Version byte of the sealed format written by [`Crypt::seal`].
-/// Equal to `0x01`. New in 1.1.0.
+/// Version byte of the sealed format that `seal` writes and
+/// [`Crypt::open`] reads. Equal to `0x01`. New in 1.1.0.
 pub const SEALED_VERSION: u8 = 0x01;
 
 /// Tag length shared by every shipped AEAD.
@@ -362,7 +378,14 @@ pub fn generate_key() -> Result<zeroize::Zeroizing<[u8; KEY_LEN]>> {
 ///
 /// `Crypt` is cheap to construct and to clone — it carries only the
 /// algorithm choice, not any key material. Keys are passed per-call to
-/// [`encrypt`](Self::encrypt) and [`decrypt`](Self::decrypt), and never
+#[cfg_attr(
+    any(feature = "std", feature = "getrandom"),
+    doc = " [`encrypt`](Self::encrypt) and [`decrypt`](Self::decrypt), and never"
+)]
+#[cfg_attr(
+    not(any(feature = "std", feature = "getrandom")),
+    doc = " `encrypt` and [`decrypt`](Self::decrypt), and never"
+)]
 /// stored inside `Crypt` itself.
 ///
 /// # Defaults
@@ -480,16 +503,37 @@ impl Crypt {
         with_cipher!(self.algorithm, C => backend::encrypt::<C>(key, plaintext, aad, &[]))
     }
 
-    /// Decrypt a buffer produced by [`encrypt`](Self::encrypt) and return
+    #[cfg_attr(
+        any(feature = "std", feature = "getrandom"),
+        doc = " Decrypt a buffer produced by [`encrypt`](Self::encrypt) and return"
+    )]
+    #[cfg_attr(
+        not(any(feature = "std", feature = "getrandom")),
+        doc = " Decrypt a buffer produced by `encrypt` and return"
+    )]
     /// the plaintext.
     ///
     /// The buffer is expected to be `nonce || ciphertext || tag` — exactly
-    /// the layout [`encrypt`](Self::encrypt) returns. The tag is verified
+    #[cfg_attr(
+        any(feature = "std", feature = "getrandom"),
+        doc = " the layout [`encrypt`](Self::encrypt) returns. The tag is verified"
+    )]
+    #[cfg_attr(
+        not(any(feature = "std", feature = "getrandom")),
+        doc = " the layout `encrypt` returns. The tag is verified"
+    )]
     /// in constant time; any tampering, wrong key, or wrong length results
     /// in [`Error::AuthenticationFailed`].
     ///
-    /// The returned `Vec<u8>` does **not** auto-zeroize. Use
-    /// [`decrypt_zeroizing`](Self::decrypt_zeroizing) to get the
+    /// The returned `Vec<u8>` does **not** auto-zeroize.
+    #[cfg_attr(
+        feature = "zeroize",
+        doc = " Use [`decrypt_zeroizing`](Self::decrypt_zeroizing) to get the"
+    )]
+    #[cfg_attr(
+        not(feature = "zeroize"),
+        doc = " With the `zeroize` feature, `decrypt_zeroizing` returns the"
+    )]
     /// plaintext in a buffer that is wiped on drop.
     ///
     /// # Errors
@@ -519,7 +563,14 @@ impl Crypt {
     }
 
     /// Decrypt with associated data. `aad` must match what was passed to
-    /// [`encrypt_with_aad`](Self::encrypt_with_aad).
+    #[cfg_attr(
+        any(feature = "std", feature = "getrandom"),
+        doc = " [`encrypt_with_aad`](Self::encrypt_with_aad)."
+    )]
+    #[cfg_attr(
+        not(any(feature = "std", feature = "getrandom")),
+        doc = " `encrypt_with_aad`."
+    )]
     ///
     /// # Errors
     ///
@@ -735,7 +786,14 @@ impl Crypt {
         )
     }
 
-    /// Decrypt a buffer produced by [`seal`](Self::seal). The algorithm
+    #[cfg_attr(
+        any(feature = "std", feature = "getrandom"),
+        doc = " Decrypt a buffer produced by [`seal`](Self::seal). The algorithm"
+    )]
+    #[cfg_attr(
+        not(any(feature = "std", feature = "getrandom")),
+        doc = " Decrypt a buffer produced by `seal`. The algorithm"
+    )]
     /// is read from the (authenticated) header, not from this handle.
     /// New in 1.1.0.
     ///

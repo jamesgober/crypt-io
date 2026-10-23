@@ -13,7 +13,14 @@ use super::frame::{
     chunk_nonce, chunk_size_from_log2, derive_v2, parse_header,
 };
 
-/// Streaming AEAD decryptor — the inverse of [`super::StreamEncryptor`].
+#[cfg_attr(
+    any(feature = "std", feature = "getrandom"),
+    doc = " Streaming AEAD decryptor — the inverse of [`super::StreamEncryptor`]."
+)]
+#[cfg_attr(
+    not(any(feature = "std", feature = "getrandom")),
+    doc = " Streaming AEAD decryptor — the inverse of `StreamEncryptor`."
+)]
 ///
 /// Construct from the 24-byte header, feed the rest of the stream via
 /// [`update`](Self::update), and finalise with
@@ -43,7 +50,14 @@ use super::frame::{
 ///
 /// # Example
 ///
-/// See [`super::StreamEncryptor`] for a round-trip example.
+#[cfg_attr(
+    any(feature = "std", feature = "getrandom"),
+    doc = " See [`super::StreamEncryptor`] for a round-trip example."
+)]
+#[cfg_attr(
+    not(any(feature = "std", feature = "getrandom")),
+    doc = " See `StreamEncryptor` for a round-trip example."
+)]
 pub struct StreamDecryptor {
     algorithm: Algorithm,
     format: StreamFormat,
