@@ -6,9 +6,26 @@
 //!
 //! | Algorithm        | One-shot                       | Streaming      | Tag    | Feature       |
 //! |------------------|--------------------------------|----------------|--------|---------------|
-//! | HMAC-SHA256      | [`hmac_sha256()`]              | [`HmacSha256`] | 32 B   | `mac-hmac`    |
-//! | HMAC-SHA512      | [`hmac_sha512()`]              | [`HmacSha512`] | 64 B   | `mac-hmac`    |
-//! | BLAKE3 keyed     | [`blake3_keyed()`]             | [`Blake3Mac`]  | 32 B   | `mac-blake3`  |
+// Each row links its items only when they are compiled in, so the
+// docs build for every feature set (docs.rs builds all features).
+#![cfg_attr(
+    feature = "mac-hmac",
+    doc = " | HMAC-SHA256      | [`hmac_sha256()`]              | [`HmacSha256`] | 32 B   | `mac-hmac`    |",
+    doc = " | HMAC-SHA512      | [`hmac_sha512()`]              | [`HmacSha512`] | 64 B   | `mac-hmac`    |"
+)]
+#![cfg_attr(
+    not(feature = "mac-hmac"),
+    doc = " | HMAC-SHA256      | `hmac_sha256()`                | `HmacSha256`   | 32 B   | `mac-hmac`    |",
+    doc = " | HMAC-SHA512      | `hmac_sha512()`                | `HmacSha512`   | 64 B   | `mac-hmac`    |"
+)]
+#![cfg_attr(
+    feature = "mac-blake3",
+    doc = " | BLAKE3 keyed     | [`blake3_keyed()`]             | [`Blake3Mac`]  | 32 B   | `mac-blake3`  |"
+)]
+#![cfg_attr(
+    not(feature = "mac-blake3"),
+    doc = " | BLAKE3 keyed     | `blake3_keyed()`               | `Blake3Mac`    | 32 B   | `mac-blake3`  |"
+)]
 //!
 //! Every algorithm exposes three operations:
 //!

@@ -268,7 +268,14 @@ impl Argon2Params {
     /// - They are within the default [`Argon2Policy`] caps, so the
     ///   resulting hash verifies with [`argon2_check`].
     ///
-    /// [`argon2_hash_with_params`] does not call this, so that tests and
+    #[cfg_attr(
+        any(feature = "std", feature = "getrandom"),
+        doc = " [`argon2_hash_with_params`] does not call this, so that tests and"
+    )]
+    #[cfg_attr(
+        not(any(feature = "std", feature = "getrandom")),
+        doc = " `argon2_hash_with_params` does not call this, so that tests and"
+    )]
     /// existing callers with small parameters keep working; call it
     /// yourself when the values come from configuration. New in 1.1.0.
     ///

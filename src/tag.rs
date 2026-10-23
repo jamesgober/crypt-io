@@ -31,7 +31,14 @@ use crate::error::{Error, Result};
 /// ```
 ///
 /// For the common "compute and compare" case the `*_check` functions
-/// in [`mac`](crate::mac) do both steps and return
+#[cfg_attr(
+    any(feature = "mac-hmac", feature = "mac-blake3"),
+    doc = " in [`mac`](crate::mac) do both steps and return"
+)]
+#[cfg_attr(
+    not(any(feature = "mac-hmac", feature = "mac-blake3")),
+    doc = " in the `mac` module do both steps and return"
+)]
 /// [`Error::AuthenticationFailed`] on a mismatch.
 ///
 /// Comparing against a slice of a different length returns `false`

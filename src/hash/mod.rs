@@ -5,10 +5,28 @@
 //!
 //! | Algorithm  | One-shot              | Streaming         | Output | Feature       |
 //! |------------|-----------------------|-------------------|--------|---------------|
-//! | BLAKE3     | [`blake3()`]          | [`Blake3Hasher`]  | 32 B   | `hash-blake3` |
-//! | BLAKE3 XOF | [`blake3_long()`], [`blake3_long_into()`] | [`Blake3Hasher`] | N B | `hash-blake3` |
-//! | SHA-256    | [`sha256()`]          | [`Sha256Hasher`]  | 32 B   | `hash-sha2`   |
-//! | SHA-512    | [`sha512()`]          | [`Sha512Hasher`]  | 64 B   | `hash-sha2`   |
+// Each row links its items only when they are compiled in, so the
+// docs build for every feature set (docs.rs builds all features).
+#![cfg_attr(
+    feature = "hash-blake3",
+    doc = " | BLAKE3     | [`blake3()`]          | [`Blake3Hasher`]  | 32 B   | `hash-blake3` |",
+    doc = " | BLAKE3 XOF | [`blake3_long()`], [`blake3_long_into()`] | [`Blake3Hasher`] | N B | `hash-blake3` |"
+)]
+#![cfg_attr(
+    not(feature = "hash-blake3"),
+    doc = " | BLAKE3     | `blake3()`            | `Blake3Hasher`    | 32 B   | `hash-blake3` |",
+    doc = " | BLAKE3 XOF | `blake3_long()`, `blake3_long_into()` | `Blake3Hasher` | N B | `hash-blake3` |"
+)]
+#![cfg_attr(
+    feature = "hash-sha2",
+    doc = " | SHA-256    | [`sha256()`]          | [`Sha256Hasher`]  | 32 B   | `hash-sha2`   |",
+    doc = " | SHA-512    | [`sha512()`]          | [`Sha512Hasher`]  | 64 B   | `hash-sha2`   |"
+)]
+#![cfg_attr(
+    not(feature = "hash-sha2"),
+    doc = " | SHA-256    | `sha256()`            | `Sha256Hasher`    | 32 B   | `hash-sha2`   |",
+    doc = " | SHA-512    | `sha512()`            | `Sha512Hasher`    | 64 B   | `hash-sha2`   |"
+)]
 //!
 //! # Choosing a hash
 //!

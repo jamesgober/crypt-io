@@ -19,6 +19,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.1] - 2026-10-23
+
+Documentation patch. `cargo doc` now builds without warnings for every
+feature set, not only for the default set and `--all-features`. No
+code, API or wire-format change.
+
+Release notes: [`docs/release/v1.2.1.md`](docs/release/v1.2.1.md).
+
+### Fixed
+
+- Intra-doc links to feature-gated items broke `cargo doc` (under
+  `RUSTDOCFLAGS="-D warnings"`) for smaller feature sets, for
+  example `default-features = false, features = ["zeroize",
+  "mac-blake3"]`, `std,aead-chacha20`, or the `no_std` sets without
+  a random source. Affected: the crate overview, the `hash` and
+  `mac` algorithm tables, `Tag`, the `aead` and `stream` module
+  overviews, `Crypt`, `Crypt::decrypt`, `Crypt::decrypt_with_aad`,
+  `Crypt::open`, the sealed-format constants, `StreamDecryptor`,
+  `StreamFormat` and `Argon2Params::validate`. Each link now appears
+  only when its target is compiled in and falls back to plain code
+  text otherwise, so docs.rs (all features) keeps every link.
+- The `aead` module docs now say that `generate_key` also needs the
+  `zeroize` feature.
+- The README linked to `.dev/ROADMAP.md`, which is not in the
+  repository. The link is removed.
+
+### Changed
+
+- CI builds the docs with `-D warnings` for eight partial feature
+  sets on Linux.
+
+[1.2.1]: https://github.com/jamesgober/crypt-io/compare/v1.2.0...v1.2.1
+
+---
+
 ## [1.2.0] - 2026-10-23
 
 Minor release. Makes the volatile wipe that crypt-io uses on its own

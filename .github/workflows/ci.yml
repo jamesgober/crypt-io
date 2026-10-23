@@ -81,6 +81,28 @@ jobs:
       - run: cargo build --no-default-features --features std,getrandom,aead-chacha20
       - run: cargo build --no-default-features --features zeroize,mac-blake3
 
+  docs-features:
+    name: Docs (partial feature sets)
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      # docs.rs builds with every feature (checked in the matrix
+      # above). These sets catch intra-doc links to items that a
+      # smaller feature set compiles out.
+      - run: cargo doc --no-deps --no-default-features
+      - run: cargo doc --no-deps --no-default-features --features mac-blake3
+      - run: cargo doc --no-deps --no-default-features --features zeroize,mac-blake3
+      - run: cargo doc --no-deps --no-default-features --features aead-chacha20,stream,kdf-argon2
+      - run: cargo doc --no-deps --no-default-features --features std,aead-chacha20
+      - run: cargo doc --no-deps --no-default-features --features std,hash-blake3
+      - run: cargo doc --no-deps --no-default-features --features std,hash-sha2,mac-hmac,kdf-hkdf
+      - run: cargo doc --no-deps --no-default-features --features std,stream
+
   no-std:
     name: no_std (thumbv7em-none-eabihf)
     runs-on: ubuntu-latest
