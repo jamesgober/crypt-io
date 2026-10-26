@@ -287,19 +287,18 @@ pub(super) fn derive_v2(
     nonce_len: usize,
     subkey: &mut [u8; 32],
     nonce_base: &mut [u8; MAX_NONCE_LEN],
-) -> Result<()> {
+) {
     let prefix_len = nonce_len - 5;
     let mut okm = [0u8; 32 + MAX_NONCE_LEN];
-    let hk = hkdf::Hkdf::<sha2::Sha256>::new(Some(salt), key);
-    let result = hk
-        .expand_multi_info(&[V2_KDF_INFO, header], &mut okm[..32 + prefix_len])
-        .map_err(|_| Error::Kdf("stream v2 subkey"));
-    if result.is_ok() {
-        subkey.copy_from_slice(&okm[..32]);
-        nonce_base[..prefix_len].copy_from_slice(&okm[32..32 + prefix_len]);
-    }
+    crate::hmac_core::hkdf::<sha2::Sha256, 64>(
+        Some(salt),
+        key,
+        &[V2_KDF_INFO, header],
+        &mut okm[..32 + prefix_len],
+    );
+    subkey.copy_from_slice(&okm[..32]);
+    nonce_base[..prefix_len].copy_from_slice(&okm[32..32 + prefix_len]);
     crate::wipe::wipe(&mut okm);
-    result
 }
 
 /// Build the per-chunk nonce: `prefix || counter (BE) || last_flag`,
@@ -458,13 +457,13 @@ mod tests {
         let h = build_header_v2(Algorithm::ChaCha20Poly1305, 16);
         let mut k1 = [0u8; 32];
         let mut b1 = [0u8; MAX_NONCE_LEN];
-        derive_v2(&key, &h, &[2u8; SALT_LEN], NONCE_LEN, &mut k1, &mut b1).unwrap();
+        derive_v2(&key, &h, &[2u8; SALT_LEN], NONCE_LEN, &mut k1, &mut b1);
         let mut k2 = [0u8; 32];
         let mut b2 = [0u8; MAX_NONCE_LEN];
-        derive_v2(&key, &h, &[3u8; SALT_LEN], NONCE_LEN, &mut k2, &mut b2).unwrap();
+        derive_v2(&key, &h, &[3u8; SALT_LEN], NONCE_LEN, &mut k2, &mut b2);
         assert_ne!(k1, k2);
         let h_aes = build_header_v2(Algorithm::Aes256Gcm, 16);
-        derive_v2(&key, &h_aes, &[2u8; SALT_LEN], NONCE_LEN, &mut k2, &mut b2).unwrap();
+        derive_v2(&key, &h_aes, &[2u8; SALT_LEN], NONCE_LEN, &mut k2, &mut b2);
         assert_ne!(k1, k2);
         assert_ne!(k1, key);
         // Only the prefix bytes are written.

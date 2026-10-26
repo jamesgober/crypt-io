@@ -205,7 +205,7 @@ impl StreamEncryptor {
             }
             StreamFormat::V2 => {
                 let header = build_header_v2(algorithm, chunk_size_log2);
-                let derived = derive_v2(
+                derive_v2(
                     &key_arr,
                     &header,
                     random,
@@ -213,10 +213,6 @@ impl StreamEncryptor {
                     &mut enc.key,
                     &mut nonce_base,
                 );
-                if derived.is_err() {
-                    wipe(&mut key_arr);
-                }
-                derived?;
                 aad[HEADER_LEN..].copy_from_slice(random);
                 enc.aad_len = HEADER_LEN + SALT_LEN;
                 enc.salt_pending = true;

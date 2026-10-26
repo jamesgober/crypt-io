@@ -19,6 +19,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.2] - 2026-10-26
+
+Security patch. Builds resolved for Rust 1.85 or 1.86 compiled
+`ctutils` 0.4.2, which is affected by RUSTSEC-2026-0385
+(non-constant-time mask generation and `u128` comparisons). crypt-io
+no longer depends on `ctutils` at all. No public API, output or
+wire-format change; MSRV stays 1.85.
+
+Release notes: [`docs/release/v1.2.2.md`](docs/release/v1.2.2.md).
+
+### Security
+
+- **RUSTSEC-2026-0385 (`ctutils` before 0.4.4).** `hmac` 0.13 turns
+  on `digest`'s `mac` feature, which pulls in `ctutils`, and every
+  fixed `ctutils` release (0.4.4 and later) needs Rust 1.87. Cargo's
+  MSRV-aware resolver (the default for edition 2024) therefore chose
+  `ctutils` 0.4.2 whenever the effective Rust version was 1.85 or
+  1.86: a 1.85 / 1.86 toolchain, or any toolchain in a workspace that
+  declares `rust-version = "1.85"` or `"1.86"`. crypt-io's own
+  committed `Cargo.lock` had 0.4.2 too. Affected feature sets: any
+  that turn on `mac-hmac`, `kdf-hkdf` or `stream`, which includes the
+  default features and `preset-all`. Not affected: `hash-sha2` on its
+  own, and every set without those three (for example
+  `zeroize,mac-blake3`).
+- HMAC-SHA256 / HMAC-SHA512 (RFC 2104) and HKDF-SHA256 /
+  HKDF-SHA512 (RFC 5869) are now built in crypt-io
+  (`src/hmac_core.rs`) over the RustCrypto `sha2` hashes, in place of
+  the `hmac` and `hkdf` crates. Tag checks compare with
+  `subtle::ConstantTimeEq`. The padded key block, a hashed long key,
+  the inner hash and the HKDF intermediates are wiped; with `zeroize`
+  the hash states are wiped on drop, as before.
+
+### Changed
+
+- Dependencies: `hmac` and `hkdf` removed (and with them `ctutils`
+  and `cmov`). No crypt-io feature was renamed or removed.
+- `mac::hmac_sha256` / `hmac_sha512`, their `_check` / `_verify`
+  forms and `HmacSha256::new` / `HmacSha512::new` keep their
+  `Result` signatures, but can no longer return `Error::Mac` in any
+  case (they could not in practice before either).
+- The `Debug` output of `HmacSha256` / `HmacSha512` no longer shows
+  the inner hash state; it prints `HmacSha256 { inner: Hmac { .. } }`.
+
+### Added
+
+- `tests/hmac_hkdf.rs`: all RFC 4231 cases (HMAC-SHA256 and
+  HMAC-SHA512, including the 131-byte keys), RFC 5869 cases 1 to 3,
+  an HKDF-SHA512 vector, every single-bit tag flip, and a grid of
+  3,393 HMAC and 840 HKDF inputs per hash around the 64- and
+  128-byte block sizes. The grid digests come from Python's `hmac` / `hashlib` and
+  matched the `hmac` / `hkdf` crates before the switch, so the new
+  code is pinned to byte-identical output.
+- CI: the audit job now runs on four lockfiles, the committed one
+  and fresh resolutions as a Rust 1.85 user, a 1.86 user and a
+  newest-versions user get them, and fails by name on any `ctutils`
+  below 0.4.4 before running `cargo audit`.
+
+### Fixed
+
+- `fuzz/Cargo.lock` had the same `ctutils` 0.4.2; refreshed.
+
+[1.2.2]: https://github.com/jamesgober/crypt-io/compare/v1.2.1...v1.2.2
+
+---
+
 ## [1.2.1] - 2026-10-23
 
 Documentation patch. `cargo doc` now builds without warnings for every

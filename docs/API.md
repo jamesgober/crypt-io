@@ -135,7 +135,7 @@ surface. Defaults give the full toolkit.
 |---|---|---|
 | `std` | ✅ | Standard library: the file helpers, `mod-rand` as the random source, and the upstream `std` features (runtime SIMD detection in BLAKE3). Off: the crate is `no_std` + `alloc` (1.1.0; see [`PLATFORM-NOTES.md`](PLATFORM-NOTES.md#no_std-110)). |
 | `getrandom` |  | 1.1.0. Use the `getrandom` crate as the random source. Needed for anything that draws randomness (`encrypt*`, `seal*`, `StreamEncryptor::new*`, `argon2_hash*`, `generate_key`) in a `no_std` build; with `std` it replaces `mod-rand`. |
-| `zeroize` | ✅ | Wipes the stream types' key copy and buffer on drop, the BLAKE3 keyed MAC state on drop, and `_into` buffers on failure with volatile writes; also enables the upstream `zeroize` support in `aes` (round keys), `aes-gcm`, `sha2` and `hmac` (hash and MAC state), `argon2` and `blake3`. Provides `generate_key`, `decrypt_zeroizing` and the `Zeroizing` re-export. [`wipe` / `wipe_vec`](#wipe--wipe_vec) are always available; this feature makes their writes volatile. |
+| `zeroize` | ✅ | Wipes the stream types' key copy and buffer on drop, the BLAKE3 keyed MAC state on drop, and `_into` buffers on failure with volatile writes; also enables the upstream `zeroize` support in `aes` (round keys), `aes-gcm`, `sha2` (hash and HMAC state), `argon2` and `blake3`. Provides `generate_key`, `decrypt_zeroizing` and the `Zeroizing` re-export. [`wipe` / `wipe_vec`](#wipe--wipe_vec) are always available; this feature makes their writes volatile. |
 | `aead-chacha20` | ✅ | ChaCha20-Poly1305 and XChaCha20-Poly1305 + [`Crypt::new`](#cryptnew). |
 | `aead-aes-gcm` | ✅ | AES-256-GCM backend + [`Crypt::aes_256_gcm`](#cryptaes_256_gcm). |
 | `aead-all` |  | Both AEADs (already in the 0.3.0+ default). |
@@ -916,10 +916,9 @@ Compute an HMAC-SHA256 tag (RFC 2104) over `data` under `key`.
 Accepts a key of any length — short keys are zero-padded, long
 keys are hashed to block size, per RFC 2104.
 
-**Errors.** Returns [`Error::Mac`](#error) if the upstream `hmac`
-crate refuses the key. Unreachable in practice (HMAC accepts any
-key length), but the upstream API is fallible by signature so the
-wrapper preserves that.
+**Errors.** None in practice: HMAC accepts any key length. The
+`Result` (with [`Error::Mac`](#error) as its error) is part of the
+1.x signature and kept for compatibility.
 
 ```rust
 # #[cfg(feature = "mac-hmac")] {
@@ -940,8 +939,8 @@ pub fn hmac_sha256_check(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Result
 ```
 
 New in 1.1.0. Constant-time check of an HMAC-SHA256 tag. Computes
-the tag for `(key, data)` and compares it to `expected_tag` via the
-`hmac` crate's `verify_slice` (which routes through `subtle`).
+the tag for `(key, data)` and compares it to `expected_tag` with
+`subtle::ConstantTimeEq`.
 Returns `Ok(())` on a match and `Err(AuthenticationFailed)`
 otherwise, including when `expected_tag` is the wrong length — so
 `hmac_sha256_check(..)?;` rejects forged tags.

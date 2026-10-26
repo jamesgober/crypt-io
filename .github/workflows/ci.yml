@@ -46,9 +46,19 @@ jobs:
   # RUSTFLAGS so a new nightly lint cannot fail them; the stable
   # matrix above keeps `-D warnings`.
 
+  # Downstream users do not get our Cargo.lock, and Cargo's MSRV-aware
+  # resolver (the default for edition 2024) picks different versions
+  # for different Rust versions. Audit the committed lockfile and fresh
+  # resolutions as a Rust 1.85 user, a 1.86 user and a newest-versions
+  # user get them. The lockfile holds every package of every feature
+  # and target, so each run covers all feature sets.
   audit:
-    name: Audit (RustSec)
+    name: Audit (RustSec, ${{ matrix.lock }} lockfile)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        lock: [committed, "1.85", "1.86", newest]
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
@@ -57,6 +67,35 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
+      - name: Resolve the lockfile
+        if: matrix.lock != 'committed'
+        run: |
+          if [ "${{ matrix.lock }}" = newest ]; then
+            CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=allow cargo generate-lockfile
+          else
+            sed -i 's/^rust-version = ".*"/rust-version = "${{ matrix.lock }}"/' Cargo.toml
+            CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback cargo generate-lockfile
+          fi
+      # RUSTSEC-2026-0385: ctutils before 0.4.4 has non-constant-time
+      # masks and u128 comparisons. Every fixed release needs Rust 1.87,
+      # so a Rust 1.85 or 1.86 resolution can only stay clean by not
+      # pulling ctutils in at all (crypt-io 1.2.2 dropped `hmac` for
+      # that reason). Fail on any ctutils below 0.4.4, by name, even if
+      # the advisory database is unreachable or the advisory changes.
+      - name: No ctutils before 0.4.4 (RUSTSEC-2026-0385)
+        run: |
+          bad=""
+          for v in $(awk '/^name = "ctutils"$/ { getline; gsub(/version = |"/, ""); print }' Cargo.lock); do
+            if [ "$(printf '%s\n' 0.4.4 "$v" | sort -V | head -n 1)" != 0.4.4 ]; then
+              bad="$bad $v"
+            fi
+          done
+          if [ -n "$bad" ]; then
+            echo "::error::Cargo.lock has ctutils$bad, affected by RUSTSEC-2026-0385 (fixed in 0.4.4)"
+            cargo tree -i ctutils --all-features --target all -e normal,build,dev || true
+            exit 1
+          fi
+          echo "ctutils: $(grep -c '^name = "ctutils"$' Cargo.lock) entries, none before 0.4.4"
       - run: cargo audit
 
   minimal-versions:

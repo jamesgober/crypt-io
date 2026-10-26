@@ -1,6 +1,6 @@
 [package]
 name = "crypt-io"
-version = "1.2.1"
+version = "1.2.2"
 edition = "2024"
 rust-version = "1.85"
 readme = "README.md"
@@ -70,14 +70,13 @@ getrandom = ["dep:getrandom"]
 # Wipe key copies and plaintext scratch buffers held by crypt-io types
 # (stream encryptor/decryptor, `_into` failure paths, BLAKE3 keyed MAC)
 # with volatile writes, and turn on the upstream `zeroize` support in
-# aes-gcm, aes (round keys), sha2 and hmac (hash and MAC state),
-# argon2 and blake3. Default on.
+# aes-gcm, aes (round keys), sha2 (hash and HMAC state), argon2 and
+# blake3. Default on.
 zeroize = [
     "dep:zeroize",
     "aes-gcm?/zeroize",
     "aes?/zeroize",
     "sha2?/zeroize",
-    "hmac?/zeroize",
     "argon2?/zeroize",
     "blake3?/zeroize",
 ]
@@ -93,19 +92,19 @@ hash-sha2 = ["dep:sha2"]              # SHA-256, SHA-512 (interop)
 hash-all = ["hash-blake3", "hash-sha2"]
 
 # MAC (Message Authentication Code)
-mac-hmac = ["dep:hmac", "hash-sha2"]  # HMAC-SHA256, HMAC-SHA512
+mac-hmac = ["hash-sha2"]              # HMAC-SHA256, HMAC-SHA512
 mac-blake3 = ["hash-blake3"]          # BLAKE3 keyed mode
 mac-all = ["mac-hmac", "mac-blake3"]
 
 # KDF (Key Derivation Functions)
-kdf-hkdf = ["dep:hkdf", "dep:hmac", "hash-sha2"]  # HKDF (key derivation)
+kdf-hkdf = ["hash-sha2"]              # HKDF (key derivation)
 kdf-argon2 = ["dep:argon2"]           # Argon2id (password hashing)
 kdf-all = ["kdf-hkdf", "kdf-argon2"]
 
 # Stream/file encryption (chunked AEAD with STREAM-construction).
 # Pulls both AEAD backends so callers can pick either at runtime, and
 # HKDF-SHA256 for the per-stream subkey of format v2.
-stream = ["aead-chacha20", "aead-aes-gcm", "dep:hkdf", "dep:hmac", "dep:sha2"]
+stream = ["aead-chacha20", "aead-aes-gcm", "dep:sha2"]
 
 # Reserved. These features enable nothing in 1.0.x (no code ever used
 # the dependencies they used to pull in). They are kept so that
@@ -131,10 +130,12 @@ aes-gcm = { version = "0.10.3", optional = true, default-features = false, featu
 aes = { version = "0.8.4", optional = true, default-features = false }
 blake3 = { version = "1.5", optional = true, default-features = false }   # 1.5 is the first release with a `zeroize` feature
 sha2 = { version = "0.11", optional = true, default-features = false }
-hmac = { version = "0.13", optional = true, default-features = false }
-hkdf = { version = "0.13", optional = true, default-features = false }
+# HMAC and HKDF are built in crypt-io over `sha2` (src/hmac_core.rs),
+# not taken from the `hmac` / `hkdf` crates: `hmac` 0.13 pulls in
+# `ctutils`, and every `ctutils` release that fixes RUSTSEC-2026-0385
+# needs Rust 1.87, above this crate's MSRV.
 argon2 = { version = "0.5", optional = true, default-features = false, features = ["alloc", "password-hash"] }
-# Constant-time comparison for `Tag`.
+# Constant-time comparison for `Tag` and the HMAC checks.
 subtle = { version = "2.5", default-features = false }
 
 # Random sources. `mod-rand` (portfolio crate, OS CSPRNG) with `std`;

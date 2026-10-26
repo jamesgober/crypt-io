@@ -95,8 +95,9 @@ Three MACs (HMAC-SHA256, HMAC-SHA512, BLAKE3 keyed) with the
 same compute / verify / streaming triad each. Verification is
 **always** constant-time:
 
-- HMAC verify routes through `hmac::Mac::verify_slice` (uses
-  `subtle::ConstantTimeEq` internally).
+- HMAC verify compares with `subtle::ConstantTimeEq`. HMAC and
+  HKDF are built in crypt-io over `sha2` (`src/hmac_core.rs`) since
+  1.2.2; see [Dependency rationale](#dependency-rationale).
 - BLAKE3 keyed verify routes through `blake3::Hash` equality
   (constant-time per upstream docs).
 
@@ -216,15 +217,13 @@ Every dependency is a deliberate choice. The full list:
 | `chacha20poly1305` | ChaCha20-Poly1305 primitive. RustCrypto. |
 | `aes-gcm` | AES-256-GCM primitive with AES-NI / ARMv8 dispatch. RustCrypto. |
 | `blake3` | BLAKE3 hash + XOF + keyed. Official BLAKE3 crate. |
-| `sha2` | SHA-256 / SHA-512 with SHA-NI dispatch. RustCrypto. |
-| `hmac` | Generic HMAC with constant-time `verify_slice`. RustCrypto. |
-| `hkdf` | RFC 5869 HKDF. RustCrypto. |
+| `sha2` | SHA-256 / SHA-512 with SHA-NI dispatch. RustCrypto. Also the hash under crypt-io's own HMAC and HKDF (`src/hmac_core.rs`): the `hmac` and `hkdf` crates were dropped in 1.2.2, because `hmac` 0.13 pulls in `ctutils` and every `ctutils` release that fixes RUSTSEC-2026-0385 needs Rust 1.87, above the MSRV. |
 | `argon2` | Argon2id with PHC framework. RustCrypto. |
 | `aes` | Direct dependency only so `zeroize` can turn on `aes/zeroize` (AES round keys). RustCrypto. |
-| `subtle` | Constant-time equality for `Tag`. |
+| `subtle` | Constant-time equality for `Tag` and the HMAC checks. |
 | `mod-rand` *(with `std`)* | Portfolio CSPRNG (Tier 3 = OS-backed). |
 | `getrandom` *(opt)* | OS CSPRNG for `no_std` builds, or in place of `mod-rand`. |
-| `zeroize` *(opt)* | Volatile writes for `wipe` / `wipe_vec`; wiping of the stream types' key copy and buffer, the BLAKE3 keyed MAC state and `_into` failure buffers; enables upstream `zeroize` in `aes`, `aes-gcm`, `sha2`, `hmac`, `argon2`, `blake3` (default on). |
+| `zeroize` *(opt)* | Volatile writes for `wipe` / `wipe_vec`; wiping of the stream types' key copy and buffer, the BLAKE3 keyed MAC state and `_into` failure buffers; enables upstream `zeroize` in `aes`, `aes-gcm`, `sha2`, `argon2`, `blake3` (default on). |
 
 All RustCrypto and BLAKE3 dependencies have their default
 features off; crypt-io's `std` feature forwards to their `std`

@@ -1,6 +1,8 @@
 //! HKDF backend (RFC 5869).
 //!
-//! Thin wrapper over the `hkdf` crate. HKDF is the right choice when
+//! Built in crypt-io over the `RustCrypto` `sha2` hashes since 1.2.2
+//! (see `crate::hmac_core`; up to 1.2.1 this wrapped the `hkdf` crate,
+//! with byte-identical output). HKDF is the right choice when
 //! the input keying material (IKM) is already high-entropy — a master
 //! key, a Diffie-Hellman shared secret, a token from a secrets manager.
 //! It is *not* a password hash; for passwords use Argon2id.
@@ -19,10 +21,10 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use hkdf::Hkdf;
 use sha2::{Sha256, Sha512};
 
 use crate::error::{Error, Result};
+use crate::hmac_core;
 
 /// Maximum HKDF-SHA256 output length, in bytes. Equal to `255 * 32 = 8160`.
 pub const HKDF_MAX_OUTPUT_SHA256: usize = 255 * 32;
@@ -102,9 +104,8 @@ pub fn hkdf_sha256_into(
     if out.len() > HKDF_MAX_OUTPUT_SHA256 {
         return Err(Error::Kdf("hkdf-sha256 output > 255 * 32 bytes"));
     }
-    Hkdf::<Sha256>::new(salt, ikm)
-        .expand(info, out)
-        .map_err(|_| Error::Kdf("hkdf-sha256 expand"))
+    hmac_core::hkdf::<Sha256, 64>(salt, ikm, &[info], out);
+    Ok(())
 }
 
 /// Derive `len` bytes of output keying material via HKDF-SHA512.
@@ -154,9 +155,8 @@ pub fn hkdf_sha512_into(
     if out.len() > HKDF_MAX_OUTPUT_SHA512 {
         return Err(Error::Kdf("hkdf-sha512 output > 255 * 64 bytes"));
     }
-    Hkdf::<Sha512>::new(salt, ikm)
-        .expand(info, out)
-        .map_err(|_| Error::Kdf("hkdf-sha512 expand"))
+    hmac_core::hkdf::<Sha512, 128>(salt, ikm, &[info], out);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -209,26 +209,22 @@ mod tests {
     // We use Test Case 1 + 3 for SHA-256 and a derived SHA-512 vector
     // below.
 
-    /// HKDF-SHA512 wrapper round-trip. RFC 5869 only ships SHA-256 /
-    /// SHA-1 vectors, so for SHA-512 we cross-check the wrapper output
-    /// against a direct call into the upstream `hkdf` crate with the
-    /// same parameters. This catches any wrapper-level mistake
-    /// (wrong digest selected, length-bound off-by-one, salt mis-passed)
-    /// without committing to a specific KAT we'd have to maintain.
+    /// HKDF-SHA512 with the Test Case 1 inputs. RFC 5869 only ships
+    /// SHA-256 / SHA-1 vectors; this one was computed with Python's
+    /// `hmac` + `hashlib` and matches the `hkdf` crate that backed
+    /// crypt-io up to 1.2.1.
     #[test]
-    fn hkdf_sha512_matches_upstream() {
+    fn hkdf_sha512_test_case_1_inputs() {
         let ikm = hex_to_bytes("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b");
         let salt = hex_to_bytes("000102030405060708090a0b0c");
         let info = hex_to_bytes("f0f1f2f3f4f5f6f7f8f9");
+        let expected = hex_to_bytes(
+            "832390086cda71fb47625bb5ceb168e4c8e26a1a16ed34d9fc7fe92c14815793\
+             38da362cb8d9f925d7cbcce0dff7098769cf15959867d571c1715450cb530137",
+        );
 
         let got = hkdf_sha512(&ikm, Some(&salt), &info, 64).unwrap();
-
-        let hk = Hkdf::<Sha512>::new(Some(&salt), &ikm);
-        let mut expected = vec![0u8; 64];
-        hk.expand(&info, &mut expected).unwrap();
-
         assert_eq!(got, expected);
-        assert_eq!(got.len(), 64);
     }
 
     // --- Length and bounds ---
