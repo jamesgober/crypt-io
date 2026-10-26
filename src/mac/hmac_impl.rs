@@ -1,32 +1,29 @@
 //! HMAC-SHA256 / HMAC-SHA512 backend.
 //!
-//! Thin wrapper over the `hmac` crate (`RustCrypto`). HMAC accepts a key
-//! of any length — short keys are zero-padded, long keys are hashed down
-//! to the block size, both per [RFC 2104]. The wrapper preserves that
-//! contract; callers do not need to size their keys.
+//! HMAC over the `RustCrypto` `sha2` hashes, built in crypt-io since
+//! 1.2.2 (see `crate::hmac_core` for why it no longer uses the `hmac`
+//! crate). HMAC accepts a key of any length — short keys are
+//! zero-padded, long keys are hashed down to the block size, both per
+//! [RFC 2104]. Callers do not need to size their keys. Tags are
+//! compared with `subtle::ConstantTimeEq`.
 //!
 //! With the `zeroize` feature (default on) the HMAC state, which is
-//! derived from the key, is wiped when a MAC is dropped (`hmac` and
-//! `sha2` `zeroize` support, new in crypt-io 1.1.0).
+//! derived from the key, is wiped when a MAC is dropped (`sha2`
+//! `zeroize` support, new in crypt-io 1.1.0).
 //!
 //! [RFC 2104]: https://datatracker.ietf.org/doc/html/rfc2104
 
-use hmac::{Hmac, KeyInit, Mac};
-use sha2::{Sha256, Sha512};
-
 use super::{HMAC_SHA256_OUTPUT_LEN, HMAC_SHA512_OUTPUT_LEN};
 use crate::error::{Error, Result};
-
-type HmacSha256Inner = Hmac<Sha256>;
-type HmacSha512Inner = Hmac<Sha512>;
+use crate::hmac_core::{HmacSha256 as HmacSha256Inner, HmacSha512 as HmacSha512Inner};
 
 /// Compute an HMAC-SHA256 tag over `data` under `key`.
 ///
 /// # Errors
 ///
-/// Returns [`Error::Mac`] if the upstream `hmac` crate refuses the key.
-/// In practice this never happens — HMAC accepts any key length — but the
-/// upstream API is fallible by signature, so the wrapper preserves it.
+/// None in practice: HMAC accepts any key length. The `Result` (with
+/// [`Error::Mac`] as its error) is part of the 1.x signature and kept for
+/// compatibility.
 ///
 /// # Example
 ///
@@ -39,17 +36,15 @@ type HmacSha512Inner = Hmac<Sha512>;
 /// # Ok::<(), crypt_io::Error>(())
 /// ```
 pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<[u8; HMAC_SHA256_OUTPUT_LEN]> {
-    let mut mac =
-        HmacSha256Inner::new_from_slice(key).map_err(|_| Error::Mac("hmac-sha256 init"))?;
+    let mut mac = HmacSha256Inner::new(key);
     mac.update(data);
-    Ok(mac.finalize().into_bytes().into())
+    Ok(mac.finalize().into())
 }
 
 /// Check an HMAC-SHA256 tag in constant time.
 ///
 /// Computes the tag for `(key, data)` and compares it to `expected_tag`
-/// with `subtle::ConstantTimeEq` (via the `hmac` crate's
-/// `verify_slice`). Returns `Ok(())` on a match and
+/// with `subtle::ConstantTimeEq`. Returns `Ok(())` on a match and
 /// `Err(`[`Error::AuthenticationFailed`]`)` on a mismatch, including an
 /// `expected_tag` of the wrong length.
 ///
@@ -59,8 +54,8 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<[u8; HMAC_SHA256_OUTPUT_LE
 /// # Errors
 ///
 /// - [`Error::AuthenticationFailed`] if the tag does not match.
-/// - [`Error::Mac`] if the upstream MAC could not be constructed
-///   (unreachable in practice).
+/// - [`Error::Mac`] is never returned in practice (see
+///   [`hmac_sha256`]).
 ///
 /// # Example
 ///
@@ -79,11 +74,13 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<[u8; HMAC_SHA256_OUTPUT_LE
 /// # Ok::<(), crypt_io::Error>(())
 /// ```
 pub fn hmac_sha256_check(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Result<()> {
-    let mut mac =
-        HmacSha256Inner::new_from_slice(key).map_err(|_| Error::Mac("hmac-sha256 init"))?;
+    let mut mac = HmacSha256Inner::new(key);
     mac.update(data);
-    mac.verify_slice(expected_tag)
-        .map_err(|_| Error::AuthenticationFailed)
+    if mac.verify(expected_tag) {
+        Ok(())
+    } else {
+        Err(Error::AuthenticationFailed)
+    }
 }
 
 /// Verify an HMAC-SHA256 tag in constant time.
@@ -92,8 +89,7 @@ pub fn hmac_sha256_check(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Result
 /// `Err(AuthenticationFailed)` on a mismatch.
 ///
 /// Computes the tag for `(key, data)` and compares it to `expected_tag`.
-/// Returns `Ok(true)` if the tags match, `Ok(false)` if they don't, and
-/// [`Error::Mac`] if the upstream MAC could not be constructed.
+/// Returns `Ok(true)` if the tags match and `Ok(false)` if they don't.
 ///
 /// **A mismatch is `Ok(false)`, not an error.** Writing
 /// `hmac_sha256_verify(..)?;` throws that `bool` away and accepts any
@@ -101,14 +97,12 @@ pub fn hmac_sha256_check(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Result
 /// example below.
 ///
 /// **Always** use this rather than `tag == expected`. The comparison
-/// inside is `subtle::ConstantTimeEq` (via the `hmac` crate's
-/// `verify_slice`), so timing does not leak how many leading bytes
-/// matched.
+/// inside is `subtle::ConstantTimeEq`, so timing does not leak how many
+/// leading bytes matched.
 ///
 /// # Errors
 ///
-/// Same as [`hmac_sha256`] — the upstream MAC construction is fallible
-/// by signature, unreachable in practice.
+/// Same as [`hmac_sha256`] — fallible by signature, never in practice.
 ///
 /// # Example
 ///
@@ -133,10 +127,9 @@ pub fn hmac_sha256_check(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Result
 )]
 #[must_use = "a mismatch is Ok(false): check the bool, or use `hmac_sha256_check`"]
 pub fn hmac_sha256_verify(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Result<bool> {
-    let mut mac =
-        HmacSha256Inner::new_from_slice(key).map_err(|_| Error::Mac("hmac-sha256 init"))?;
+    let mut mac = HmacSha256Inner::new(key);
     mac.update(data);
-    Ok(mac.verify_slice(expected_tag).is_ok())
+    Ok(mac.verify(expected_tag))
 }
 
 /// Compute an HMAC-SHA512 tag over `data` under `key`.
@@ -156,10 +149,9 @@ pub fn hmac_sha256_verify(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Resul
 /// # Ok::<(), crypt_io::Error>(())
 /// ```
 pub fn hmac_sha512(key: &[u8], data: &[u8]) -> Result<[u8; HMAC_SHA512_OUTPUT_LEN]> {
-    let mut mac =
-        HmacSha512Inner::new_from_slice(key).map_err(|_| Error::Mac("hmac-sha512 init"))?;
+    let mut mac = HmacSha512Inner::new(key);
     mac.update(data);
-    Ok(mac.finalize().into_bytes().into())
+    Ok(mac.finalize().into())
 }
 
 /// Check an HMAC-SHA512 tag in constant time. Returns
@@ -171,11 +163,13 @@ pub fn hmac_sha512(key: &[u8], data: &[u8]) -> Result<[u8; HMAC_SHA512_OUTPUT_LE
 ///
 /// Same as [`hmac_sha256_check`].
 pub fn hmac_sha512_check(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Result<()> {
-    let mut mac =
-        HmacSha512Inner::new_from_slice(key).map_err(|_| Error::Mac("hmac-sha512 init"))?;
+    let mut mac = HmacSha512Inner::new(key);
     mac.update(data);
-    mac.verify_slice(expected_tag)
-        .map_err(|_| Error::AuthenticationFailed)
+    if mac.verify(expected_tag) {
+        Ok(())
+    } else {
+        Err(Error::AuthenticationFailed)
+    }
 }
 
 /// Verify an HMAC-SHA512 tag in constant time. See [`hmac_sha256_verify`].
@@ -195,10 +189,9 @@ pub fn hmac_sha512_check(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Result
 )]
 #[must_use = "a mismatch is Ok(false): check the bool, or use `hmac_sha512_check`"]
 pub fn hmac_sha512_verify(key: &[u8], data: &[u8], expected_tag: &[u8]) -> Result<bool> {
-    let mut mac =
-        HmacSha512Inner::new_from_slice(key).map_err(|_| Error::Mac("hmac-sha512 init"))?;
+    let mut mac = HmacSha512Inner::new(key);
     mac.update(data);
-    Ok(mac.verify_slice(expected_tag).is_ok())
+    Ok(mac.verify(expected_tag))
 }
 
 /// Streaming HMAC-SHA256 for inputs that don't fit in memory.
@@ -232,11 +225,10 @@ impl HmacSha256 {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Mac`] if the upstream `hmac` crate refuses the key.
-    /// Unreachable in practice (HMAC accepts any key length).
+    /// None in practice: HMAC accepts any key length. The `Result` is
+    /// kept for 1.x compatibility.
     pub fn new(key: &[u8]) -> Result<Self> {
-        let inner =
-            HmacSha256Inner::new_from_slice(key).map_err(|_| Error::Mac("hmac-sha256 init"))?;
+        let inner = HmacSha256Inner::new(key);
         Ok(Self { inner })
     }
 
@@ -250,7 +242,7 @@ impl HmacSha256 {
     /// Finalise the MAC and return the 32-byte tag. Consumes the hasher.
     #[must_use]
     pub fn finalize(self) -> [u8; HMAC_SHA256_OUTPUT_LEN] {
-        self.inner.finalize().into_bytes().into()
+        self.inner.finalize().into()
     }
 
     /// Finalise and verify against `expected_tag` in constant time.
@@ -259,7 +251,7 @@ impl HmacSha256 {
     /// `Result` form.
     #[must_use]
     pub fn verify(self, expected_tag: &[u8]) -> bool {
-        self.inner.verify_slice(expected_tag).is_ok()
+        self.inner.verify(expected_tag)
     }
 
     /// Finalise and check against `expected_tag` in constant time.
@@ -269,9 +261,11 @@ impl HmacSha256 {
     ///
     /// [`Error::AuthenticationFailed`] if the tag does not match.
     pub fn check(self, expected_tag: &[u8]) -> Result<()> {
-        self.inner
-            .verify_slice(expected_tag)
-            .map_err(|_| Error::AuthenticationFailed)
+        if self.inner.verify(expected_tag) {
+            Ok(())
+        } else {
+            Err(Error::AuthenticationFailed)
+        }
     }
 }
 
@@ -303,8 +297,7 @@ impl HmacSha512 {
     ///
     /// See [`HmacSha256::new`].
     pub fn new(key: &[u8]) -> Result<Self> {
-        let inner =
-            HmacSha512Inner::new_from_slice(key).map_err(|_| Error::Mac("hmac-sha512 init"))?;
+        let inner = HmacSha512Inner::new(key);
         Ok(Self { inner })
     }
 
@@ -318,7 +311,7 @@ impl HmacSha512 {
     /// Finalise the MAC and return the 64-byte tag. Consumes the hasher.
     #[must_use]
     pub fn finalize(self) -> [u8; HMAC_SHA512_OUTPUT_LEN] {
-        self.inner.finalize().into_bytes().into()
+        self.inner.finalize().into()
     }
 
     /// Finalise and verify against `expected_tag` in constant time.
@@ -327,7 +320,7 @@ impl HmacSha512 {
     /// `Result` form.
     #[must_use]
     pub fn verify(self, expected_tag: &[u8]) -> bool {
-        self.inner.verify_slice(expected_tag).is_ok()
+        self.inner.verify(expected_tag)
     }
 
     /// Finalise and check against `expected_tag` in constant time.
@@ -337,9 +330,11 @@ impl HmacSha512 {
     ///
     /// [`Error::AuthenticationFailed`] if the tag does not match.
     pub fn check(self, expected_tag: &[u8]) -> Result<()> {
-        self.inner
-            .verify_slice(expected_tag)
-            .map_err(|_| Error::AuthenticationFailed)
+        if self.inner.verify(expected_tag) {
+            Ok(())
+        } else {
+            Err(Error::AuthenticationFailed)
+        }
     }
 }
 
@@ -434,7 +429,7 @@ mod tests {
     #[test]
     fn hmac_sha256_verify_rejects_truncated_tag() {
         let tag = hmac_sha256(b"key", b"data").unwrap();
-        // upstream `verify_slice` rejects wrong-length tags; we propagate
+        // A wrong-length tag never matches; we propagate
         // the boolean rejection without surfacing the length detail.
         assert!(!hmac_sha256_verify(b"key", b"data", &tag[..16]).unwrap());
     }
@@ -562,7 +557,7 @@ mod tests {
     }
 
     /// With `zeroize`, dropping a MAC wipes its key-derived state
-    /// (`hmac`/`sha2` zeroize support, deferred in 1.0.1).
+    /// (`sha2` zeroize support, deferred in 1.0.1).
     #[cfg(feature = "zeroize")]
     #[test]
     fn drop_wipes_hmac_state() {

@@ -114,6 +114,8 @@
 extern crate alloc;
 
 mod error;
+#[cfg(any(feature = "mac-hmac", feature = "kdf-hkdf", feature = "stream"))]
+mod hmac_core;
 #[cfg(any(feature = "std", feature = "getrandom"))]
 mod rng;
 mod tag;

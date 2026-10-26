@@ -43,7 +43,7 @@
 //! timing. That leak is enough to forge tags one byte at a time. The
 //! `*_check` functions and the streaming types' `check` / `verify`
 //! methods all use constant-time comparators ([`subtle::ConstantTimeEq`]
-//! via the `hmac` crate, and `blake3::Hash` equality).
+//! for HMAC, and `blake3::Hash` equality).
 //!
 //! **Never** compare a computed tag to an expected tag with `==` on
 //! arrays. Use the `check` paths in this module, or wrap the computed

@@ -64,10 +64,10 @@ shipped in `crypt_io::stream` defeats:
 
 ### Timing side channels
 
-- **MAC verification** uses upstream constant-time comparators
-  (`hmac::Mac::verify_slice` for HMAC, `blake3::Hash::eq` for
-  BLAKE3 keyed). Both route through `subtle::ConstantTimeEq`
-  internally.
+- **MAC verification** uses constant-time comparators:
+  `subtle::ConstantTimeEq` for HMAC (crypt-io's own HMAC since
+  1.2.2) and `blake3::Hash::eq` for BLAKE3 keyed, which also routes
+  through `subtle`.
 - **`Tag<N>`** (1.1.0) wraps a tag with a constant-time `==`
   (`subtle::ConstantTimeEq`), for callers who compare tags
   themselves.
@@ -117,9 +117,11 @@ note in `hash` both explicitly forbid `tag == expected` /
     without `zeroize` they fall back to plain writes plus
     `core::hint::black_box`, which is best effort only;
   - upstream `zeroize` support is on in `aes` (AES round keys,
-    1.1.0), `sha2` and `hmac` (hash and HMAC state, which is
-    derived from the key, 1.1.0), `aes-gcm`, `argon2` (memory
-    blocks) and `blake3`. A test checks that a dropped
+    1.1.0), `sha2` (hash and HMAC state, which is derived from the
+    key, 1.1.0), `aes-gcm`, `argon2` (memory blocks) and `blake3`.
+    crypt-io's HMAC and HKDF (1.2.2) also wipe the padded key
+    block, a hashed long key, the inner hash and the HKDF
+    intermediates. A test checks that a dropped
     `HmacSha256` / `HmacSha512` leaves only zeros behind.
 
   Not covered: the GHASH key inside `polyval` 0.6, whose

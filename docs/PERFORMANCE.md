@@ -382,9 +382,15 @@ crates' own benches:
 - [`sha2`](https://crates.io/crates/sha2) — upstream with SHA-NI
   reports ~2.5-3.0 GiB/s for SHA-256 on Zen 5. We measure 2.45 GiB/s
   at 1 MiB. Within noise.
-- [`hkdf`](https://crates.io/crates/hkdf), [`hmac`](https://crates.io/crates/hmac),
-  [`argon2`](https://crates.io/crates/argon2) — wrapping overhead
+- [`argon2`](https://crates.io/crates/argon2) — wrapping overhead
   not measurable: we just call through to one upstream function.
+- HMAC and HKDF — built in crypt-io over `sha2` since 1.2.2, with
+  the same structure as the `hmac` / `hkdf` crates they replace
+  (key pads hashed once per key, one inner and one outer hash per
+  tag). Within a few percent of 1.2.1 on short inputs (the extra
+  wipes cost about 10-20 ns), as fast or faster on long ones; tag
+  checks compare a `u64` at a time with `subtle`. Numbers in
+  [`docs/release/v1.2.2.md`](release/v1.2.2.md).
 
 Most of our overhead in 0.9.0 and earlier was **per-call
 allocation** for the output `Vec<u8>`. **0.10.0 closes this gap**

@@ -261,7 +261,7 @@ impl StreamDecryptor {
     /// v2: collect salt bytes from the front of `data`; once all 32
     /// have arrived, swap the caller's key for the stream subkey.
     /// Returns the bytes of `data` that follow the salt.
-    fn take_salt<'a>(&mut self, data: &'a [u8]) -> Result<&'a [u8]> {
+    fn take_salt<'a>(&mut self, data: &'a [u8]) -> &'a [u8] {
         let need = SALT_LEN - self.salt_have;
         let take = need.min(data.len());
         let at = HEADER_LEN + self.salt_have;
@@ -271,7 +271,7 @@ impl StreamDecryptor {
             let mut header = [0u8; HEADER_LEN];
             header.copy_from_slice(&self.aad[..HEADER_LEN]);
             let mut master = self.key;
-            let derived = derive_v2(
+            derive_v2(
                 &master,
                 &header,
                 &self.aad[HEADER_LEN..HEADER_LEN + SALT_LEN],
@@ -280,9 +280,8 @@ impl StreamDecryptor {
                 &mut self.nonce_base,
             );
             wipe(&mut master);
-            derived?;
         }
-        Ok(&data[take..])
+        &data[take..]
     }
 
     /// Shared body of `update` / `update_into`. Appends plaintext to
@@ -291,7 +290,7 @@ impl StreamDecryptor {
     /// encryptor guarantees the final chunk is strictly shorter.
     fn process(&mut self, mut data: &[u8], out: &mut Vec<u8>) -> Result<()> {
         if self.salt_have < SALT_LEN {
-            data = self.take_salt(data)?;
+            data = self.take_salt(data);
         }
         let frame = self.chunk_size + TAG_LEN;
 
