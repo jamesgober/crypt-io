@@ -93,11 +93,31 @@ impl<D: Digest + Clone, const B: usize> Hmac<D, B> {
     }
 
     /// Compare the tag with `expected` in constant time. A slice of the
-    /// wrong length never matches.
+    /// wrong length never matches (the length is not secret).
     #[cfg(feature = "mac-hmac")]
     pub(crate) fn verify(self, expected: &[u8]) -> bool {
-        bool::from(self.finalize()[..].ct_eq(expected))
+        let tag = self.finalize();
+        tag.len() == expected.len() && bool::from(ct_eq_words(&tag, expected))
     }
+}
+
+/// Constant-time equality of two equal-length slices, a `u64` at a time
+/// (any tail byte by byte). `subtle`'s slice comparison puts an
+/// optimisation barrier after every byte; words need an eighth of the
+/// barriers for the same guarantee.
+#[cfg(feature = "mac-hmac")]
+fn ct_eq_words(a: &[u8], b: &[u8]) -> subtle::Choice {
+    debug_assert_eq!(a.len(), b.len());
+    let (wa, wb) = (a.chunks_exact(8), b.chunks_exact(8));
+    let mut eq = wa.remainder().ct_eq(wb.remainder());
+    for (x, y) in wa.zip(wb) {
+        let mut wx = [0u8; 8];
+        let mut wy = [0u8; 8];
+        wx.copy_from_slice(x);
+        wy.copy_from_slice(y);
+        eq &= u64::from_ne_bytes(wx).ct_eq(&u64::from_ne_bytes(wy));
+    }
+    eq
 }
 
 impl<D, const B: usize> fmt::Debug for Hmac<D, B> {
@@ -142,4 +162,27 @@ pub(crate) fn hkdf<D: Digest + Clone, const B: usize>(
         chunk.copy_from_slice(&t[..chunk.len()]);
     }
     wipe(&mut t);
+}
+
+#[cfg(all(test, feature = "mac-hmac"))]
+mod tests {
+    use super::ct_eq_words;
+
+    #[test]
+    fn ct_eq_words_matches_plain_equality() {
+        for len in 0..=70 {
+            let a: alloc::vec::Vec<u8> = (0u8..)
+                .take(len)
+                .map(|i| i.wrapping_mul(31).wrapping_add(7))
+                .collect();
+            assert!(bool::from(ct_eq_words(&a, &a)), "len {len}");
+            for at in 0..len {
+                for bit in [0x01, 0x80] {
+                    let mut b = a.clone();
+                    b[at] ^= bit;
+                    assert!(!bool::from(ct_eq_words(&a, &b)), "len {len} at {at}");
+                }
+            }
+        }
+    }
 }

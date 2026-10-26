@@ -47,7 +47,9 @@ Release notes: [`docs/release/v1.2.2.md`](docs/release/v1.2.2.md).
   HKDF-SHA512 (RFC 5869) are now built in crypt-io
   (`src/hmac_core.rs`) over the RustCrypto `sha2` hashes, in place of
   the `hmac` and `hkdf` crates. Tag checks compare with
-  `subtle::ConstantTimeEq`. The padded key block, a hashed long key,
+  `subtle::ConstantTimeEq`, a `u64` at a time (one optimisation
+  barrier per word instead of per byte, so a check costs the same as
+  in 1.2.1). The padded key block, a hashed long key,
   the inner hash and the HKDF intermediates are wiped; with `zeroize`
   the hash states are wiped on drop, as before.
 

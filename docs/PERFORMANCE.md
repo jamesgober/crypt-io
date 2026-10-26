@@ -387,7 +387,10 @@ crates' own benches:
 - HMAC and HKDF — built in crypt-io over `sha2` since 1.2.2, with
   the same structure as the `hmac` / `hkdf` crates they replace
   (key pads hashed once per key, one inner and one outer hash per
-  tag).
+  tag). Within a few percent of 1.2.1 on short inputs (the extra
+  wipes cost about 10-20 ns), as fast or faster on long ones; tag
+  checks compare a `u64` at a time with `subtle`. Numbers in
+  [`docs/release/v1.2.2.md`](release/v1.2.2.md).
 
 Most of our overhead in 0.9.0 and earlier was **per-call
 allocation** for the output `Vec<u8>`. **0.10.0 closes this gap**
