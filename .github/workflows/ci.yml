@@ -141,6 +141,30 @@ jobs:
       - run: cargo doc --no-deps --no-default-features --features std,hash-blake3
       - run: cargo doc --no-deps --no-default-features --features std,hash-sha2,mac-hmac,kdf-hkdf
       - run: cargo doc --no-deps --no-default-features --features std,stream
+      - run: cargo doc --no-deps --no-default-features --features kdf-pbkdf2
+      - run: cargo doc --no-deps --no-default-features --features sign-ed25519
+      - run: cargo doc --no-deps --no-default-features --features sign-rsa
+
+  # 1.3.0 feature sets on their own: catches a `cfg` that only holds
+  # because another feature happens to be on in `--all-features`.
+  feature-sets:
+    name: Feature sets (sign, pbkdf2)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: [stable, "1.85.0"]
+        features: ["sign-ed25519", "sign-rsa", "sign-all,hash-sha2", "kdf-pbkdf2", "kdf-pbkdf2,zeroize,mac-hmac"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: clippy
+      # `--lib --tests`: the examples and benches need the default set.
+      - run: cargo clippy --lib --tests --no-default-features --features ${{ matrix.features }} -- -D warnings
+      - run: cargo test --lib --tests --no-default-features --features ${{ matrix.features }}
+      - run: cargo test --doc --no-default-features --features ${{ matrix.features }}
 
   no-std:
     name: no_std (thumbv7em-none-eabihf)
@@ -158,7 +182,7 @@ jobs:
       # Everything except the random-dependent APIs: no RNG at all.
       - run: >-
           cargo build --target thumbv7em-none-eabihf --no-default-features
-          --features aead-chacha20,aead-aes-gcm,hash-blake3,hash-sha2,mac-hmac,mac-blake3,kdf-hkdf,kdf-argon2,stream,zeroize
+          --features aead-chacha20,aead-aes-gcm,hash-blake3,hash-sha2,mac-hmac,mac-blake3,kdf-hkdf,kdf-argon2,kdf-pbkdf2,stream,zeroize
       # The smallest no_std set a downstream crate uses for `wipe` plus
       # the keyed BLAKE3 MAC.
       - run: >-
@@ -191,14 +215,16 @@ jobs:
           components: miri
       - run: cargo miri setup
       # Memory-handling paths: buffer wiping, key wipe on drop, the
-      # stream decryptor, `_into` error paths and the frozen KATs.
-      # Large-input tests are skipped or `cfg_attr(miri, ignore)`.
+      # stream decryptor, `_into` error paths, PBKDF2's raw SHA-256
+      # state handling and the frozen KATs. Large-input tests are
+      # skipped or `cfg_attr(miri, ignore)`. `preset-all` rather than
+      # `--all-features`: Miri cannot run the C code behind `sign-*`.
       - run: >-
-          cargo miri test --all-features --lib --
+          cargo miri test --features preset-all --lib --
           wipe:: stream:: aead::tests::round_trip_short aead::tests::tampered
-          aead::aes_gcm_tests::round_trip_short
+          aead::aes_gcm_tests::round_trip_short kdf::pbkdf2_impl::
       - run: >-
-          cargo miri test --all-features --test regressions --test kat --
+          cargo miri test --features preset-all --test regressions --test kat --
           --skip update_and_update_into_agree
 
   fuzz-build:

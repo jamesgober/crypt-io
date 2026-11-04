@@ -157,6 +157,28 @@ Frozen free functions and types (feature-gated as documented in
   available with every feature set. With `zeroize` the writes are
   volatile; without it they are best effort.
 
+### Added in 1.3.0 (covered by the same promise)
+
+- `kdf::pbkdf2_hmac_sha256`, `kdf::PBKDF2_MAX_ITERATIONS`,
+  `kdf::PBKDF2_SHA256_OUTPUT_LEN` *(feature `kdf-pbkdf2`)*.
+- `sign::Ed25519SigningKey` (`from_pkcs8_der`, `from_seed`, `sign`,
+  `public_key`), `sign::ED25519_SIGNATURE_LEN`,
+  `ED25519_PUBLIC_KEY_LEN`, `ED25519_SEED_LEN` *(feature
+  `sign-ed25519`)*.
+- `sign::RsaSigningKey` (`from_pkcs8_der`, `from_pkcs1_der`,
+  `sign_pkcs1v15_sha256`, `modulus_bits`, `public_key_der`),
+  `sign::RSA_MIN_MODULUS_BITS`, `RSA_MAX_MODULUS_BITS` *(feature
+  `sign-rsa`)*.
+- `Error::Sign`.
+- Features `kdf-pbkdf2`, `sign-ed25519`, `sign-rsa`, `sign-all`,
+  `prebuilt-nasm`; `kdf-all` now includes `kdf-pbkdf2`.
+- The signing backend (AWS-LC through `aws-lc-rs`) is an
+  implementation detail: no `aws-lc-rs` type appears in the API, so
+  1.x may change it. Signatures are part of the promise: the same key
+  and message give the same bytes (PKCS#1 v1.5 and Ed25519 are both
+  deterministic), checked against RFC 8032, RFC 8463 and NIST CAVP
+  vectors.
+
 ### Deprecated in 1.1.0 (kept for all of 1.x)
 
 - `mac::hmac_sha256_verify`, `mac::hmac_sha512_verify`,

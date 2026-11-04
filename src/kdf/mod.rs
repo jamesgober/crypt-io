@@ -7,6 +7,7 @@
 //! | HKDF-SHA256 | Derive one-or-many subkeys from a high-entropy IKM | Fast (µs)     | `kdf-hkdf`    |
 //! | HKDF-SHA512 | Same, wider underlying digest                      | Fast (µs)     | `kdf-hkdf`    |
 //! | Argon2id    | Derive a key from a *password* (low-entropy input) | Slow (~100ms) | `kdf-argon2`  |
+//! | PBKDF2-HMAC-SHA256 | Password-based key where a protocol requires it (SCRAM, RFC 8018) | Set by the iteration count | `kdf-pbkdf2` |
 //!
 //! # Which one do I want?
 //!
@@ -19,8 +20,14 @@
 //!   memory-hardness and tuneable cost are what protect against
 //!   brute-force attempts; the slowness is the point.
 //!
+//! - **PBKDF2-HMAC-SHA256** ([RFC 8018]) when a protocol or stored
+//!   format fixes it: SCRAM-SHA-256 (RFC 7677) authentication, or
+//!   existing PBKDF2 hashes. It is not memory-hard, so prefer Argon2id
+//!   for new password storage. New in 1.3.0.
+//!
 //! [RFC 5869]: https://datatracker.ietf.org/doc/html/rfc5869
 //! [RFC 9106]: https://datatracker.ietf.org/doc/html/rfc9106
+//! [RFC 8018]: https://datatracker.ietf.org/doc/html/rfc8018
 //!
 //! # Examples
 //!
@@ -54,6 +61,8 @@
 mod argon2_impl;
 #[cfg(feature = "kdf-hkdf")]
 mod hkdf_impl;
+#[cfg(feature = "kdf-pbkdf2")]
+mod pbkdf2_impl;
 
 #[cfg(feature = "kdf-argon2")]
 #[allow(deprecated)]
@@ -68,3 +77,5 @@ pub use self::hkdf_impl::{
     HKDF_MAX_OUTPUT_SHA256, HKDF_MAX_OUTPUT_SHA512, hkdf_sha256, hkdf_sha256_into, hkdf_sha512,
     hkdf_sha512_into,
 };
+#[cfg(feature = "kdf-pbkdf2")]
+pub use self::pbkdf2_impl::{PBKDF2_MAX_ITERATIONS, PBKDF2_SHA256_OUTPUT_LEN, pbkdf2_hmac_sha256};

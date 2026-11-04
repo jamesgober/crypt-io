@@ -37,6 +37,10 @@ steady-state allocations.
 | KDF          | HKDF-SHA512 (32 B output) | 1.06 µs | — | — |
 | KDF          | Argon2id (OWASP defaults) | ~9 ms / hash | — | — |
 | KDF          | Argon2id (test params) | 8.2 µs / hash | — | — |
+| KDF          | PBKDF2-HMAC-SHA256, 4,096 iterations (1.3.0) | 265 µs | — | — |
+| KDF          | PBKDF2-HMAC-SHA256, 600,000 iterations (1.3.0) | 38.9 ms | — | — |
+| Sign         | Ed25519, 32 B message (1.3.0) | 42 µs | — | — |
+| Sign         | RSA-2048 PKCS#1 v1.5 SHA-256 (1.3.0) | 205 µs | — | — |
 | Stream `_into` | ChaCha20-Poly1305 | — | — | **1.40 GiB/s** |
 | Stream `_into` | AES-256-GCM | — | — | **1.54 GiB/s** |
 
@@ -317,6 +321,40 @@ keys. Two parameter sets:
 The "test params" set proves the wrapper overhead is negligible
 — hash and verify are nearly identical cost, both within
 microseconds of the upstream `argon2` crate.
+
+<a href="#top">↑ TOP</a>
+
+### PBKDF2-HMAC-SHA256 (1.3.0)
+
+`kdf::pbkdf2_hmac_sha256`, 32-byte output, `cargo bench --bench
+pbkdf2 --features kdf-pbkdf2`. Measured on the reference machine
+under Windows 11 (MSVC, Rust 1.99), with other build sessions running
+in parallel, so treat the last digit as noise:
+
+| Iterations | Time | Per iteration |
+|---:|---:|---:|
+| 4,096 (SCRAM-SHA-256 minimum) | 265 µs | 65 ns |
+| 600,000 (OWASP 2023) | 38.9 ms | 65 ns |
+
+Each iteration is two SHA-256 compressions (SHA-NI through `sha2`).
+In an interleaved A/B in one process (600,000 iterations, three
+rounds), crypt-io took 40 to 43 ms and AWS-LC's PBKDF2 (`aws-lc-rs`
+1.19) 52 to 71 ms for the same output: crypt-io was 1.27 to 1.65 times
+faster.
+
+### Signatures (1.3.0)
+
+`cargo bench --bench sign --features sign-all` (add `prebuilt-nasm`
+on Windows without NASM), same machine and conditions:
+
+| Operation | Time |
+|---|---:|
+| `Ed25519SigningKey::sign`, 32-byte message | 42 µs |
+| `RsaSigningKey::sign_pkcs1v15_sha256`, 2048-bit key, 32-byte message | 205 µs |
+
+Both are AWS-LC's cost; an A/B against calling `aws-lc-rs` directly
+measured the crypt-io wrapper within noise (30 to 37 µs against 33 to
+43 µs per Ed25519 signature).
 
 <a href="#top">↑ TOP</a>
 

@@ -3,13 +3,15 @@
 //! ENCRYPTION SUITE FOR RUST
 //!
 //! AEAD encryption (ChaCha20-Poly1305, XChaCha20-Poly1305, AES-256-GCM), hashing (BLAKE3, SHA-2), MAC
-//! (HMAC, BLAKE3 keyed), and KDF (HKDF, Argon2id). Algorithm-agile. RustCrypto-backed
-//! primitives with REPS discipline. Simple API. Sub-microsecond throughput.
+//! (HMAC, BLAKE3 keyed), KDF (HKDF, Argon2id, PBKDF2) and, behind features, signatures
+//! (Ed25519, RSA PKCS#1 v1.5). Algorithm-agile. RustCrypto-backed primitives with REPS
+//! discipline. Simple API. Sub-microsecond throughput.
 //!
 //! # Design philosophy
 //!
 //! crypt-io is a focused encryption library that wraps proven cryptographic
-//! primitives (from RustCrypto and the BLAKE3 team) with:
+//! primitives (from RustCrypto and the BLAKE3 team, and AWS-LC for the optional
+//! signatures) with:
 //!
 //! - A clean, ergonomic API
 //! - Algorithm agility (switch ciphers via enum or feature flag)
@@ -30,14 +32,19 @@
 //! - **Stream/file encryption** for large data (chunked AEAD with framing)
 //! - **Hashing** (BLAKE3, SHA-256, SHA-512)
 //! - **MAC** (HMAC-SHA256, HMAC-SHA512, BLAKE3 keyed)
-//! - **KDF** (HKDF for key derivation, Argon2id for password hashing)
+//! - **KDF** (HKDF for key derivation, Argon2id for password hashing,
+//!   PBKDF2-HMAC-SHA256 where a protocol such as SCRAM requires it)
+//! - **Signatures** (Ed25519, RSA PKCS#1 v1.5 with SHA-256) in the `sign`
+//!   module, behind the `sign-ed25519` / `sign-rsa` features (1.3.0). They
+//!   use AWS-LC, so they need a C compiler; the default build stays pure Rust.
 //! - **Wiping** buffers that held secrets ([`wipe`], [`wipe_vec`])
 //!
 //! Out of scope (use other crates):
 //!
 //! - **Random utilities** -> use `mod-rand`
 //! - **UUID generation** -> use `id-forge`
-//! - **Asymmetric crypto** (RSA, ECDSA, Ed25519) -> deferred to separate crate
+//! - **Asymmetric encryption and key exchange** (RSA-OAEP, ECDH) -> use `rustls` /
+//!   `aws-lc-rs` directly
 //! - **PGP/GPG** -> use `sequoia-openpgp`
 //! - **TLS** -> use `rustls`
 //! - **Key storage** -> use `key-vault`
@@ -114,7 +121,12 @@
 extern crate alloc;
 
 mod error;
-#[cfg(any(feature = "mac-hmac", feature = "kdf-hkdf", feature = "stream"))]
+#[cfg(any(
+    feature = "mac-hmac",
+    feature = "kdf-hkdf",
+    feature = "kdf-pbkdf2",
+    feature = "stream"
+))]
 mod hmac_core;
 #[cfg(any(feature = "std", feature = "getrandom"))]
 mod rng;
@@ -131,11 +143,14 @@ pub mod hash;
 #[cfg(any(feature = "mac-hmac", feature = "mac-blake3"))]
 pub mod mac;
 
-#[cfg(any(feature = "kdf-hkdf", feature = "kdf-argon2"))]
+#[cfg(any(feature = "kdf-hkdf", feature = "kdf-argon2", feature = "kdf-pbkdf2"))]
 pub mod kdf;
 
 #[cfg(feature = "stream")]
 pub mod stream;
+
+#[cfg(any(feature = "sign-ed25519", feature = "sign-rsa"))]
+pub mod sign;
 
 pub use crate::error::{Error, Result};
 pub use crate::tag::Tag;

@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-    <i>Complete public-API reference for <code>crypt-io</code> 1.2.0.</i>
+    <i>Complete public-API reference for <code>crypt-io</code> 1.3.0.</i>
     <br>
     <i>For per-version notes see <a href="../CHANGELOG.md"><code>CHANGELOG.md</code></a>.</i>
 </p>
@@ -82,6 +82,7 @@
     - [`Argon2Policy`](#argon2policy)
     - [`kdf::argon2_verify` (deprecated)](#kdfargon2_verify)
     - [`Argon2Params`](#argon2params)
+    - [`kdf::pbkdf2_hmac_sha256` (1.3.0)](#kdfpbkdf2_hmac_sha256)
     - [Choosing a KDF](#choosing-a-kdf)
   - [`stream` module](#stream-module)
     - [`StreamEncryptor`](#streamencryptor)
@@ -90,6 +91,9 @@
     - [`stream::decrypt_file`](#streamdecrypt_file)
     - [`StreamFormat`](#streamformat)
     - [Stream wire format](#stream-wire-format)
+  - [`sign` module (1.3.0)](#sign-module)
+    - [`Ed25519SigningKey`](#ed25519signingkey)
+    - [`RsaSigningKey`](#rsasigningkey)
   - [`wipe` / `wipe_vec` (1.2.0)](#wipe--wipe_vec)
   - [`Tag`](#tag)
   - [`Error`](#error)
@@ -109,7 +113,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-crypt-io = "1.2"
+crypt-io = "1.3"
 ```
 
 ### Install via terminal
@@ -147,10 +151,15 @@ surface. Defaults give the full toolkit.
 | `mac-all` |  | Both MAC families (already in the 0.5.0+ default). |
 | `kdf-hkdf` | ✅ | [`kdf::hkdf_sha256`](#kdfhkdf_sha256) / [`kdf::hkdf_sha512`](#kdfhkdf_sha512). |
 | `kdf-argon2` | ✅ | [`kdf::argon2_hash`](#kdfargon2_hash) / [`kdf::argon2_check`](#kdfargon2_check) / [`Argon2Policy`](#argon2policy) / [`Argon2Params`](#argon2params). |
-| `kdf-all` |  | Both KDF families (already in the 0.6.0+ default). |
+| `kdf-pbkdf2` |  | 1.3.0. [`kdf::pbkdf2_hmac_sha256`](#kdfpbkdf2_hmac_sha256) (SCRAM-SHA-256, RFC 8018). Pure Rust, `no_std`. |
+| `kdf-all` |  | HKDF, Argon2id and (1.3.0) PBKDF2. |
+| `sign-ed25519` |  | 1.3.0. [`sign::Ed25519SigningKey`](#ed25519signingkey). Pulls AWS-LC (C + assembly) and `std`; see [`sign` module](#sign-module) for the build cost. |
+| `sign-rsa` |  | 1.3.0. [`sign::RsaSigningKey`](#rsasigningkey) (PKCS#1 v1.5, SHA-256, 2048 to 8192 bits). Same cost as `sign-ed25519`. |
+| `sign-all` |  | 1.3.0. Both signature algorithms. |
+| `prebuilt-nasm` |  | 1.3.0. Windows x86-64 without NASM: use the assembled objects shipped with `aws-lc-sys`. Does nothing without a `sign-*` feature. |
 | `stream` | ✅ | [`StreamEncryptor`](#streamencryptor) / [`StreamDecryptor`](#streamdecryptor) + [`encrypt_file`](#streamencrypt_file) / [`decrypt_file`](#streamdecrypt_file). Pulls both AEAD backends and HKDF-SHA256 (format v2 key schedule). |
 | `preset-minimal` |  | `std` + `aead-chacha20` only — the 0.2.0 surface. |
-| `preset-all` |  | All planned features enabled. Some are inert until their phase ships. |
+| `preset-all` |  | Every pure-Rust feature (`std`, `zeroize`, all AEAD, hash, MAC and KDF families, `stream`). Not the `sign-*` features, which need a C toolchain. |
 | `metrics`, `logging`, `async-trait` |  | Reserved. They enable nothing; 1.0.1 removed the unused dependencies they used to pull in. |
 
 <a href="#top">↑ TOP</a>
@@ -1473,6 +1482,52 @@ configuration.
 
 <a href="#top">↑ TOP</a>
 
+#### `kdf::pbkdf2_hmac_sha256`
+
+```rust
+#[cfg(feature = "kdf-pbkdf2")]
+pub fn pbkdf2_hmac_sha256(
+    password: &[u8],
+    salt: &[u8],
+    iterations: u32,
+    out: &mut [u8],
+) -> Result<()>;
+
+pub const PBKDF2_MAX_ITERATIONS: u32 = 10_000_000;
+pub const PBKDF2_SHA256_OUTPUT_LEN: usize = 32;
+```
+
+New in 1.3.0. PBKDF2 with HMAC-SHA256 (RFC 8018 section 5.2), the
+`Hi()` of SCRAM-SHA-256 (RFC 7677). Fills `out` (usually 32 bytes;
+each further 32 bytes costs another `iterations` rounds).
+
+- `iterations` must be 1 to `PBKDF2_MAX_ITERATIONS`. 0 is
+  `Error::InvalidInput`; above the ceiling is `Error::LimitExceeded`,
+  returned before any work, so a peer that picks the count (a SCRAM
+  server, a stored hash) cannot make one call run for long. 10 million
+  iterations take about 0.65 s per 32-byte block on the reference
+  machine. Apply your own, tighter policy on top (smtp-net accepts
+  4,096 to 1,000,000).
+- An empty `out` is `Error::InvalidInput`. `out` is untouched on any
+  error.
+- Built on crypt-io's own HMAC over `sha2`: no extra dependency, no C,
+  works without `std`. Each iteration is two SHA-256 compressions on
+  precomputed key states (measured 1.3 to 1.6 times faster than
+  AWS-LC's PBKDF2 on the same machine).
+- With `zeroize`, the key-derived states and every intermediate block
+  are wiped before return. `out` is yours to wipe.
+
+```rust
+# #[cfg(feature = "kdf-pbkdf2")] {
+use crypt_io::kdf;
+let mut salted_password = [0u8; kdf::PBKDF2_SHA256_OUTPUT_LEN];
+kdf::pbkdf2_hmac_sha256(b"pencil", b"salt from the server", 4096, &mut salted_password)?;
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
+<a href="#top">↑ TOP</a>
+
 #### Choosing a KDF
 
 | Input | Use |
@@ -1483,10 +1538,13 @@ configuration.
 | Output of another KDF | [`kdf::hkdf_sha256`](#kdfhkdf_sha256) |
 | Password from a human | [`kdf::argon2_hash`](#kdfargon2_hash) |
 | PIN from a human | [`kdf::argon2_hash_with_params`](#kdfargon2_hash_with_params) (higher cost) |
+| SCRAM-SHA-256, or an existing PBKDF2 hash | [`kdf::pbkdf2_hmac_sha256`](#kdfpbkdf2_hmac_sha256) |
 
 HKDF and Argon2id are not interchangeable. HKDF is fast and
 assumes high-entropy input. Argon2id is deliberately slow and
 assumes low-entropy input that needs brute-force resistance.
+PBKDF2 is slow too, but not memory-hard: use it where a protocol
+or stored format requires it, not for new password storage.
 
 <a href="#top">↑ TOP</a>
 
@@ -1839,6 +1897,134 @@ expect more.
 
 ---
 
+### `sign` module
+
+New in 1.3.0. Digital signatures behind the `sign-ed25519` and
+`sign-rsa` features (off by default).
+
+| Algorithm | Type | Signature | Used by |
+|---|---|---|---|
+| Ed25519 (RFC 8032) | [`Ed25519SigningKey`](#ed25519signingkey) | 64 bytes | DKIM `ed25519-sha256` (RFC 8463), JOSE `EdDSA` |
+| RSA PKCS#1 v1.5 + SHA-256, 2048 to 8192 bits | [`RsaSigningKey`](#rsasigningkey) | modulus size | DKIM `rsa-sha256` (RFC 6376), JOSE `RS256` |
+
+**Backend.** AWS-LC through `aws-lc-rs` (the backend tls-net uses),
+behind crypt-io's own types so it can be swapped later without an API
+change.
+
+**Build cost.** AWS-LC is C and assembly:
+
+- a C compiler on every platform;
+- on Windows x86-64, NASM on the `PATH`, or the `prebuilt-nasm`
+  feature;
+- `std` (the features turn it on);
+- the first build of `aws-lc-sys` takes about 16 s (debug) / 24 s
+  (release) on a 32-core machine; later builds reuse it.
+
+`aws-lc-rs` 1.19 declares Rust 1.71, so the features keep the crate's
+1.85 MSRV. The default build and `preset-all` do not include them.
+
+**Key handling.** Private keys stay inside AWS-LC, which cleanses
+every allocation when it frees it; crypt-io keeps no copy. The bytes
+you parse from (PKCS#8, PKCS#1, a seed) remain in your buffer: wipe
+them with [`wipe`](#wipe--wipe_vec) once the key is built. `Debug`
+prints the public key (Ed25519) or the modulus size (RSA), never
+private material. Both types are `Send + Sync`.
+
+**Not in 1.3:** verification (use `aws-lc-rs` or `ring`), key
+generation, RSA-PSS, ECDSA.
+
+<a href="#top">↑ TOP</a>
+
+#### `Ed25519SigningKey`
+
+```rust
+#[cfg(feature = "sign-ed25519")]
+pub struct Ed25519SigningKey { /* AWS-LC key */ }
+
+impl Ed25519SigningKey {
+    pub fn from_pkcs8_der(der: &[u8]) -> Result<Self>;   // PKCS#8 v1 or v2
+    pub fn from_seed(seed: &[u8; 32]) -> Result<Self>;   // RFC 8032 private seed
+    pub fn sign(&self, message: &[u8]) -> [u8; 64];
+    pub fn public_key(&self) -> [u8; 32];
+}
+// Debug (public key only); Send + Sync.
+
+pub const ED25519_SIGNATURE_LEN: usize = 64;
+pub const ED25519_PUBLIC_KEY_LEN: usize = 32;
+pub const ED25519_SEED_LEN: usize = 32;
+```
+
+Pure Ed25519: signatures are deterministic. A PKCS#8 v2 document that
+carries a public key must match the private key, or parsing fails
+with `Error::Sign`. `from_seed` cannot tell a seed from a public key
+(both 32 bytes); prefer `from_pkcs8_der`. `sign` panics only if
+AWS-LC fails internally (the `aws-lc-rs` contract), which does not
+happen for a valid key.
+
+For DKIM `ed25519-sha256`, sign the 32-byte SHA-256 of the
+canonicalized header data, and publish `public_key()` in base64 as
+the `p=` value. The RFC 8463 example signature is reproduced bit for
+bit in `tests/sign.rs`.
+
+```rust
+# #[cfg(feature = "sign-ed25519")] {
+use crypt_io::sign::Ed25519SigningKey;
+let key = Ed25519SigningKey::from_seed(&[0x42; 32])?;
+let signature = key.sign(b"message");
+assert_eq!(signature, key.sign(b"message"));   // deterministic
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
+<a href="#top">↑ TOP</a>
+
+#### `RsaSigningKey`
+
+```rust
+#[cfg(feature = "sign-rsa")]
+pub struct RsaSigningKey { /* AWS-LC key, cached public key */ }
+
+impl RsaSigningKey {
+    pub fn from_pkcs8_der(der: &[u8]) -> Result<Self>;   // "BEGIN PRIVATE KEY"
+    pub fn from_pkcs1_der(der: &[u8]) -> Result<Self>;   // "BEGIN RSA PRIVATE KEY"
+    pub fn sign_pkcs1v15_sha256(&self, message: &[u8]) -> Result<Vec<u8>>;
+    pub fn modulus_bits(&self) -> u32;
+    pub fn public_key_der(&self) -> &[u8];               // SubjectPublicKeyInfo
+}
+// Debug (modulus size only); Send + Sync.
+
+pub const RSA_MIN_MODULUS_BITS: u32 = 2048;
+pub const RSA_MAX_MODULUS_BITS: u32 = 8192;
+```
+
+RSASSA-PKCS1-v1_5 with SHA-256 (RFC 8017 section 8.2), signed with
+AWS-LC's blinded, constant-time RSA. `message` is the data, hashed
+inside. The signature is as long as the modulus.
+
+Keys below 2048 bits are refused when parsed
+(`Error::Sign("key rejected: RSA modulus smaller than 2048 bits")`),
+as are keys above 8192 bits. DKIM verifiers still accept 1024-bit
+keys (RFC 8301 sets 1024 as the floor), but crypt-io will not sign
+with one; rotate to 2048 bits or Ed25519. `public_key_der()` is the
+DER `SubjectPublicKeyInfo`: base64 it for a DKIM `p=` value or wrap
+it in `-----BEGIN PUBLIC KEY-----`.
+
+```rust,no_run
+# #[cfg(feature = "sign-rsa")] {
+use crypt_io::sign::RsaSigningKey;
+let mut der = std::fs::read("dkim-private.der").unwrap();
+let key = RsaSigningKey::from_pkcs8_der(&der)?;
+crypt_io::wipe(&mut der);
+let signature = key.sign_pkcs1v15_sha256(b"data")?;
+assert_eq!(signature.len() * 8, key.modulus_bits() as usize);
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
+<a href="#top">↑ TOP</a>
+
+---
+
 ### `wipe` / `wipe_vec`
 
 ```rust
@@ -1932,6 +2118,7 @@ pub enum Error {
     Io(&'static str),             // 1.1.0
     InvalidInput(&'static str),   // 1.1.0
     LimitExceeded(&'static str),  // 1.1.0
+    Sign(&'static str),           // 1.3.0
 }
 ```
 
@@ -2078,8 +2265,12 @@ caller's responsibility to keep AAD addressable on the decrypt side
   practice) / KDF parameter, PHC or policy failure.
 - **`Io`** *(1.1.0)* — file-helper I/O failure.
 - **`InvalidInput`** *(1.1.0)* — an argument the call cannot accept.
-- **`LimitExceeded`** *(1.1.0)* — an encrypt-side size limit; not a
-  sign of tampering.
+- **`LimitExceeded`** *(1.1.0)* — an encrypt-side size limit (or,
+  since 1.3.0, a PBKDF2 iteration count above the ceiling); not a sign
+  of tampering.
+- **`Sign`** *(1.3.0)* — a signing key was rejected when parsed (bad
+  encoding, wrong algorithm, RSA modulus outside 2048 to 8192 bits), or
+  the signing backend failed.
 
 <a href="#top">↑ TOP</a>
 
