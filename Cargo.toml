@@ -1,6 +1,6 @@
 [package]
 name = "crypt-io"
-version = "1.2.2"
+version = "1.3.0"
 edition = "2024"
 rust-version = "1.85"
 readme = "README.md"
@@ -10,7 +10,7 @@ authors = [
     "James Gober <me@jamesgober.com>"
 ]
 
-description = "AEAD encryption (ChaCha20-Poly1305, AES-256-GCM), hashing (BLAKE3, SHA-2), MAC (HMAC, BLAKE3 keyed), and KDF (HKDF, Argon2id) for Rust. Algorithm-agile. RustCrypto-backed primitives with REPS discipline. Simple API. Sub-microsecond throughput."
+description = "AEAD encryption (ChaCha20-Poly1305, AES-256-GCM), hashing (BLAKE3, SHA-2), MAC (HMAC, BLAKE3 keyed), KDF (HKDF, Argon2id, PBKDF2) and opt-in signatures (Ed25519, RSA) for Rust. Algorithm-agile. RustCrypto-backed primitives with REPS discipline. Simple API. Sub-microsecond throughput."
 
 # 5 keywords for search optimization
 keywords = [
@@ -99,7 +99,21 @@ mac-all = ["mac-hmac", "mac-blake3"]
 # KDF (Key Derivation Functions)
 kdf-hkdf = ["hash-sha2"]              # HKDF (key derivation)
 kdf-argon2 = ["dep:argon2"]           # Argon2id (password hashing)
-kdf-all = ["kdf-hkdf", "kdf-argon2"]
+kdf-pbkdf2 = ["hash-sha2"]            # PBKDF2-HMAC-SHA256 (SCRAM, legacy formats; 1.3.0)
+kdf-all = ["kdf-hkdf", "kdf-argon2", "kdf-pbkdf2"]
+
+# Signatures (1.3.0). Off by default: these pull AWS-LC (C + assembly)
+# through `aws-lc-rs` and need `std`. Build cost: a C compiler on every
+# platform, NASM or `prebuilt-nasm` on Windows x86-64, about 15-25 s
+# of extra build time on a fast machine. Not part of `preset-all`, which
+# stays pure Rust.
+sign-ed25519 = ["std", "dep:aws-lc-rs"]                     # Ed25519 (RFC 8032)
+sign-rsa = ["std", "dep:aws-lc-rs", "aws-lc-rs?/ring-io"]   # RSA PKCS#1 v1.5 with SHA-256, 2048-8192 bits
+sign-all = ["sign-ed25519", "sign-rsa"]
+# Windows x86-64 without NASM: use the assembly objects that ship with
+# aws-lc-sys instead of assembling them. Does nothing without a `sign-*`
+# feature.
+prebuilt-nasm = ["aws-lc-rs?/prebuilt-nasm"]
 
 # Stream/file encryption (chunked AEAD with STREAM-construction).
 # Pulls both AEAD backends so callers can pick either at runtime, and
@@ -146,6 +160,13 @@ getrandom = { version = "0.4", optional = true, default-features = false }
 # Optional secret zeroing
 zeroize = { version = "1.7", optional = true, default-features = false, features = ["alloc"] }
 
+# Signing backend (`sign-*` features only; never in the default build).
+# AWS-LC, the same backend tls-net uses. It is C and assembly, so it
+# needs a C compiler, and on Windows x86-64 either NASM or the
+# `prebuilt-nasm` feature. `ring-io` (pure Rust, `untrusted`) exposes
+# the RSA modulus so `modulus_bits` is exact.
+aws-lc-rs = { version = "1.19", optional = true, default-features = false, features = ["aws-lc-sys"] }
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1"
@@ -177,6 +198,16 @@ harness = false
 [[bench]]
 name = "stream"
 harness = false
+
+[[bench]]
+name = "pbkdf2"
+harness = false
+required-features = ["kdf-pbkdf2"]
+
+[[bench]]
+name = "sign"
+harness = false
+required-features = ["sign-all"]
 
 [profile.release]
 opt-level = 3

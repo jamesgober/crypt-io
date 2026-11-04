@@ -82,6 +82,11 @@ pub enum Error {
     /// reported these as [`Error::AuthenticationFailed`] or
     /// [`Error::InvalidCiphertext`].
     LimitExceeded(&'static str),
+
+    /// A signing key was rejected when it was parsed (bad encoding,
+    /// wrong algorithm, RSA modulus outside 2048 to 8192 bits), or the
+    /// signing backend failed. The string says which. New in 1.3.0.
+    Sign(&'static str),
 }
 
 /// Type alias for `core::result::Result<T, Error>`.
@@ -107,6 +112,7 @@ impl fmt::Display for Error {
             Self::Io(why) => write!(f, "I/O error: {why}"),
             Self::InvalidInput(why) => write!(f, "invalid input: {why}"),
             Self::LimitExceeded(why) => write!(f, "limit exceeded: {why}"),
+            Self::Sign(why) => write!(f, "signature operation failed: {why}"),
         }
     }
 }

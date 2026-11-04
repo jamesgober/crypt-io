@@ -37,7 +37,12 @@ crypt-io/
 │   ├── kdf/              ← Key Derivation Functions
 │   │   ├── mod.rs        ← Module docs, re-exports
 │   │   ├── hkdf_impl.rs  ← HKDF-SHA256 / HKDF-SHA512
+│   │   ├── pbkdf2_impl.rs← PBKDF2-HMAC-SHA256 on raw SHA-256 states (1.3.0)
 │   │   └── argon2_impl.rs← Argon2id + Argon2Params + Argon2Policy + PHC check
+│   ├── sign/             ← Signatures over AWS-LC (1.3.0, opt-in)
+│   │   ├── mod.rs        ← Module docs, re-exports, backend error mapping
+│   │   ├── ed25519.rs    ← Ed25519SigningKey
+│   │   └── rsa.rs        ← RsaSigningKey (PKCS#1 v1.5, SHA-256)
 │   └── stream/           ← Chunked AEAD with STREAM construction
 │       ├── mod.rs        ← Re-exports, public constants
 │       ├── frame.rs      ← Header layout, v2 key schedule, per-chunk nonce
@@ -45,10 +50,11 @@ crypt-io/
 │       ├── encryptor.rs  ← StreamEncryptor (with _into variants)
 │       ├── decryptor.rs  ← StreamDecryptor (with _into variants)
 │       └── file.rs       ← encrypt_file / decrypt_file (std-only)
-├── benches/              ← criterion benches (aead, hash, mac, kdf, stream)
+├── benches/              ← criterion benches (aead, hash, mac, kdf, stream, pbkdf2, sign)
 ├── examples/             ← runnable examples (aead, mac, kdf, stream, profile_alloc)
 ├── fuzz/                 ← cargo-fuzz workspace (9 targets)
-├── tests/                ← integration tests (stream, into_apis, kat, regressions, properties, v1_1)
+├── tests/                ← integration tests (stream, into_apis, kat, regressions, properties, v1_1,
+│                            hmac_hkdf, pbkdf2, sign; generated vectors in tests/data/)
 └── docs/                 ← public docs (API, PERFORMANCE, SECURITY, this file, ...)
 ```
 
@@ -118,8 +124,25 @@ Two algorithms with different threat models:
   variant and costs are checked against an `Argon2Policy` before
   any work is done.
 
-The module overview explicitly distinguishes the two and points
+- **PBKDF2-HMAC-SHA256** (`pbkdf2_hmac_sha256`, 1.3.0) for SCRAM
+  and existing PBKDF2 hashes. `U_1` goes through the in-crate HMAC;
+  every later round is two `sha2::block_api::compress256` calls on
+  the precomputed `K ^ ipad` / `K ^ opad` states and a block whose
+  padding never changes (a 32-byte message after a 64-byte key
+  block). The iteration count is capped before any work.
+
+The module overview explicitly distinguishes them and points
 callers at the right one for their input shape.
+
+### `sign/` — signatures (1.3.0, opt-in)
+
+`Ed25519SigningKey` and `RsaSigningKey` wrap `aws-lc-rs` key pairs.
+No `aws-lc-rs` type is public: backend errors map to `Error::Sign`
+in one place (`sign::key_rejected`), so the backend can be replaced
+in 1.x. `RsaSigningKey` computes its SPKI encoding and exact modulus
+size once, at parse time, so the accessors cannot fail. The module
+needs `std` and a C toolchain (AWS-LC), which is why it is behind
+features that neither the default set nor `preset-all` enables.
 
 ### `stream/` — chunked AEAD for data that doesn't fit in memory
 
@@ -223,6 +246,7 @@ Every dependency is a deliberate choice. The full list:
 | `subtle` | Constant-time equality for `Tag` and the HMAC checks. |
 | `mod-rand` *(with `std`)* | Portfolio CSPRNG (Tier 3 = OS-backed). |
 | `getrandom` *(opt)* | OS CSPRNG for `no_std` builds, or in place of `mod-rand`. |
+| `aws-lc-rs` *(opt, `sign-*`)* | Ed25519 and RSA signing (AWS-LC, the backend tls-net uses). Default features off; `aws-lc-sys` on, plus `ring-io` (pure Rust, `untrusted`) for `sign-rsa` so the modulus size is exact. Rust 1.71. Needs a C compiler, and NASM or `prebuilt-nasm` on Windows x86-64. |
 | `zeroize` *(opt)* | Volatile writes for `wipe` / `wipe_vec`; wiping of the stream types' key copy and buffer, the BLAKE3 keyed MAC state and `_into` failure buffers; enables upstream `zeroize` in `aes`, `aes-gcm`, `sha2`, `argon2`, `blake3` (default on). |
 
 All RustCrypto and BLAKE3 dependencies have their default
@@ -269,8 +293,9 @@ throughput on the AEAD paths.
 
 Documented elsewhere but worth restating in one place:
 
-- **No asymmetric crypto** (RSA, ECDSA, Ed25519, X25519). Use
-  the relevant focused crate.
+- **No asymmetric encryption or key exchange** (RSA-OAEP, ECDH,
+  X25519) and no signature verification yet. Signing (Ed25519, RSA)
+  is in `sign` since 1.3.0, behind features.
 - **No PGP / GPG**. Use `sequoia-openpgp`.
 - **No TLS**. Use `rustls`.
 - **No general RNG surface**. Use `mod-rand` or `getrandom`

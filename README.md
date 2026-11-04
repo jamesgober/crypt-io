@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-    <b>AEAD encryption, hashing, and message authentication for Rust</b>
+    <b>AEAD encryption, hashing, message authentication, key derivation and signatures for Rust</b>
     <br>
     <i>Algorithm-agile. RustCrypto-backed primitives. Simple API. REPS-disciplined.</i>
 </p>
@@ -29,7 +29,7 @@
 </p>
 
 <p>
-    Unlike monolithic crypto crates that try to be everything, <strong>crypt-io</strong> stays focused. No asymmetric crypto, no PGP, no TLS — those are different problems best solved by purpose-built crates. <strong>crypt-io</strong> is the foundation primitive that handles the 95% case with a clean API where the easy path is also the secure path: constant-time verification for MACs, fresh nonces per call for AEAD, redaction-clean errors, and a hash module that deliberately won't let you accidentally use a raw hash as a MAC.
+    Unlike monolithic crypto crates that try to be everything, <strong>crypt-io</strong> stays focused. No asymmetric encryption or key exchange, no PGP, no TLS — those are different problems best solved by purpose-built crates. Signatures (Ed25519, RSA) are available behind opt-in features since 1.3.0. <strong>crypt-io</strong> is the foundation primitive that handles the 95% case with a clean API where the easy path is also the secure path: constant-time verification for MACs, fresh nonces per call for AEAD, redaction-clean errors, and a hash module that deliberately won't let you accidentally use a raw hash as a MAC.
 </p>
 
 <hr>
@@ -47,7 +47,7 @@ Or:
 cargo add crypt-io
 ```
 
-**MSRV:** Rust 1.85 (edition 2024). Older toolchains will not build. On Rust 1.85 / 1.86 in a workspace that still uses resolver 2, run `cargo update -p ctutils --precise 0.4.2` (a dependency of `digest` 0.11 whose newest release needs 1.87).
+**MSRV:** Rust 1.85 (edition 2024). Older toolchains will not build. With an MSRV-aware resolver (edition 2024 / resolver 3) Cargo picks compatible versions by itself. In a workspace that still uses resolver 2 on Rust 1.85 to 1.87, run `cargo update -p sha2 --precise 0.11.0` (`sha2` 0.11.1 needs 1.88).
 
 **`no_std`:** since 1.1.0, `default-features = false` builds as `no_std` + `alloc`; add the `getrandom` feature for anything that needs fresh randomness. See [`docs/PLATFORM-NOTES.md`](docs/PLATFORM-NOTES.md#no_std-110).
 
@@ -172,6 +172,15 @@ kdf::argon2_check(&phc, b"correct horse battery staple")?;   // Err(Authenticati
 
 The PHC string's variant and costs are checked against a limit before any work is done; use `kdf::argon2_check_with_policy` with an `Argon2Policy` to raise or lower those limits.
 
+PBKDF2-HMAC-SHA256 where a protocol fixes it, such as SCRAM-SHA-256 (feature `kdf-pbkdf2`, pure Rust, 1.3.0):
+
+```rust,ignore
+use crypt_io::kdf;
+
+let mut salted_password = [0u8; 32];
+kdf::pbkdf2_hmac_sha256(b"pencil", &salt, 4096, &mut salted_password)?;   // at most kdf::PBKDF2_MAX_ITERATIONS
+```
+
 ### Encrypt a file
 
 ```rust,no_run
@@ -199,6 +208,29 @@ assert!(body.is_empty());
 
 With the default `zeroize` feature the writes are volatile, so the compiler cannot drop them. Both functions work without `std` (`default-features = false, features = ["zeroize"]`). New in 1.2.0.
 
+### Signatures (opt-in, 1.3.0)
+
+```toml
+[dependencies]
+crypt-io = { version = "1.3", features = ["sign-ed25519", "sign-rsa"] }
+```
+
+```rust,ignore
+use crypt_io::sign::{Ed25519SigningKey, RsaSigningKey};
+
+// Ed25519 (RFC 8032): DKIM ed25519-sha256, JOSE EdDSA.
+let key = Ed25519SigningKey::from_pkcs8_der(&pkcs8_der)?;
+let signature: [u8; 64] = key.sign(message);
+let dns_p_value: [u8; 32] = key.public_key();
+
+// RSA PKCS#1 v1.5 with SHA-256, 2048 to 8192 bits: DKIM rsa-sha256, JOSE RS256.
+let rsa = RsaSigningKey::from_pkcs1_der(&pkcs1_der)?;    // or from_pkcs8_der
+let signature: Vec<u8> = rsa.sign_pkcs1v15_sha256(message)?;
+let spki: &[u8] = rsa.public_key_der();                  // SubjectPublicKeyInfo
+```
+
+The signing features use AWS-LC (through `aws-lc-rs`, the backend tls-net uses), which is C and assembly: they need a C compiler, and on Windows x86-64 either NASM or the `prebuilt-nasm` feature. The first build takes about 15 to 25 seconds longer. The default build does not include them and stays pure Rust. Private keys are cleansed when dropped, `Debug` never prints them, and RSA keys below 2048 bits are refused.
+
 ### Usage limits
 
 - **Single-shot ChaCha20-Poly1305 / AES-256-GCM:** at most 2^32 messages per key (random 96-bit nonces). Use XChaCha20-Poly1305 above that.
@@ -214,8 +246,8 @@ See [`docs/API.md`](docs/API.md) for the full reference.
 
 **crypt-io** is intentionally focused:
 
-- **One job:** symmetric crypto. Done well.
-- **No reinvention.** Primitives come from RustCrypto and BLAKE3 (battle-tested, widely audited).
+- **Symmetric crypto first,** done well; signatures behind opt-in features.
+- **No reinvention.** Primitives come from RustCrypto and BLAKE3 (battle-tested, widely audited), and from AWS-LC for the opt-in signatures.
 - **Simple API.** Encrypt in two lines. Hash in one. The easy path is the secure path.
 - **Algorithm agility.** ChaCha20-Poly1305 by default, AES-256-GCM when you want hardware acceleration, XChaCha20-Poly1305 for very high message counts. Same `Crypt` API either way.
 - **Constant-time discipline.** MAC checks use upstream constant-time comparators, never `==`, and `Tag` makes `==` constant-time when you compare tags yourself.
@@ -226,7 +258,8 @@ See [`docs/API.md`](docs/API.md) for the full reference.
 What we explicitly do NOT do:
 
 - Implement crypto primitives from scratch (use battle-tested upstreams)
-- Asymmetric crypto (RSA, ECDSA, Ed25519) — different problem, separate crate
+- Asymmetric encryption and key exchange (RSA-OAEP, ECDH, X25519)
+- Signature verification (1.3 signs only; verify with `aws-lc-rs` or `ring` for now)
 - PGP/GPG (use `sequoia-openpgp`)
 - TLS (use `rustls`)
 - Random number generation (use `mod-rand`)
@@ -244,13 +277,13 @@ What we explicitly do NOT do:
 - Authenticating messages, audit logs, signed records
 - Hashing for integrity checks, fingerprinting, content-addressed storage
 - HMAC signatures for outgoing requests (AWS SigV4, JWT HS256/HS512, webhooks)
+- DKIM and JWT signing with Ed25519 or RSA, and SCRAM-SHA-256 client authentication (PBKDF2)
 - Composing with `key-vault` for in-memory key handling
 
 **Wrong fit:**
 
 - TLS connections — use [`rustls`](https://crates.io/crates/rustls)
 - OpenPGP interop — use [`sequoia-openpgp`](https://crates.io/crates/sequoia-openpgp)
-- Digital signatures — use [`ed25519-dalek`](https://crates.io/crates/ed25519-dalek)
 - Key exchange — use [`x25519-dalek`](https://crates.io/crates/x25519-dalek)
 - Random number generation — use [`mod-rand`](https://crates.io/crates/mod-rand)
 
@@ -286,7 +319,7 @@ Reproduce: `cargo bench --all-features` (numbers vary by hardware — see PERFOR
 - [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) — measured throughput, contract-check matrix, parameter-choice guidance.
 - [`docs/FILE_FORMAT.md`](docs/FILE_FORMAT.md) — stream (v1, v2) and sealed wire format specs, with test vectors.
 - [`CHANGELOG.md`](CHANGELOG.md) — per-version Added / Changed / Security entries.
-- [`docs/release/`](docs/release) — per-release notes (`v0.2.0.md`, `v0.3.0.md`, …, `v1.2.2.md`).
+- [`docs/release/`](docs/release) — per-release notes (`v0.2.0.md`, `v0.3.0.md`, …, `v1.3.0.md`).
 
 <hr>
 

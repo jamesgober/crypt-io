@@ -116,6 +116,11 @@ choice. Switch when you have a reason.
 ### Windows
 
 - **`mod_rand::tier3`** sources from `BCryptGenRandom`.
+- **`sign-*` features (1.3.0)** build AWS-LC with the MSVC C
+  compiler and need NASM on the `PATH` for x86-64. Without NASM,
+  enable `prebuilt-nasm` (crypt-io forwards it to `aws-lc-sys`, which
+  then links assembly objects it ships). Without either the
+  `aws-lc-sys` build script fails with "NASM command not found".
 - **No issues with `path` separators** in the file helpers —
   `std::path::Path` handles the conversion.
 - **Line endings:** the repo uses LF throughout (see
@@ -156,14 +161,16 @@ crypt-io = { version = "1.2", default-features = false, features = [
 ] }
 ```
 
-You need a global allocator (`alloc`). What works without `std`:
+You need a global allocator (`alloc`). `kdf-pbkdf2` (1.3.0) works
+without `std`; the `sign-*` features do not (AWS-LC needs `std`, and
+the features turn it on). What works without `std`:
 
 | Works with no extra setup | Needs the `getrandom` feature (fresh randomness) | Needs `std` |
 |---|---|---|
 | `Crypt::decrypt*`, `Crypt::open*`, `Crypt::sealed_algorithm` | `Crypt::encrypt*`, `Crypt::seal*` | `stream::encrypt_file` |
 | `StreamDecryptor` (v1 and v2) | `StreamEncryptor::new*` | `stream::decrypt_file` |
 | `hash::*`, `mac::*` (compute and `*_check`) | `kdf::argon2_hash*` | |
-| `kdf::hkdf_*`, `kdf::argon2_check*`, `Argon2Params::validate` | `generate_key` (also needs `zeroize`) | |
+| `kdf::hkdf_*`, `kdf::pbkdf2_hmac_sha256` (1.3.0), `kdf::argon2_check*`, `Argon2Params::validate` | `generate_key` (also needs `zeroize`) | |
 | `Tag`, `Error` (implements `core::error::Error`) | | |
 | `wipe`, `wipe_vec` (1.2.0) | | |
 

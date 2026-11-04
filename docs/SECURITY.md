@@ -183,13 +183,43 @@ note in `hash` both explicitly forbid `tag == expected` /
 - **BLAKE3 keyed** for maximum throughput on hardware that
   doesn't have SHA-NI — typically 4-10× faster than HMAC-SHA256.
 
-### KDF: HKDF + Argon2id
+### KDF: HKDF + Argon2id + PBKDF2
 
 - **HKDF** (RFC 5869) for deriving subkeys from high-entropy
   input keying material.
 - **Argon2id** (RFC 9106) for hashing passwords. OWASP-
   recommended parameter set by default; tuneable via
   `Argon2Params` for callers with different cost targets.
+- **PBKDF2-HMAC-SHA256** (RFC 8018, 1.3.0, feature `kdf-pbkdf2`)
+  only where a protocol or stored format requires it: SCRAM-SHA-256
+  (RFC 7677) and existing PBKDF2 hashes. It is not memory-hard, so
+  GPUs brute-force it far more cheaply than Argon2id; do not choose
+  it for new password storage. The iteration count is capped at
+  `kdf::PBKDF2_MAX_ITERATIONS` (10,000,000, about 0.65 s per
+  32-byte block on the reference machine) and checked before any
+  work, so a SCRAM server or a stored hash cannot pick a count that
+  ties up a thread for minutes. Callers should apply a tighter
+  policy of their own.
+
+### Signatures: Ed25519 + RSA PKCS#1 v1.5 (1.3.0, opt-in)
+
+- **Ed25519** (RFC 8032, feature `sign-ed25519`) is the
+  recommended choice: deterministic, no per-signature randomness
+  to get wrong, 32-byte keys.
+- **RSA PKCS#1 v1.5 with SHA-256** (feature `sign-rsa`) for peers
+  that require it (DKIM `rsa-sha256`, JOSE `RS256`). Keys from
+  2048 to 8192 bits only: smaller keys are refused when parsed (NIST
+  SP 800-131A disallows signing with them). Signing is AWS-LC's
+  blinded, constant-time RSA. crypt-io does not use the `rsa` crate,
+  so RUSTSEC-2023-0071 (Marvin timing attack in `rsa`) does not
+  apply.
+- The math is AWS-LC (C and assembly, maintained by AWS) via
+  `aws-lc-rs`, the same backend as tls-net and rustls's default
+  provider. crypt-io uses the regular (non-FIPS) build.
+  Private keys never leave AWS-LC memory, which is cleansed on free;
+  crypt-io keeps no copy and `Debug` prints no private material.
+- 1.3.0 signs only; verification, key generation, RSA-PSS and ECDSA
+  are not provided yet.
 
 ### Explicitly NOT shipped
 
@@ -198,9 +228,13 @@ note in `hash` both explicitly forbid `tag == expected` /
 - **No RC4** — broken.
 - **No ECB mode** — provides no semantic security.
 - **No unauthenticated CBC** — AEAD only.
-- **No PBKDF2** — Argon2id is the modern replacement. Use the
-  `pbkdf2` crate directly if you need legacy compatibility.
-- **No bcrypt** — same. Use the `bcrypt` crate.
+- **No PBKDF2 with SHA-1 or SHA-512** — only PBKDF2-HMAC-SHA256
+  ships (1.3.0), for SCRAM and existing hashes. Argon2id stays the
+  choice for new password storage.
+- **No bcrypt** — Argon2id supersedes it. Use the `bcrypt` crate for
+  existing hashes.
+- **No RSA below 2048 bits, no RSA encryption (OAEP / PKCS#1 v1.5
+  encryption), no DSA.**
 
 <hr>
 
@@ -237,8 +271,10 @@ and confidentiality against:
   large enough to run Grover on 256-bit symmetric keys (~2^128
   effective work). Not currently a threat; not in scope for
   1.0.
-- **Post-quantum asymmetric** algorithms (Kyber, Dilithium) —
-  this is a symmetric-only library. Use a focused PQ crate.
+- **Post-quantum asymmetric** algorithms (Kyber, Dilithium) and
+  asymmetric encryption or key exchange. The only asymmetric
+  operation crypt-io offers is signing (1.3.0, opt-in). Use a
+  focused crate for the rest.
 
 ### Trust boundaries
 
