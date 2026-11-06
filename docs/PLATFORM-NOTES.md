@@ -121,6 +121,11 @@ choice. Switch when you have a reason.
   enable `prebuilt-nasm` (crypt-io forwards it to `aws-lc-sys`, which
   then links assembly objects it ships). Without either the
   `aws-lc-sys` build script fails with "NASM command not found".
+- **Ed25519 is about 10 times slower on Windows (MSVC) than on
+  Linux** with the same CPU: 45 µs against 4.8 µs to sign, 150 µs
+  against 23 µs to check (measured, see `PERFORMANCE.md`). AWS-LC's
+  fast Ed25519 assembly (s2n-bignum) is not used in the MSVC build.
+  RSA is close on both. Deploy signing-heavy services on Linux.
 - **No issues with `path` separators** in the file helpers —
   `std::path::Path` handles the conversion.
 - **Line endings:** the repo uses LF throughout (see

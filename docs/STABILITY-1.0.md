@@ -179,6 +179,18 @@ Frozen free functions and types (feature-gated as documented in
   deterministic), checked against RFC 8032, RFC 8463 and NIST CAVP
   vectors.
 
+### Added in 1.4.0 (covered by the same promise)
+
+- `sign::Ed25519PublicKey` (`from_bytes`, `check`, `to_bytes`)
+  *(feature `sign-ed25519`)*.
+- `sign::RsaPublicKey` (`from_der`, `from_der_allow_1024`,
+  `check_pkcs1v15_sha256`, `modulus_bits`) and
+  `sign::RSA_MIN_MODULUS_BITS_LEGACY` *(feature `sign-rsa`)*.
+- A failed check is `Error::AuthenticationFailed`; a key that cannot
+  be used is `Error::Sign`. Which key encodings and signature encodings
+  are accepted is part of the promise, pinned by `tests/verify.rs`
+  (NIST CAVP SigVer15, Wycheproof, RFC 8463).
+
 ### Deprecated in 1.1.0 (kept for all of 1.x)
 
 - `mac::hmac_sha256_verify`, `mac::hmac_sha512_verify`,

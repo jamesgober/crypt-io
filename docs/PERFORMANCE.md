@@ -39,8 +39,10 @@ steady-state allocations.
 | KDF          | Argon2id (test params) | 8.2 µs / hash | — | — |
 | KDF          | PBKDF2-HMAC-SHA256, 4,096 iterations (1.3.0) | 265 µs | — | — |
 | KDF          | PBKDF2-HMAC-SHA256, 600,000 iterations (1.3.0) | 38.9 ms | — | — |
-| Sign         | Ed25519, 32 B message (1.3.0) | 42 µs | — | — |
-| Sign         | RSA-2048 PKCS#1 v1.5 SHA-256 (1.3.0) | 205 µs | — | — |
+| Sign         | Ed25519, 32 B message (Linux) | 4.8 µs | — | — |
+| Sign         | RSA-2048 PKCS#1 v1.5 SHA-256 (Linux) | 192 µs | — | — |
+| Check        | Ed25519, 32 B message (Linux, 1.4.0) | 23 µs | — | — |
+| Check        | RSA-2048 PKCS#1 v1.5 SHA-256 (Linux, 1.4.0) | 22 µs | — | — |
 | Stream `_into` | ChaCha20-Poly1305 | — | — | **1.40 GiB/s** |
 | Stream `_into` | AES-256-GCM | — | — | **1.54 GiB/s** |
 
@@ -342,19 +344,25 @@ rounds), crypt-io took 40 to 43 ms and AWS-LC's PBKDF2 (`aws-lc-rs`
 1.19) 52 to 71 ms for the same output: crypt-io was 1.27 to 1.65 times
 faster.
 
-### Signatures (1.3.0)
+### Signatures (1.3.0) and checks (1.4.0)
 
 `cargo bench --bench sign --features sign-all` (add `prebuilt-nasm`
-on Windows without NASM), same machine and conditions:
+on Windows without NASM). Same machine, 32-byte message, 2048-bit RSA
+key, other build sessions running in parallel:
 
-| Operation | Time |
-|---|---:|
-| `Ed25519SigningKey::sign`, 32-byte message | 42 µs |
-| `RsaSigningKey::sign_pkcs1v15_sha256`, 2048-bit key, 32-byte message | 205 µs |
+| Operation | Linux (WSL2, gcc) | Windows 11 (MSVC) |
+|---|---:|---:|
+| `Ed25519SigningKey::sign` | 4.8 µs | 47 µs |
+| `Ed25519PublicKey::check` | 23 µs | 153 µs |
+| `RsaSigningKey::sign_pkcs1v15_sha256` | 192 µs | 225 µs |
+| `RsaPublicKey::check_pkcs1v15_sha256` | 22 µs | 21 µs |
 
-Both are AWS-LC's cost; an A/B against calling `aws-lc-rs` directly
-measured the crypt-io wrapper within noise (30 to 37 µs against 33 to
-43 µs per Ed25519 signature).
+All of it is AWS-LC's cost: A/B runs against `aws-lc-rs` called
+directly measured the crypt-io wrapper within noise for signing and
+checking. On Windows, AWS-LC's MSVC build does not use its s2n-bignum
+Ed25519 assembly, which makes Ed25519 about 10 times slower there; RSA
+is close on both. (1.3.0's notes gave the Windows Ed25519 figure only,
+42 µs.) Keys are parsed once, outside the timed loop.
 
 <a href="#top">↑ TOP</a>
 

@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-    <i>Complete public-API reference for <code>crypt-io</code> 1.3.0.</i>
+    <i>Complete public-API reference for <code>crypt-io</code> 1.4.0.</i>
     <br>
     <i>For per-version notes see <a href="../CHANGELOG.md"><code>CHANGELOG.md</code></a>.</i>
 </p>
@@ -93,7 +93,9 @@
     - [Stream wire format](#stream-wire-format)
   - [`sign` module (1.3.0)](#sign-module)
     - [`Ed25519SigningKey`](#ed25519signingkey)
+    - [`Ed25519PublicKey` (1.4.0)](#ed25519publickey)
     - [`RsaSigningKey`](#rsasigningkey)
+    - [`RsaPublicKey` (1.4.0)](#rsapublickey)
   - [`wipe` / `wipe_vec` (1.2.0)](#wipe--wipe_vec)
   - [`Tag`](#tag)
   - [`Error`](#error)
@@ -113,7 +115,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-crypt-io = "1.3"
+crypt-io = "1.4"
 ```
 
 ### Install via terminal
@@ -153,8 +155,8 @@ surface. Defaults give the full toolkit.
 | `kdf-argon2` | ✅ | [`kdf::argon2_hash`](#kdfargon2_hash) / [`kdf::argon2_check`](#kdfargon2_check) / [`Argon2Policy`](#argon2policy) / [`Argon2Params`](#argon2params). |
 | `kdf-pbkdf2` |  | 1.3.0. [`kdf::pbkdf2_hmac_sha256`](#kdfpbkdf2_hmac_sha256) (SCRAM-SHA-256, RFC 8018). Pure Rust, `no_std`. |
 | `kdf-all` |  | HKDF, Argon2id and (1.3.0) PBKDF2. |
-| `sign-ed25519` |  | 1.3.0. [`sign::Ed25519SigningKey`](#ed25519signingkey). Pulls AWS-LC (C + assembly) and `std`; see [`sign` module](#sign-module) for the build cost. |
-| `sign-rsa` |  | 1.3.0. [`sign::RsaSigningKey`](#rsasigningkey) (PKCS#1 v1.5, SHA-256, 2048 to 8192 bits). Same cost as `sign-ed25519`. |
+| `sign-ed25519` |  | 1.3.0. [`sign::Ed25519SigningKey`](#ed25519signingkey); 1.4.0 [`sign::Ed25519PublicKey`](#ed25519publickey). Pulls AWS-LC (C + assembly) and `std`; see [`sign` module](#sign-module) for the build cost. |
+| `sign-rsa` |  | 1.3.0. [`sign::RsaSigningKey`](#rsasigningkey) (PKCS#1 v1.5, SHA-256, 2048 to 8192 bits); 1.4.0 [`sign::RsaPublicKey`](#rsapublickey). Same cost as `sign-ed25519`. |
 | `sign-all` |  | 1.3.0. Both signature algorithms. |
 | `prebuilt-nasm` |  | 1.3.0. Windows x86-64 without NASM: use the assembled objects shipped with `aws-lc-sys`. Does nothing without a `sign-*` feature. |
 | `stream` | ✅ | [`StreamEncryptor`](#streamencryptor) / [`StreamDecryptor`](#streamdecryptor) + [`encrypt_file`](#streamencrypt_file) / [`decrypt_file`](#streamdecrypt_file). Pulls both AEAD backends and HKDF-SHA256 (format v2 key schedule). |
@@ -1899,13 +1901,18 @@ expect more.
 
 ### `sign` module
 
-New in 1.3.0. Digital signatures behind the `sign-ed25519` and
-`sign-rsa` features (off by default).
+Digital signatures behind the `sign-ed25519` and `sign-rsa` features
+(off by default): signing since 1.3.0, checking since 1.4.0.
 
-| Algorithm | Type | Signature | Used by |
-|---|---|---|---|
-| Ed25519 (RFC 8032) | [`Ed25519SigningKey`](#ed25519signingkey) | 64 bytes | DKIM `ed25519-sha256` (RFC 8463), JOSE `EdDSA` |
-| RSA PKCS#1 v1.5 + SHA-256, 2048 to 8192 bits | [`RsaSigningKey`](#rsasigningkey) | modulus size | DKIM `rsa-sha256` (RFC 6376), JOSE `RS256` |
+| Algorithm | Sign | Check | Signature | Used by |
+|---|---|---|---|---|
+| Ed25519 (RFC 8032) | [`Ed25519SigningKey`](#ed25519signingkey) | [`Ed25519PublicKey`](#ed25519publickey) | 64 bytes | DKIM `ed25519-sha256` (RFC 8463), JOSE `EdDSA` |
+| RSA PKCS#1 v1.5 + SHA-256 | [`RsaSigningKey`](#rsasigningkey), 2048 to 8192 bits | [`RsaPublicKey`](#rsapublickey), 2048 to 8192 bits (1024 on request) | modulus size | DKIM `rsa-sha256` (RFC 6376), JOSE `RS256` |
+
+A check returns `Err(Error::AuthenticationFailed)` for a signature that
+does not match, so `?` rejects forgeries. A public key that cannot be
+parsed or has the wrong size is `Error::Sign`, so callers can tell a
+bad key from a bad signature (DKIM reports `permerror` and `fail`).
 
 **Backend.** AWS-LC through `aws-lc-rs` (the backend tls-net uses),
 behind crypt-io's own types so it can be swapped later without an API
@@ -1930,8 +1937,7 @@ them with [`wipe`](#wipe--wipe_vec) once the key is built. `Debug`
 prints the public key (Ed25519) or the modulus size (RSA), never
 private material. Both types are `Send + Sync`.
 
-**Not in 1.3:** verification (use `aws-lc-rs` or `ring`), key
-generation, RSA-PSS, ECDSA.
+**Not provided:** key generation, RSA-PSS, ECDSA.
 
 <a href="#top">↑ TOP</a>
 
@@ -2017,6 +2023,98 @@ let key = RsaSigningKey::from_pkcs8_der(&der)?;
 crypt_io::wipe(&mut der);
 let signature = key.sign_pkcs1v15_sha256(b"data")?;
 assert_eq!(signature.len() * 8, key.modulus_bits() as usize);
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
+<a href="#top">↑ TOP</a>
+
+---
+
+#### `Ed25519PublicKey`
+
+```rust
+#[cfg(feature = "sign-ed25519")]
+#[derive(Clone)]
+pub struct Ed25519PublicKey { /* parsed key */ }
+
+impl Ed25519PublicKey {
+    pub fn from_bytes(public_key: &[u8; 32]) -> Result<Self>;
+    pub fn check(&self, message: &[u8], signature: &[u8]) -> Result<()>;
+    pub fn to_bytes(&self) -> [u8; 32];
+}
+// Clone, PartialEq, Eq, Debug (hex); Send + Sync.
+```
+
+New in 1.4.0. Parses the key once, so checking many signatures with
+one key (a JWT verifier, a DKIM key cache) costs only the verification.
+`check` returns `Err(AuthenticationFailed)` for a wrong, altered or
+truncated signature, a different message, or a signature that is not
+64 bytes. Non-canonical signatures (`S` not reduced, RFC 8032 section
+5.1.7) are rejected. Keys of small or mixed order are accepted, as
+RFC 8032 allows (Wycheproof marks those cases "acceptable"); a
+signature under such a key proves little, but it cannot be forged for
+any other key.
+
+For DKIM `ed25519-sha256`, check against the 32-byte SHA-256 of the
+canonicalized header data. `tests/verify.rs` checks the RFC 8463
+example signature this way.
+
+```rust
+# #[cfg(feature = "sign-ed25519")] {
+use crypt_io::sign::{Ed25519PublicKey, Ed25519SigningKey};
+let signing = Ed25519SigningKey::from_seed(&[1; 32])?;
+let public = Ed25519PublicKey::from_bytes(&signing.public_key())?;
+public.check(b"m", &signing.sign(b"m"))?;
+assert!(public.check(b"x", &signing.sign(b"m")).is_err());
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
+<a href="#top">↑ TOP</a>
+
+#### `RsaPublicKey`
+
+```rust
+#[cfg(feature = "sign-rsa")]
+#[derive(Clone)]
+pub struct RsaPublicKey { /* parsed key, modulus size */ }
+
+impl RsaPublicKey {
+    pub fn from_der(der: &[u8]) -> Result<Self>;              // 2048 to 8192 bits
+    pub fn from_der_allow_1024(der: &[u8]) -> Result<Self>;   // 1024 to 8192 bits (DKIM)
+    pub fn check_pkcs1v15_sha256(&self, message: &[u8], signature: &[u8]) -> Result<()>;
+    pub fn modulus_bits(&self) -> u32;
+}
+// Clone, Debug (modulus size); Send + Sync.
+
+pub const RSA_MIN_MODULUS_BITS_LEGACY: u32 = 1024;
+```
+
+New in 1.4.0. `der` is a `SubjectPublicKeyInfo` (RFC 5280: the
+`-----BEGIN PUBLIC KEY-----` body, the usual DKIM `p=` value) or a bare
+PKCS#1 `RSAPublicKey`. `message` is the data; it is hashed inside.
+
+The check is strict: the signature must be exactly modulus-sized, and
+the padding and `DigestInfo` must be the exact DER encoding RFC 8017
+prescribes. BER variants and a `DigestInfo` without its NULL parameter
+(which Wycheproof calls "acceptable") are rejected.
+
+`from_der` takes 2048- to 8192-bit keys, the range `RsaSigningKey`
+signs with and the minimum RFC 7518 sets for `RS256`.
+`from_der_allow_1024` also takes 1024 to 2047 bits: RFC 8301 requires
+DKIM verifiers to validate 1024-bit keys, and many domains still
+publish them. Use it only for DKIM; a 1024-bit key is within reach of a
+well-funded attacker, so a pass with one is weaker evidence.
+`tests/verify.rs` checks the RFC 8463 example's 1024-bit `rsa-sha256`
+signature with it.
+
+```rust,no_run
+# #[cfg(feature = "sign-rsa")] {
+use crypt_io::sign::RsaPublicKey;
+# let (spki, header_data, b) = (vec![0u8], vec![0u8], vec![0u8]);
+let key = RsaPublicKey::from_der_allow_1024(&spki)?;   // DKIM p=, base64-decoded
+key.check_pkcs1v15_sha256(&header_data, &b)?;          // Err(AuthenticationFailed): fail
 # }
 # Ok::<(), crypt_io::Error>(())
 ```

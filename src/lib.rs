@@ -34,8 +34,9 @@
 //! - **MAC** (HMAC-SHA256, HMAC-SHA512, BLAKE3 keyed)
 //! - **KDF** (HKDF for key derivation, Argon2id for password hashing,
 //!   PBKDF2-HMAC-SHA256 where a protocol such as SCRAM requires it)
-//! - **Signatures** (Ed25519, RSA PKCS#1 v1.5 with SHA-256) in the `sign`
-//!   module, behind the `sign-ed25519` / `sign-rsa` features (1.3.0). They
+//! - **Signatures** (Ed25519, RSA PKCS#1 v1.5 with SHA-256): signing (1.3.0)
+//!   and checking (1.4.0) in the `sign` module, behind the `sign-ed25519` /
+//!   `sign-rsa` features. They
 //!   use AWS-LC, so they need a C compiler; the default build stays pure Rust.
 //! - **Wiping** buffers that held secrets ([`wipe`], [`wipe_vec`])
 //!
