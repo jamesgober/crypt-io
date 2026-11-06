@@ -218,8 +218,19 @@ note in `hash` both explicitly forbid `tag == expected` /
   provider. crypt-io uses the regular (non-FIPS) build.
   Private keys never leave AWS-LC memory, which is cleansed on free;
   crypt-io keeps no copy and `Debug` prints no private material.
-- 1.3.0 signs only; verification, key generation, RSA-PSS and ECDSA
-  are not provided yet.
+- **Checking (1.4.0).** `Ed25519PublicKey::check` and
+  `RsaPublicKey::check_pkcs1v15_sha256` return `AuthenticationFailed`
+  for any mismatch, so `?` rejects forgeries, and `Error::Sign` for a
+  key that does not parse. RSA checks are strict DER (no BER padding,
+  no `DigestInfo` without NULL); Ed25519 rejects non-canonical `S` and
+  accepts small-order keys, as RFC 8032 allows. Every case of
+  Wycheproof's RSA PKCS#1 v1.5 SHA-256 (2048-bit) and Ed25519 files
+  behaves as expected (`tests/verify.rs`).
+- **1024-bit RSA is check-only and opt-in.**
+  `RsaPublicKey::from_der_allow_1024` exists because RFC 8301 requires
+  DKIM verifiers to accept 1024-bit keys. Treat such a pass as weaker
+  evidence. Nothing in crypt-io signs with less than 2048 bits.
+- Key generation, RSA-PSS and ECDSA are not provided.
 
 ### Explicitly NOT shipped
 

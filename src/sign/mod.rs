@@ -1,12 +1,15 @@
-//! Digital signatures (new in 1.3.0).
+//! Digital signatures: signing (1.3.0) and checking (1.4.0).
 //!
-//! | Algorithm | Type | Signature | Feature |
-//! |---|---|---|---|
-//! | Ed25519 ([RFC 8032]) | `Ed25519SigningKey` | 64 bytes | `sign-ed25519` |
-//! | RSA PKCS#1 v1.5 with SHA-256 ([RFC 8017]), 2048 to 8192 bits | `RsaSigningKey` | modulus size | `sign-rsa` |
+//! | Algorithm | Sign | Check | Signature | Feature |
+//! |---|---|---|---|---|
+//! | Ed25519 ([RFC 8032]) | `Ed25519SigningKey` | `Ed25519PublicKey` | 64 bytes | `sign-ed25519` |
+//! | RSA PKCS#1 v1.5 with SHA-256 ([RFC 8017]) | `RsaSigningKey` (2048 to 8192 bits) | `RsaPublicKey` (2048 to 8192 bits; 1024 with `from_der_allow_1024`) | modulus size | `sign-rsa` |
 //!
 //! Both are what DKIM (RFC 6376, RFC 8463) and JOSE (`EdDSA`, `RS256`)
-//! sign with. Prefer Ed25519 for anything new: smaller keys and
+//! sign with. A check returns `Err(Error::AuthenticationFailed)` when the
+//! signature does not match, so `key.check(..)?;` rejects forgeries; a
+//! key that cannot be parsed is `Error::Sign`, so the two cases stay
+//! apart (DKIM reports them as `fail` and `permerror`). Prefer Ed25519 for anything new: smaller keys and
 //! signatures, much faster, and deterministic. Use RSA where a peer
 //! requires it.
 //!
@@ -47,7 +50,11 @@
 //! let key = Ed25519SigningKey::from_seed(&seed)?;
 //! let signature: [u8; 64] = key.sign(b"message");
 //! let public_key: [u8; 32] = key.public_key();
-//! # let _ = (signature, public_key);
+//!
+//! // The receiving side:
+//! use crypt_io::sign::Ed25519PublicKey;
+//! let verifier = Ed25519PublicKey::from_bytes(&public_key)?;
+//! verifier.check(b"message", &signature)?;
 //! # }
 //! # Ok::<(), crypt_io::Error>(())
 //! ```
@@ -62,10 +69,14 @@ mod rsa;
 
 #[cfg(feature = "sign-ed25519")]
 pub use self::ed25519::{
-    ED25519_PUBLIC_KEY_LEN, ED25519_SEED_LEN, ED25519_SIGNATURE_LEN, Ed25519SigningKey,
+    ED25519_PUBLIC_KEY_LEN, ED25519_SEED_LEN, ED25519_SIGNATURE_LEN, Ed25519PublicKey,
+    Ed25519SigningKey,
 };
 #[cfg(feature = "sign-rsa")]
-pub use self::rsa::{RSA_MAX_MODULUS_BITS, RSA_MIN_MODULUS_BITS, RsaSigningKey};
+pub use self::rsa::{
+    RSA_MAX_MODULUS_BITS, RSA_MIN_MODULUS_BITS, RSA_MIN_MODULUS_BITS_LEGACY, RsaPublicKey,
+    RsaSigningKey,
+};
 
 /// Map an `aws-lc-rs` key rejection to crypt-io's error, without
 /// exposing the backend's type.

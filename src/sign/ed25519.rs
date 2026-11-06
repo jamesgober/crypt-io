@@ -2,9 +2,9 @@
 
 use core::fmt;
 
-use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair};
+use aws_lc_rs::signature::{ED25519, Ed25519KeyPair, KeyPair, ParsedPublicKey};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 /// Length of an Ed25519 signature in bytes.
 pub const ED25519_SIGNATURE_LEN: usize = 64;
@@ -109,15 +109,108 @@ impl Ed25519SigningKey {
 
 impl fmt::Debug for Ed25519SigningKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        struct Hex([u8; ED25519_PUBLIC_KEY_LEN]);
-        impl fmt::Debug for Hex {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                self.0.iter().try_for_each(|b| write!(f, "{b:02x}"))
-            }
-        }
         f.debug_struct("Ed25519SigningKey")
             .field("public_key", &Hex(self.public_key()))
             .finish_non_exhaustive()
+    }
+}
+
+/// An Ed25519 public key, parsed once, for checking signatures (RFC 8032).
+///
+/// Build it from the 32-byte key a DKIM `p=` record (base64) or a JWK
+/// `x` member (base64url) carries, then call [`check`](Self::check) for
+/// each signature. Parsing happens once, so checking many signatures
+/// with one key costs only the verification.
+///
+/// The key is public: it is `Clone`, and `Debug` prints it in hex. The
+/// type is `Send` and `Sync`.
+///
+/// New in 1.4.0. Requires the `sign-ed25519` feature.
+///
+/// # Example
+///
+/// ```
+/// use crypt_io::sign::{Ed25519PublicKey, Ed25519SigningKey};
+///
+/// let signing = Ed25519SigningKey::from_seed(&[7u8; 32])?;
+/// let signature = signing.sign(b"message");
+///
+/// let public = Ed25519PublicKey::from_bytes(&signing.public_key())?;
+/// public.check(b"message", &signature)?;
+/// assert_eq!(
+///     public.check(b"tampered", &signature),
+///     Err(crypt_io::Error::AuthenticationFailed)
+/// );
+/// # Ok::<(), crypt_io::Error>(())
+/// ```
+#[derive(Clone)]
+pub struct Ed25519PublicKey {
+    inner: ParsedPublicKey,
+    bytes: [u8; ED25519_PUBLIC_KEY_LEN],
+}
+
+impl Ed25519PublicKey {
+    /// Parse a raw 32-byte Ed25519 public key.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Sign`](crate::Error::Sign) if the bytes are not a valid
+    /// key encoding.
+    pub fn from_bytes(public_key: &[u8; ED25519_PUBLIC_KEY_LEN]) -> Result<Self> {
+        ParsedPublicKey::new(&ED25519, public_key)
+            .map(|inner| Self {
+                inner,
+                bytes: *public_key,
+            })
+            .map_err(super::key_rejected)
+    }
+
+    /// Check that `signature` is this key's Ed25519 signature of
+    /// `message`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::AuthenticationFailed`](crate::Error::AuthenticationFailed)
+    /// if it is not: a wrong or altered signature, a different message,
+    /// or a signature that is not 64 bytes. Non-canonical signatures
+    /// (`S` not reduced, RFC 8032 section 5.1.7) are rejected.
+    pub fn check(&self, message: &[u8], signature: &[u8]) -> Result<()> {
+        if signature.len() != ED25519_SIGNATURE_LEN {
+            return Err(Error::AuthenticationFailed);
+        }
+        self.inner
+            .verify_sig(message, signature)
+            .map_err(|_| Error::AuthenticationFailed)
+    }
+
+    /// The 32 key bytes.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; ED25519_PUBLIC_KEY_LEN] {
+        self.bytes
+    }
+}
+
+impl PartialEq for Ed25519PublicKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.bytes == other.bytes
+    }
+}
+
+impl Eq for Ed25519PublicKey {}
+
+impl fmt::Debug for Ed25519PublicKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Ed25519PublicKey")
+            .field(&Hex(self.bytes))
+            .finish()
+    }
+}
+
+struct Hex([u8; ED25519_PUBLIC_KEY_LEN]);
+
+impl fmt::Debug for Hex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.iter().try_for_each(|b| write!(f, "{b:02x}"))
     }
 }
 

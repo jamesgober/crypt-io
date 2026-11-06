@@ -41,8 +41,8 @@ crypt-io/
 │   │   └── argon2_impl.rs← Argon2id + Argon2Params + Argon2Policy + PHC check
 │   ├── sign/             ← Signatures over AWS-LC (1.3.0, opt-in)
 │   │   ├── mod.rs        ← Module docs, re-exports, backend error mapping
-│   │   ├── ed25519.rs    ← Ed25519SigningKey
-│   │   └── rsa.rs        ← RsaSigningKey (PKCS#1 v1.5, SHA-256)
+│   │   ├── ed25519.rs    ← Ed25519SigningKey, Ed25519PublicKey (1.4.0)
+│   │   └── rsa.rs        ← RsaSigningKey, RsaPublicKey (1.4.0); PKCS#1 v1.5, SHA-256
 │   └── stream/           ← Chunked AEAD with STREAM construction
 │       ├── mod.rs        ← Re-exports, public constants
 │       ├── frame.rs      ← Header layout, v2 key schedule, per-chunk nonce
@@ -54,7 +54,7 @@ crypt-io/
 ├── examples/             ← runnable examples (aead, mac, kdf, stream, profile_alloc)
 ├── fuzz/                 ← cargo-fuzz workspace (9 targets)
 ├── tests/                ← integration tests (stream, into_apis, kat, regressions, properties, v1_1,
-│                            hmac_hkdf, pbkdf2, sign; generated vectors in tests/data/)
+│                            hmac_hkdf, pbkdf2, sign, verify; generated vectors in tests/data/)
 └── docs/                 ← public docs (API, PERFORMANCE, SECURITY, this file, ...)
 ```
 
@@ -140,7 +140,10 @@ callers at the right one for their input shape.
 No `aws-lc-rs` type is public: backend errors map to `Error::Sign`
 in one place (`sign::key_rejected`), so the backend can be replaced
 in 1.x. `RsaSigningKey` computes its SPKI encoding and exact modulus
-size once, at parse time, so the accessors cannot fail. The module
+size once, at parse time, so the accessors cannot fail. The public-key
+types (1.4.0) hold an `aws-lc-rs` `ParsedPublicKey`, so a key is parsed
+once and each check is only the verification; `RsaPublicKey` reads the
+exact modulus size at parse time and enforces its range there. The module
 needs `std` and a C toolchain (AWS-LC), which is why it is behind
 features that neither the default set nor `preset-all` enables.
 
@@ -294,8 +297,8 @@ throughput on the AEAD paths.
 Documented elsewhere but worth restating in one place:
 
 - **No asymmetric encryption or key exchange** (RSA-OAEP, ECDH,
-  X25519) and no signature verification yet. Signing (Ed25519, RSA)
-  is in `sign` since 1.3.0, behind features.
+  X25519). Signing (1.3.0) and checking (1.4.0) with Ed25519 and RSA
+  are in `sign`, behind features.
 - **No PGP / GPG**. Use `sequoia-openpgp`.
 - **No TLS**. Use `rustls`.
 - **No general RNG surface**. Use `mod-rand` or `getrandom`

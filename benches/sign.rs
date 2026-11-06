@@ -1,6 +1,8 @@
-//! Signature benchmarks (`sign-ed25519`, `sign-rsa`, new in 1.3.0).
+//! Signature benchmarks (`sign-ed25519`, `sign-rsa`): signing (1.3.0)
+//! and checking (1.4.0).
 //!
-//! Signing cost only; key parsing happens once per key in practice.
+//! Key parsing happens once per key in practice, so it is outside the
+//! timed loop.
 //! The RSA key is the 2048-bit NIST CAVP SigGen15 test key used by
 //! `tests/sign.rs`.
 //!
@@ -12,7 +14,7 @@
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
-use crypt_io::sign::{Ed25519SigningKey, RsaSigningKey};
+use crypt_io::sign::{Ed25519PublicKey, Ed25519SigningKey, RsaPublicKey, RsaSigningKey};
 
 #[path = "../tests/data/sign_vectors.rs"]
 mod vectors;
@@ -33,7 +35,18 @@ fn bench_sign(c: &mut Criterion) {
     group.bench_function("sign_2048_32B", |b| {
         b.iter(|| rsa.sign_pkcs1v15_sha256(black_box(&message)).unwrap())
     });
+    let rsa_sig = rsa.sign_pkcs1v15_sha256(&message).unwrap();
+    let rsa_public = RsaPublicKey::from_der(rsa.public_key_der()).unwrap();
+    group.bench_function("check_2048_32B", |b| {
+        b.iter(|| rsa_public.check_pkcs1v15_sha256(black_box(&message), black_box(&rsa_sig)))
+    });
     group.finish();
+
+    let ed_sig = ed.sign(&message);
+    let ed_public = Ed25519PublicKey::from_bytes(&ed.public_key()).unwrap();
+    c.bench_function("ed25519_check_32B", |b| {
+        b.iter(|| ed_public.check(black_box(&message), black_box(&ed_sig)))
+    });
 }
 
 criterion_group!(benches, bench_sign);

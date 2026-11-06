@@ -7,7 +7,10 @@ use core::fmt;
 
 use aws_lc_rs::encoding::AsDer;
 use aws_lc_rs::rand::SystemRandom;
-use aws_lc_rs::signature::{KeyPair, RSA_PKCS1_SHA256, RsaKeyPair};
+use aws_lc_rs::signature::{
+    KeyPair, ParsedPublicKey, RSA_PKCS1_1024_8192_SHA256_FOR_LEGACY_USE_ONLY,
+    RSA_PKCS1_2048_8192_SHA256, RSA_PKCS1_SHA256, RsaKeyPair, RsaParameters,
+};
 
 use crate::error::{Error, Result};
 
@@ -155,6 +158,127 @@ fn bit_length(be: &[u8]) -> u32 {
 impl fmt::Debug for RsaSigningKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RsaSigningKey")
+            .field("modulus_bits", &self.modulus_bits)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Smallest RSA modulus [`RsaPublicKey::from_der_allow_1024`] accepts,
+/// in bits.
+pub const RSA_MIN_MODULUS_BITS_LEGACY: u32 = 1024;
+
+/// An RSA public key, parsed once, for checking PKCS#1 v1.5 SHA-256
+/// signatures (DKIM `rsa-sha256`, JOSE `RS256`).
+///
+/// [`from_der`](Self::from_der) accepts 2048- to 8192-bit keys, the
+/// same range [`RsaSigningKey`] signs with, and the minimum RFC 7518
+/// sets for `RS256`. [`from_der_allow_1024`](Self::from_der_allow_1024)
+/// also accepts 1024 to 2047 bits, which a DKIM verifier must still
+/// validate (RFC 8301); use it only there.
+///
+/// The key is public: it is `Clone`, and `Debug` prints the modulus
+/// size. The type is `Send` and `Sync`.
+///
+/// New in 1.4.0. Requires the `sign-rsa` feature.
+///
+/// # Example
+///
+/// ```no_run
+/// use crypt_io::sign::RsaPublicKey;
+///
+/// # let (spki, data, signature) = (Vec::<u8>::new(), Vec::<u8>::new(), Vec::<u8>::new());
+/// let key = RsaPublicKey::from_der(&spki)?;          // DKIM p= (base64-decoded), or a PEM body
+/// key.check_pkcs1v15_sha256(&data, &signature)?;     // Err(AuthenticationFailed) if forged
+/// # Ok::<(), crypt_io::Error>(())
+/// ```
+#[derive(Clone)]
+pub struct RsaPublicKey {
+    inner: ParsedPublicKey,
+    modulus_bits: u32,
+}
+
+impl RsaPublicKey {
+    /// Parse a DER public key: a `SubjectPublicKeyInfo` (RFC 5280, the
+    /// `-----BEGIN PUBLIC KEY-----` body and the usual DKIM `p=` value)
+    /// or a PKCS#1 `RSAPublicKey` (RFC 8017 appendix A.1.1). The modulus
+    /// must be 2048 to 8192 bits.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Sign`] if `der` is not an RSA public key or the modulus
+    /// is outside 2048 to 8192 bits.
+    pub fn from_der(der: &[u8]) -> Result<Self> {
+        Self::parse(der, RSA_MIN_MODULUS_BITS, &RSA_PKCS1_2048_8192_SHA256)
+    }
+
+    /// Like [`from_der`](Self::from_der), but also accepts 1024- to
+    /// 2047-bit keys.
+    ///
+    /// For DKIM verifiers only: RFC 8301 requires them to validate keys
+    /// from 1024 bits, and many domains still publish 1024-bit keys. A
+    /// 1024-bit RSA key is within reach of a well-funded attacker, so a
+    /// pass with one is weaker evidence; never sign with such a key
+    /// ([`RsaSigningKey`] refuses them).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Sign`] if `der` is not an RSA public key or the modulus
+    /// is outside 1024 to 8192 bits.
+    pub fn from_der_allow_1024(der: &[u8]) -> Result<Self> {
+        Self::parse(
+            der,
+            RSA_MIN_MODULUS_BITS_LEGACY,
+            &RSA_PKCS1_1024_8192_SHA256_FOR_LEGACY_USE_ONLY,
+        )
+    }
+
+    fn parse(der: &[u8], min_bits: u32, algorithm: &'static RsaParameters) -> Result<Self> {
+        let public = aws_lc_rs::rsa::PublicKey::from_der(der).map_err(super::key_rejected)?;
+        let modulus_bits = bit_length(public.modulus().big_endian_without_leading_zero());
+        if modulus_bits < min_bits {
+            return Err(Error::Sign(if min_bits == RSA_MIN_MODULUS_BITS {
+                "key rejected: RSA modulus smaller than 2048 bits"
+            } else {
+                "key rejected: RSA modulus smaller than 1024 bits"
+            }));
+        }
+        if modulus_bits > RSA_MAX_MODULUS_BITS {
+            return Err(Error::Sign(
+                "key rejected: RSA modulus larger than 8192 bits",
+            ));
+        }
+        let inner = ParsedPublicKey::new(algorithm, der).map_err(super::key_rejected)?;
+        Ok(Self {
+            inner,
+            modulus_bits,
+        })
+    }
+
+    /// Check that `signature` is this key's RSASSA-PKCS1-v1_5 SHA-256
+    /// signature of `message` (the data itself; it is hashed here).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::AuthenticationFailed`](crate::Error::AuthenticationFailed)
+    /// if it is not: a wrong or altered signature, a different message,
+    /// a signature of the wrong length, or one whose padding or
+    /// `DigestInfo` is not the exact DER encoding RFC 8017 prescribes.
+    pub fn check_pkcs1v15_sha256(&self, message: &[u8], signature: &[u8]) -> Result<()> {
+        self.inner
+            .verify_sig(message, signature)
+            .map_err(|_| Error::AuthenticationFailed)
+    }
+
+    /// Size of the modulus in bits.
+    #[must_use]
+    pub fn modulus_bits(&self) -> u32 {
+        self.modulus_bits
+    }
+}
+
+impl fmt::Debug for RsaPublicKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RsaPublicKey")
             .field("modulus_bits", &self.modulus_bits)
             .finish_non_exhaustive()
     }
