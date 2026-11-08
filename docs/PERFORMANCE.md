@@ -364,6 +364,24 @@ Ed25519 assembly, which makes Ed25519 about 10 times slower there; RSA
 is close on both. (1.3.0's notes gave the Windows Ed25519 figure only,
 42 µs.) Keys are parsed once, outside the timed loop.
 
+### ES256, COSE keys and OTP (1.5.0)
+
+Measured on Linux (WSL2) while other build sessions held the machine at
+100% CPU (load average about 50 on 32 threads), so the absolute
+numbers are upper bounds; the ratios within one run are the useful
+part. `cargo bench --bench sign --bench otp --features sign-all,otp`:
+
+| Operation | Time under load | Relative to `Ed25519PublicKey::check`, same run |
+|---|---:|---:|
+| `CosePublicKey::check`, ES256 WebAuthn assertion | 132 µs | 1.8× |
+| `CosePublicKey::from_cose_key`, ES256 key | 5.5 µs | 0.07× |
+| `otp::totp` | 0.74 µs | 0.01× |
+| `otp::totp_check`, window 1 (3 candidates) | 1.7 µs | 0.02× |
+
+Estimate from the quiet 1.4.0 baseline (Ed25519 check 23 µs on
+Linux): an ES256 check about 40 µs. Parse a COSE key once per
+credential, not per assertion.
+
 <a href="#top">↑ TOP</a>
 
 <hr>

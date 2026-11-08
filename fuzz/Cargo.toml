@@ -36,6 +36,8 @@ features = [
     "kdf-hkdf",
     "kdf-argon2",
     "stream",
+    "sign-all",
+    "otp",
 ]
 
 # Prevent `cargo` from picking up the main workspace's lockfile.
@@ -104,5 +106,17 @@ doc = false
 [[bin]]
 name = "audit_into_diff"
 path = "fuzz_targets/audit_into_diff.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "cose_key"
+path = "fuzz_targets/cose_key.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "otp_check"
+path = "fuzz_targets/otp_check.rs"
 test = false
 doc = false

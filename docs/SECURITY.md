@@ -230,7 +230,33 @@ note in `hash` both explicitly forbid `tag == expected` /
   `RsaPublicKey::from_der_allow_1024` exists because RFC 8301 requires
   DKIM verifiers to accept 1024-bit keys. Treat such a pass as weaker
   evidence. Nothing in crypt-io signs with less than 2048 bits.
-- Key generation, RSA-PSS and ECDSA are not provided.
+- **ECDSA P-256 (1.5.0, verify only).** For keys other parties pick,
+  above all passkeys. The point is validated on parse; DER and fixed
+  (`r || s`) signatures are both strict. crypt-io does not sign with
+  ECDSA: signing needs a per-signature nonce, and Ed25519 avoids that
+  failure mode.
+- **WebAuthn COSE keys (1.5.0).** `CosePublicKey::from_cose_key`
+  parses authenticator-supplied CBOR with a strict, bounded parser (no
+  indefinite lengths, tags, duplicate labels or trailing bytes; at most
+  16 parameters, nesting at most 4) and is fuzzed. `alg` must be present
+  and match `kty`. Signature-counter, origin and challenge checks are
+  the relying party's job, not crypt-io's.
+- Key generation, RSA-PSS and ECDSA signing are not provided.
+
+### One-time passwords (1.5.0, opt-in)
+
+- **HMAC-SHA1 is legacy, kept for RFC 4226 / 6238 only.** Every
+  authenticator app computes HOTP / TOTP with it. HMAC's security does
+  not depend on SHA-1's collision resistance (broken since 2017), so the
+  construction is still sound for OTPs, but it lives only in `otp` so it
+  is never used as a general MAC.
+- Codes are compared in constant time against every candidate in the
+  window. The window is capped (`OTP_MAX_WINDOW` = 10) and secrets
+  shorter than 128 bits are refused (RFC 4226 section 4).
+- **Replay:** a TOTP code stays valid for its step and window. The
+  check returns the matched step; callers must store it and refuse any
+  code whose step is not greater. Rate-limit attempts too: six digits
+  are only 10^6 possibilities.
 
 ### Explicitly NOT shipped
 

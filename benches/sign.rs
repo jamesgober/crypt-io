@@ -1,5 +1,5 @@
-//! Signature benchmarks (`sign-ed25519`, `sign-rsa`): signing (1.3.0)
-//! and checking (1.4.0).
+//! Signature benchmarks (`sign-ed25519`, `sign-rsa`, `sign-p256`):
+//! signing (1.3.0), checking (1.4.0) and ES256 / COSE keys (1.5.0).
 //!
 //! Key parsing happens once per key in practice, so it is outside the
 //! timed loop.
@@ -14,10 +14,15 @@
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
-use crypt_io::sign::{Ed25519PublicKey, Ed25519SigningKey, RsaPublicKey, RsaSigningKey};
+use crypt_io::sign::{
+    CosePublicKey, Ed25519PublicKey, Ed25519SigningKey, RsaPublicKey, RsaSigningKey,
+};
 
 #[path = "../tests/data/sign_vectors.rs"]
 mod vectors;
+
+#[path = "../tests/data/v15_vectors.rs"]
+mod v15;
 
 fn bench_sign(c: &mut Criterion) {
     // A DKIM header hash is 32 bytes.
@@ -46,6 +51,21 @@ fn bench_sign(c: &mut Criterion) {
     let ed_public = Ed25519PublicKey::from_bytes(&ed.public_key()).unwrap();
     c.bench_function("ed25519_check_32B", |b| {
         b.iter(|| ed_public.check(black_box(&message), black_box(&ed_sig)))
+    });
+
+    // ES256 (1.5.0): the first WebAuthn Level 3 ES256 vector.
+    let (_, _, cose, signed, sig) = *v15::WEBAUTHN.iter().find(|v| v.1 == -7).unwrap();
+    let (cose, signed, sig) = (
+        hex::decode(cose).unwrap(),
+        hex::decode(signed).unwrap(),
+        hex::decode(sig).unwrap(),
+    );
+    let es256 = CosePublicKey::from_cose_key(&cose).unwrap();
+    c.bench_function("es256_check_webauthn", |b| {
+        b.iter(|| es256.check(black_box(&signed), black_box(&sig)))
+    });
+    c.bench_function("cose_key_parse_es256", |b| {
+        b.iter(|| CosePublicKey::from_cose_key(black_box(&cose)).unwrap())
     });
 }
 

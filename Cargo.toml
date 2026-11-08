@@ -1,6 +1,6 @@
 [package]
 name = "crypt-io"
-version = "1.4.0"
+version = "1.5.0"
 edition = "2024"
 rust-version = "1.85"
 readme = "README.md"
@@ -10,7 +10,7 @@ authors = [
     "James Gober <me@jamesgober.com>"
 ]
 
-description = "AEAD encryption (ChaCha20-Poly1305, AES-256-GCM), hashing (BLAKE3, SHA-2), MAC (HMAC, BLAKE3 keyed), KDF (HKDF, Argon2id, PBKDF2) and opt-in signatures and signature checks (Ed25519, RSA) for Rust. Algorithm-agile. RustCrypto-backed primitives with REPS discipline. Simple API. Sub-microsecond throughput."
+description = "AEAD encryption (ChaCha20-Poly1305, AES-256-GCM), hashing (BLAKE3, SHA-2), MAC (HMAC, BLAKE3 keyed), KDF (HKDF, Argon2id, PBKDF2) and opt-in signatures and checks (Ed25519, RSA, ECDSA P-256, WebAuthn COSE keys) plus HOTP/TOTP for Rust. Algorithm-agile. RustCrypto-backed primitives with REPS discipline. Simple API. Sub-microsecond throughput."
 
 # 5 keywords for search optimization
 keywords = [
@@ -109,7 +109,13 @@ kdf-all = ["kdf-hkdf", "kdf-argon2", "kdf-pbkdf2"]
 # stays pure Rust.
 sign-ed25519 = ["std", "dep:aws-lc-rs"]                     # Ed25519 (RFC 8032)
 sign-rsa = ["std", "dep:aws-lc-rs", "aws-lc-rs?/ring-io"]   # RSA PKCS#1 v1.5 with SHA-256, 2048-8192 bits
-sign-all = ["sign-ed25519", "sign-rsa"]
+sign-p256 = ["std", "dep:aws-lc-rs"]                        # ECDSA P-256 SHA-256, verify only (1.5.0)
+sign-all = ["sign-ed25519", "sign-rsa", "sign-p256"]
+
+# One-time passwords (1.5.0): HOTP (RFC 4226) and TOTP (RFC 6238) with
+# HMAC-SHA1, which every authenticator app uses. Legacy HMAC-SHA1 lives
+# only in the `otp` module. Same backend and build cost as `sign-*`.
+otp = ["std", "dep:aws-lc-rs"]
 # Windows x86-64 without NASM: use the assembly objects that ship with
 # aws-lc-sys instead of assembling them. Does nothing without a `sign-*`
 # feature.
@@ -208,6 +214,11 @@ required-features = ["kdf-pbkdf2"]
 name = "sign"
 harness = false
 required-features = ["sign-all"]
+
+[[bench]]
+name = "otp"
+harness = false
+required-features = ["otp"]
 
 [profile.release]
 opt-level = 3

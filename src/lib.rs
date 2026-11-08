@@ -35,9 +35,13 @@
 //! - **KDF** (HKDF for key derivation, Argon2id for password hashing,
 //!   PBKDF2-HMAC-SHA256 where a protocol such as SCRAM requires it)
 //! - **Signatures** (Ed25519, RSA PKCS#1 v1.5 with SHA-256): signing (1.3.0)
-//!   and checking (1.4.0) in the `sign` module, behind the `sign-ed25519` /
-//!   `sign-rsa` features. They
+//!   and checking (1.4.0) in the `sign` module, plus verify-only ECDSA P-256
+//!   and WebAuthn COSE keys (1.5.0), behind the `sign-ed25519` / `sign-rsa` /
+//!   `sign-p256` features. They
 //!   use AWS-LC, so they need a C compiler; the default build stays pure Rust.
+//! - **One-time passwords**: HOTP and TOTP with the HMAC-SHA1 authenticator
+//!   apps use, in the `otp` module (feature `otp`, 1.5.0). HMAC-SHA1 is
+//!   legacy and lives only there.
 //! - **Wiping** buffers that held secrets ([`wipe`], [`wipe_vec`])
 //!
 //! Out of scope (use other crates):
@@ -150,8 +154,11 @@ pub mod kdf;
 #[cfg(feature = "stream")]
 pub mod stream;
 
-#[cfg(any(feature = "sign-ed25519", feature = "sign-rsa"))]
+#[cfg(any(feature = "sign-ed25519", feature = "sign-rsa", feature = "sign-p256"))]
 pub mod sign;
+
+#[cfg(feature = "otp")]
+pub mod otp;
 
 pub use crate::error::{Error, Result};
 pub use crate::tag::Tag;

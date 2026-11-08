@@ -232,6 +232,35 @@ impl RsaPublicKey {
         )
     }
 
+    /// Build a key from its modulus `n` and public exponent `e`
+    /// (big-endian, leading zero bytes allowed), as a COSE `RSA` key
+    /// (`-1` / `-2`) or a JWK (`n` / `e`, base64url-decoded) carries
+    /// them. The modulus must be 2048 to 8192 bits.
+    ///
+    /// New in 1.5.0.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Sign`] if the components do not form a valid RSA key or
+    /// the modulus is outside 2048 to 8192 bits.
+    pub fn from_components(n: &[u8], e: &[u8]) -> Result<Self> {
+        let strip = |b: &[u8]| -> Vec<u8> {
+            let start = b.iter().position(|&x| x != 0).unwrap_or(b.len());
+            b[start..].to_vec()
+        };
+        let (n, e) = (strip(n), strip(e));
+        if n.is_empty() || e.is_empty() {
+            return Err(Error::Sign("key rejected: empty RSA modulus or exponent"));
+        }
+        let spki = aws_lc_rs::rsa::PublicKeyComponents {
+            n: &n[..],
+            e: &e[..],
+        }
+        .as_der()
+        .map_err(|_| Error::Sign("key rejected: invalid RSA components"))?;
+        Self::from_der(spki.as_ref())
+    }
+
     fn parse(der: &[u8], min_bits: u32, algorithm: &'static RsaParameters) -> Result<Self> {
         let public = aws_lc_rs::rsa::PublicKey::from_der(der).map_err(super::key_rejected)?;
         let modulus_bits = bit_length(public.modulus().big_endian_without_leading_zero());
