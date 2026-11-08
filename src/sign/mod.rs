@@ -1,9 +1,15 @@
-//! Digital signatures: signing (1.3.0) and checking (1.4.0).
+//! Digital signatures: signing (1.3.0), checking (1.4.0), ECDSA P-256
+//! and WebAuthn COSE keys (1.5.0).
 //!
 //! | Algorithm | Sign | Check | Signature | Feature |
 //! |---|---|---|---|---|
 //! | Ed25519 ([RFC 8032]) | `Ed25519SigningKey` | `Ed25519PublicKey` | 64 bytes | `sign-ed25519` |
 //! | RSA PKCS#1 v1.5 with SHA-256 ([RFC 8017]) | `RsaSigningKey` (2048 to 8192 bits) | `RsaPublicKey` (2048 to 8192 bits; 1024 with `from_der_allow_1024`) | modulus size | `sign-rsa` |
+//! | ECDSA P-256 with SHA-256 | (verify only) | `EcdsaP256PublicKey` | DER, or 64-byte `r \|\| s` | `sign-p256` |
+//!
+//! `CosePublicKey` parses a WebAuthn credential key (COSE `ES256`,
+//! `EdDSA`, `RS256`) and checks assertion signatures with whichever of
+//! the three it is.
 //!
 //! Both are what DKIM (RFC 6376, RFC 8463) and JOSE (`EdDSA`, `RS256`)
 //! sign with. A check returns `Err(Error::AuthenticationFailed)` when the
@@ -62,10 +68,17 @@
 //! [RFC 8032]: https://datatracker.ietf.org/doc/html/rfc8032
 //! [RFC 8017]: https://datatracker.ietf.org/doc/html/rfc8017
 
+mod cose;
 #[cfg(feature = "sign-ed25519")]
 mod ed25519;
+#[cfg(feature = "sign-p256")]
+mod p256;
 #[cfg(feature = "sign-rsa")]
 mod rsa;
+
+pub use self::cose::{COSE_ALG_EDDSA, COSE_ALG_ES256, COSE_ALG_RS256, CosePublicKey};
+#[cfg(feature = "sign-p256")]
+pub use self::p256::{EcdsaP256PublicKey, P256_FIXED_SIGNATURE_LEN, P256_SEC1_UNCOMPRESSED_LEN};
 
 #[cfg(feature = "sign-ed25519")]
 pub use self::ed25519::{

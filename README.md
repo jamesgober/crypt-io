@@ -208,11 +208,11 @@ assert!(body.is_empty());
 
 With the default `zeroize` feature the writes are volatile, so the compiler cannot drop them. Both functions work without `std` (`default-features = false, features = ["zeroize"]`). New in 1.2.0.
 
-### Signatures (opt-in, 1.3.0; checks 1.4.0)
+### Signatures (opt-in, 1.3.0; checks 1.4.0; P-256 and passkeys 1.5.0)
 
 ```toml
 [dependencies]
-crypt-io = { version = "1.4", features = ["sign-ed25519", "sign-rsa"] }
+crypt-io = { version = "1.5", features = ["sign-ed25519", "sign-rsa", "sign-p256"] }
 ```
 
 ```rust,ignore
@@ -234,7 +234,22 @@ let verifier = RsaPublicKey::from_der(spki)?;            // 2048 to 8192 bits
 verifier.check_pkcs1v15_sha256(message, &rsa_signature)?;
 // DKIM verifiers must still accept 1024-bit keys (RFC 8301):
 let legacy = RsaPublicKey::from_der_allow_1024(&dkim_p)?;
+
+// Passkeys (1.5.0): the stored COSE credential key, ES256 / EdDSA / RS256.
+let passkey = crypt_io::sign::CosePublicKey::from_cose_key(&credential_public_key)?;
+passkey.check(&authenticator_data_and_client_data_hash, &assertion_signature)?;
 ```
+
+### One-time passwords (opt-in, 1.5.0)
+
+```rust,ignore
+use crypt_io::otp;
+
+let code = otp::totp(&secret, unix_seconds, 6)?;                    // what the app shows
+let step = otp::totp_check(&secret, "492039", unix_seconds, 6, 1)?;  // ±30 s; store `step`
+```
+
+HOTP (RFC 4226) and TOTP (RFC 6238) with HMAC-SHA1, which every authenticator app uses (feature `otp`, AWS-LC like the signing features). Checks are constant time and return the matched step, so a replay guard is one comparison. HMAC-SHA1 is legacy and exists only in this module.
 
 The signing features use AWS-LC (through `aws-lc-rs`, the backend tls-net uses), which is C and assembly: they need a C compiler, and on Windows x86-64 either NASM or the `prebuilt-nasm` feature. The first build takes about 15 to 25 seconds longer. The default build does not include them and stays pure Rust. Private keys are cleansed when dropped, `Debug` never prints them, and RSA keys below 2048 bits are refused.
 
@@ -325,7 +340,7 @@ Reproduce: `cargo bench --all-features` (numbers vary by hardware — see PERFOR
 - [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) — measured throughput, contract-check matrix, parameter-choice guidance.
 - [`docs/FILE_FORMAT.md`](docs/FILE_FORMAT.md) — stream (v1, v2) and sealed wire format specs, with test vectors.
 - [`CHANGELOG.md`](CHANGELOG.md) — per-version Added / Changed / Security entries.
-- [`docs/release/`](docs/release) — per-release notes (`v0.2.0.md`, `v0.3.0.md`, …, `v1.4.0.md`).
+- [`docs/release/`](docs/release) — per-release notes (`v0.2.0.md`, `v0.3.0.md`, …, `v1.5.0.md`).
 
 <hr>
 

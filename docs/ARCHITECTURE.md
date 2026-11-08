@@ -21,6 +21,7 @@ crypt-io/
 │   ├── tag.rs            ← Tag<N> with constant-time equality
 │   ├── rng.rs            ← OS random source (mod-rand or getrandom)
 │   ├── wipe.rs           ← buffer wiping: public wipe / wipe_vec, internal helpers
+│   ├── otp.rs            ← HOTP / TOTP and legacy HMAC-SHA1 (1.5.0, opt-in)
 │   ├── aead/             ← Algorithm-agile AEAD surface
 │   │   ├── mod.rs        ← Crypt + Algorithm + dispatch + sealed format + generate_key
 │   │   ├── backend.rs    ← one implementation, generic over the cipher type
@@ -41,6 +42,8 @@ crypt-io/
 │   │   └── argon2_impl.rs← Argon2id + Argon2Params + Argon2Policy + PHC check
 │   ├── sign/             ← Signatures over AWS-LC (1.3.0, opt-in)
 │   │   ├── mod.rs        ← Module docs, re-exports, backend error mapping
+│   │   ├── cose.rs       ← COSE_Key CBOR parser + CosePublicKey (1.5.0)
+│   │   ├── p256.rs       ← EcdsaP256PublicKey, verify only (1.5.0)
 │   │   ├── ed25519.rs    ← Ed25519SigningKey, Ed25519PublicKey (1.4.0)
 │   │   └── rsa.rs        ← RsaSigningKey, RsaPublicKey (1.4.0); PKCS#1 v1.5, SHA-256
 │   └── stream/           ← Chunked AEAD with STREAM construction
@@ -52,7 +55,7 @@ crypt-io/
 │       └── file.rs       ← encrypt_file / decrypt_file (std-only)
 ├── benches/              ← criterion benches (aead, hash, mac, kdf, stream, pbkdf2, sign)
 ├── examples/             ← runnable examples (aead, mac, kdf, stream, profile_alloc)
-├── fuzz/                 ← cargo-fuzz workspace (9 targets)
+├── fuzz/                 ← cargo-fuzz workspace (11 targets; cose_key and otp_check since 1.5.0)
 ├── tests/                ← integration tests (stream, into_apis, kat, regressions, properties, v1_1,
 │                            hmac_hkdf, pbkdf2, sign, verify; generated vectors in tests/data/)
 └── docs/                 ← public docs (API, PERFORMANCE, SECURITY, this file, ...)
@@ -133,6 +136,13 @@ Two algorithms with different threat models:
 
 The module overview explicitly distinguishes them and points
 callers at the right one for their input shape.
+
+### `otp` — one-time passwords (1.5.0, opt-in)
+
+HOTP / TOTP over `aws-lc-rs`'s legacy HMAC-SHA1. The HMAC key is set
+up once per check and reused for every candidate in the window; every
+candidate is rendered as ASCII digits and compared with `subtle`, and
+the matched counter is selected without branching on the comparison.
 
 ### `sign/` — signatures (1.3.0, opt-in)
 

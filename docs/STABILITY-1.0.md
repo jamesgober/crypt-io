@@ -191,6 +191,22 @@ Frozen free functions and types (feature-gated as documented in
   are accepted is part of the promise, pinned by `tests/verify.rs`
   (NIST CAVP SigVer15, Wycheproof, RFC 8463).
 
+### Added in 1.5.0 (covered by the same promise)
+
+- `otp::{hotp, totp, hotp_check, totp_check, hmac_sha1_legacy}` and
+  `otp::{TOTP_STEP_SECONDS, OTP_MIN_SECRET_LEN, OTP_MIN_DIGITS,
+  OTP_MAX_DIGITS, OTP_MAX_WINDOW, HMAC_SHA1_OUTPUT_LEN}` *(feature
+  `otp`)*. Codes for a given secret and time are fixed by RFC 4226 /
+  6238 and pinned by their appendices.
+- `sign::EcdsaP256PublicKey` (`from_sec1`, `from_coordinates`,
+  `from_der`, `check_sha256`, `check_sha256_fixed`),
+  `sign::P256_SEC1_UNCOMPRESSED_LEN`, `P256_FIXED_SIGNATURE_LEN`
+  *(feature `sign-p256`)*.
+- `sign::CosePublicKey` (`from_cose_key`, `algorithm`, `check`;
+  `#[non_exhaustive]` enum), `sign::COSE_ALG_ES256`, `COSE_ALG_EDDSA`,
+  `COSE_ALG_RS256`, `sign::RsaPublicKey::from_components`.
+- Features `sign-p256` and `otp`; `sign-all` now includes `sign-p256`.
+
 ### Deprecated in 1.1.0 (kept for all of 1.x)
 
 - `mac::hmac_sha256_verify`, `mac::hmac_sha512_verify`,

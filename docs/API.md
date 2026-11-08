@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-    <i>Complete public-API reference for <code>crypt-io</code> 1.4.0.</i>
+    <i>Complete public-API reference for <code>crypt-io</code> 1.5.0.</i>
     <br>
     <i>For per-version notes see <a href="../CHANGELOG.md"><code>CHANGELOG.md</code></a>.</i>
 </p>
@@ -91,11 +91,14 @@
     - [`stream::decrypt_file`](#streamdecrypt_file)
     - [`StreamFormat`](#streamformat)
     - [Stream wire format](#stream-wire-format)
+  - [`otp` module (1.5.0)](#otp-module)
   - [`sign` module (1.3.0)](#sign-module)
     - [`Ed25519SigningKey`](#ed25519signingkey)
     - [`Ed25519PublicKey` (1.4.0)](#ed25519publickey)
     - [`RsaSigningKey`](#rsasigningkey)
     - [`RsaPublicKey` (1.4.0)](#rsapublickey)
+    - [`EcdsaP256PublicKey` (1.5.0)](#ecdsap256publickey)
+    - [`CosePublicKey` (1.5.0)](#cosepublickey)
   - [`wipe` / `wipe_vec` (1.2.0)](#wipe--wipe_vec)
   - [`Tag`](#tag)
   - [`Error`](#error)
@@ -115,7 +118,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-crypt-io = "1.4"
+crypt-io = "1.5"
 ```
 
 ### Install via terminal
@@ -157,7 +160,9 @@ surface. Defaults give the full toolkit.
 | `kdf-all` |  | HKDF, Argon2id and (1.3.0) PBKDF2. |
 | `sign-ed25519` |  | 1.3.0. [`sign::Ed25519SigningKey`](#ed25519signingkey); 1.4.0 [`sign::Ed25519PublicKey`](#ed25519publickey). Pulls AWS-LC (C + assembly) and `std`; see [`sign` module](#sign-module) for the build cost. |
 | `sign-rsa` |  | 1.3.0. [`sign::RsaSigningKey`](#rsasigningkey) (PKCS#1 v1.5, SHA-256, 2048 to 8192 bits); 1.4.0 [`sign::RsaPublicKey`](#rsapublickey). Same cost as `sign-ed25519`. |
-| `sign-all` |  | 1.3.0. Both signature algorithms. |
+| `sign-p256` |  | 1.5.0. [`sign::EcdsaP256PublicKey`](#ecdsap256publickey) (verify only) and the `ES256` case of [`sign::CosePublicKey`](#cosepublickey). Same cost as `sign-ed25519`. |
+| `sign-all` |  | 1.3.0. Every signature feature (`sign-ed25519`, `sign-rsa`, and since 1.5.0 `sign-p256`). |
+| `otp` |  | 1.5.0. [`otp`](#otp-module): HOTP, TOTP, legacy HMAC-SHA1. AWS-LC, like the `sign-*` features. |
 | `prebuilt-nasm` |  | 1.3.0. Windows x86-64 without NASM: use the assembled objects shipped with `aws-lc-sys`. Does nothing without a `sign-*` feature. |
 | `stream` | ✅ | [`StreamEncryptor`](#streamencryptor) / [`StreamDecryptor`](#streamdecryptor) + [`encrypt_file`](#streamencrypt_file) / [`decrypt_file`](#streamdecrypt_file). Pulls both AEAD backends and HKDF-SHA256 (format v2 key schedule). |
 | `preset-minimal` |  | `std` + `aead-chacha20` only — the 0.2.0 surface. |
@@ -1897,6 +1902,59 @@ expect more.
 
 <a href="#top">↑ TOP</a>
 
+### `otp` module
+
+```rust
+#[cfg(feature = "otp")]
+pub fn hotp(secret: &[u8], counter: u64, digits: u32) -> Result<u32>;
+pub fn totp(secret: &[u8], unix_seconds: u64, digits: u32) -> Result<u32>;
+pub fn hotp_check(secret: &[u8], code: &str, counter: u64, digits: u32, look_ahead: u32) -> Result<u64>;
+pub fn totp_check(secret: &[u8], code: &str, unix_seconds: u64, digits: u32, window: u32) -> Result<u64>;
+pub fn hmac_sha1_legacy(key: &[u8], data: &[u8]) -> [u8; 20];
+
+pub const TOTP_STEP_SECONDS: u64 = 30;
+pub const OTP_MIN_SECRET_LEN: usize = 16;
+pub const OTP_MIN_DIGITS: u32 = 6;
+pub const OTP_MAX_DIGITS: u32 = 8;
+pub const OTP_MAX_WINDOW: u32 = 10;
+pub const HMAC_SHA1_OUTPUT_LEN: usize = 20;
+```
+
+New in 1.5.0. HOTP (RFC 4226) and TOTP (RFC 6238: HMAC-SHA1, 30-second
+step, T0 = 0), the codes authenticator apps show. Feature `otp`; AWS-LC
+backend, like the `sign-*` features.
+
+- **HMAC-SHA1 is legacy.** RFC 4226 / 6238 and every authenticator app
+  use it; HMAC does not rely on SHA-1's broken collision resistance. It
+  lives only in this module, not in `mac`, and `hmac_sha1_legacy` is
+  there only for OTP variants these functions do not cover.
+- `secret` must be at least 16 bytes (RFC 4226 requires 128 bits; apps
+  usually use 20). `digits` is 6 to 8. Otherwise `Error::InvalidInput`.
+- `totp_check` / `hotp_check` take the code as typed (exactly `digits`
+  ASCII digits, leading zeros included), compute every candidate in the
+  window (`window` steps either side, or `look_ahead` counters ahead, at
+  most `OTP_MAX_WINDOW`) and compare all of them in constant time. A
+  wrong or malformed code is `AuthenticationFailed`.
+- They return the matched step / counter. **Store it and reject any
+  later code whose step is not greater**: a TOTP code is otherwise valid
+  for its whole step and window (replay).
+
+```rust
+# #[cfg(feature = "otp")] {
+use crypt_io::otp;
+let secret = b"12345678901234567890";
+assert_eq!(otp::hotp(secret, 1, 6)?, 287_082);                 // RFC 4226 appendix D
+assert_eq!(otp::totp_check(secret, "94287082", 59, 8, 0)?, 1);  // RFC 6238 appendix B
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
+Checked against RFC 4226 appendix D (codes and HMAC-SHA1 values) and
+RFC 6238 appendix B; `totp_check` is fuzzed
+(`fuzz/fuzz_targets/otp_check.rs`).
+
+<a href="#top">↑ TOP</a>
+
 ---
 
 ### `sign` module
@@ -1937,7 +1995,8 @@ them with [`wipe`](#wipe--wipe_vec) once the key is built. `Debug`
 prints the public key (Ed25519) or the modulus size (RSA), never
 private material. Both types are `Send + Sync`.
 
-**Not provided:** key generation, RSA-PSS, ECDSA.
+**Not provided:** key generation, RSA-PSS, ECDSA signing, ECDSA on
+other curves.
 
 <a href="#top">↑ TOP</a>
 
@@ -2083,6 +2142,7 @@ pub struct RsaPublicKey { /* parsed key, modulus size */ }
 impl RsaPublicKey {
     pub fn from_der(der: &[u8]) -> Result<Self>;              // 2048 to 8192 bits
     pub fn from_der_allow_1024(der: &[u8]) -> Result<Self>;   // 1024 to 8192 bits (DKIM)
+    pub fn from_components(n: &[u8], e: &[u8]) -> Result<Self>; // COSE / JWK n, e (1.5.0)
     pub fn check_pkcs1v15_sha256(&self, message: &[u8], signature: &[u8]) -> Result<()>;
     pub fn modulus_bits(&self) -> u32;
 }
@@ -2118,6 +2178,76 @@ key.check_pkcs1v15_sha256(&header_data, &b)?;          // Err(AuthenticationFail
 # }
 # Ok::<(), crypt_io::Error>(())
 ```
+
+<a href="#top">↑ TOP</a>
+
+#### `EcdsaP256PublicKey`
+
+```rust
+#[cfg(feature = "sign-p256")]
+#[derive(Clone)]
+pub struct EcdsaP256PublicKey { /* parsed key */ }
+
+impl EcdsaP256PublicKey {
+    pub fn from_sec1(point: &[u8]) -> Result<Self>;           // 65 B uncompressed or 33 B compressed
+    pub fn from_coordinates(x: &[u8; 32], y: &[u8; 32]) -> Result<Self>;
+    pub fn from_der(spki: &[u8]) -> Result<Self>;             // SubjectPublicKeyInfo
+    pub fn check_sha256(&self, message: &[u8], der_signature: &[u8]) -> Result<()>;
+    pub fn check_sha256_fixed(&self, message: &[u8], r_s: &[u8]) -> Result<()>;
+}
+// Clone, Debug (type name only); Send + Sync.
+
+pub const P256_SEC1_UNCOMPRESSED_LEN: usize = 65;
+pub const P256_FIXED_SIGNATURE_LEN: usize = 64;
+```
+
+New in 1.5.0. ECDSA P-256 with SHA-256, **verification only**:
+`ES256` as WebAuthn uses it (DER signatures, `check_sha256`) and as JOSE
+uses it (`r || s`, `check_sha256_fixed`). The point is checked to be on
+the curve when parsed; another curve is refused. A failed check is
+`AuthenticationFailed`; a bad key is `Error::Sign`. Checked against NIST
+CAVP SigVer and every case of Wycheproof's P-256 SHA-256 DER and P1363
+files (`tests/otp_webauthn.rs`).
+
+<a href="#top">↑ TOP</a>
+
+#### `CosePublicKey`
+
+```rust
+#[cfg(any(feature = "sign-p256", feature = "sign-ed25519", feature = "sign-rsa"))]
+#[non_exhaustive]
+pub enum CosePublicKey {
+    EcdsaP256(EcdsaP256PublicKey),   // sign-p256,   COSE alg -7   (ES256)
+    Ed25519(Ed25519PublicKey),       // sign-ed25519, COSE alg -8  (EdDSA)
+    Rsa(RsaPublicKey),               // sign-rsa,    COSE alg -257 (RS256)
+}
+
+impl CosePublicKey {
+    pub fn from_cose_key(bytes: &[u8]) -> Result<Self>;
+    pub fn algorithm(&self) -> i64;
+    pub fn check(&self, message: &[u8], signature: &[u8]) -> Result<()>;
+}
+
+pub const COSE_ALG_ES256: i64 = -7;
+pub const COSE_ALG_EDDSA: i64 = -8;
+pub const COSE_ALG_RS256: i64 = -257;
+```
+
+New in 1.5.0. A WebAuthn credential public key (`credentialPublicKey`
+in the attested credential data, RFC 9052 `COSE_Key`). Parse it at
+registration, store the bytes, and check each assertion:
+`key.check(&(authenticatorData || SHA-256(clientDataJSON)), &signature)`.
+
+The parser is strict: exactly one definite-length CBOR map, integer
+labels (text labels skipped), no tags, no duplicate labels, no trailing
+bytes, at most 16 parameters, nesting inside skipped values at most 4
+deep. `kty` and `alg` must be present and agree; `ES256` needs `crv`
+P-256 and 32-byte `x` / `y`, `EdDSA` `crv` Ed25519 and a 32-byte `x`,
+`RS256` `n` and `e` (2048 to 8192 bits). Any other algorithm (`ES384`,
+`ES512`, Ed448, `PS256`, ...) is `Error::Sign("COSE key: unsupported
+algorithm")`; a supported one whose feature is off is
+`Error::AlgorithmNotEnabled`. All WebAuthn Level 3 test vectors (section
+16) check, and the parser is fuzzed (`fuzz/fuzz_targets/cose_key.rs`).
 
 <a href="#top">↑ TOP</a>
 

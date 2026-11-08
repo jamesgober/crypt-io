@@ -19,6 +19,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.0] - 2026-11-08
+
+Minor release, for passkeys and authenticator apps (nex-db's MFA):
+one-time passwords (HOTP, TOTP), verify-only ECDSA P-256 (`ES256`), and
+WebAuthn COSE credential keys covering `ES256`, `EdDSA` and `RS256`
+(Windows Hello). New opt-in features `otp` and `sign-p256`, on the same
+AWS-LC backend as the other `sign-*` features. Additive only; MSRV stays
+1.85; the default build is unchanged.
+
+Release notes: [`docs/release/v1.5.0.md`](docs/release/v1.5.0.md).
+
+### Added
+
+- **`otp` module** (feature `otp`): `hotp(secret, counter, digits)`,
+  `totp(secret, unix_seconds, digits)` (30-second step, T0 = 0),
+  `hotp_check(.., look_ahead)` and `totp_check(.., window)`, which take
+  the typed code, compare every candidate in constant time and return
+  the matched counter / step for the replay guard; and
+  `hmac_sha1_legacy`. Constants `TOTP_STEP_SECONDS`,
+  `OTP_MIN_SECRET_LEN` (16, RFC 4226), `OTP_MIN_DIGITS` / `OTP_MAX_DIGITS`
+  (6 to 8), `OTP_MAX_WINDOW` (10), `HMAC_SHA1_OUTPUT_LEN`. HMAC-SHA1 is
+  documented as legacy and exists only in this module, not in `mac`.
+- **`sign::EcdsaP256PublicKey`** (feature `sign-p256`, verify only):
+  `from_sec1` (uncompressed or compressed), `from_coordinates`,
+  `from_der` (SPKI), `check_sha256` (DER signature: WebAuthn, COSE,
+  X.509) and `check_sha256_fixed` (64-byte `r || s`: JOSE `ES256`).
+  Constants `P256_SEC1_UNCOMPRESSED_LEN`, `P256_FIXED_SIGNATURE_LEN`.
+- **`sign::CosePublicKey`**: `from_cose_key` (strict CBOR `COSE_Key`
+  parser), `algorithm`, `check`; variants `EcdsaP256`, `Ed25519`, `Rsa`
+  (each behind its feature; `#[non_exhaustive]`). Constants
+  `COSE_ALG_ES256`, `COSE_ALG_EDDSA`, `COSE_ALG_RS256`.
+- `sign::RsaPublicKey::from_components(n, e)` (COSE / JWK keys).
+- `sign-all` now includes `sign-p256`.
+- Tests (`tests/otp_webauthn.rs`): RFC 4226 appendix D (codes and
+  HMAC-SHA1 intermediates), RFC 6238 appendix B (SHA-1), NIST CAVP 186-4
+  SigVer P-256 / SHA-256 verdicts, all of Wycheproof's P-256 SHA-256 DER
+  (484) and P1363 (262) files, every WebAuthn Level 3 test vector
+  (section 16: 12 assertions checked; `ES384`, `ES512`, Ed448 refused),
+  malformed-COSE cases, and a TOTP round-trip property test. Generated
+  by `tests/data/gen_v15_vectors.py`.
+- Fuzz targets `cose_key` and `otp_check` (seeded with the WebAuthn
+  credential keys).
+- Benches: `es256_check_webauthn`, `cose_key_parse_es256` (in `sign`)
+  and the new `otp` bench.
+- CI: `sign-p256` and `otp` in the feature-set matrix and the
+  partial-feature doc builds; the fuzz build now compiles the signing
+  and OTP targets.
+
+[1.5.0]: https://github.com/jamesgober/crypt-io/compare/v1.4.0...v1.5.0
+
+---
+
 ## [1.4.0] - 2026-11-05
 
 Minor release. Adds signature checking to the `sign` module, the
@@ -1476,5 +1528,5 @@ the deliberate stable cut.
 - Feature flags for AEAD (chacha20, aes-gcm), hashing (blake3, sha2), MAC (hmac, blake3 keyed), KDF (hkdf, argon2), stream encryption.
 - Dependencies wired: `mod-rand` for CSPRNG, `error-forge` for errors, optional `log-io` and `metrics-lib`.
 
-[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v1.5.0...HEAD
 [0.1.0]: https://github.com/jamesgober/crypt-io/releases/tag/v0.1.0
