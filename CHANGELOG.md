@@ -368,7 +368,7 @@ Release notes: [`docs/release/v1.2.1.md`](docs/release/v1.2.1.md).
   text otherwise, so docs.rs (all features) keeps every link.
 - The `aead` module docs now say that `generate_key` also needs the
   `zeroize` feature.
-- The README linked to `.dev/ROADMAP.md`, which is not in the
+- The README linked to a planning file that is not in the
   repository. The link is removed.
 
 ### Changed
