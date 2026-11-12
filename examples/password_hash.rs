@@ -39,7 +39,8 @@ fn main() -> Result<(), Error> {
     //   - wrong password               → Err(Error::AuthenticationFailed)
     //   - malformed / corrupted PHC    → Err(Error::Kdf(...))
     //   - a variant or costs outside the policy (default: argon2id,
-    //     m <= 1 GiB, t <= 64, p <= 16) → Err(Error::Kdf(...))
+    //     m <= 256 MiB, t <= 64, p <= 16, m * t <= 2^20)
+    //     → Err(Error::Kdf(...))
     //
     // Log these differently. Wrong password is "attacker / typo"
     // (warn). Malformed PHC is "corruption / bug" (error).
@@ -62,7 +63,16 @@ fn main() -> Result<(), Error> {
     // planted low-cost hash.
     let policy = Argon2Policy::new().with_min_cost(32 * 1024, 2);
     kdf::argon2_check_with_policy(&phc, b"service-token", &policy)?;
-    let weak = kdf::argon2_hash_with_params(b"service-token", Argon2Params::new(8, 1, 1, 32))?;
+    // `argon2_hash_with_params` refuses weak parameters (1.6.0); the
+    // policy form makes a cheap hash only when asked to explicitly.
+    assert!(
+        kdf::argon2_hash_with_params(b"service-token", Argon2Params::new(8, 1, 1, 32)).is_err()
+    );
+    let weak = kdf::argon2_hash_with_policy(
+        b"service-token",
+        Argon2Params::new(8, 1, 1, 32),
+        &Argon2Policy::new(),
+    )?;
     assert!(matches!(
         kdf::argon2_check_with_policy(&weak, b"service-token", &policy),
         Err(Error::Kdf(_))

@@ -207,6 +207,38 @@ Frozen free functions and types (feature-gated as documented in
   `COSE_ALG_RS256`, `sign::RsaPublicKey::from_components`.
 - Features `sign-p256` and `otp`; `sign-all` now includes `sign-p256`.
 
+### Added in 1.6.0 (covered by the same promise)
+
+- `Crypt::keyed` and `KeyedCrypt` (`algorithm`, `encrypt`,
+  `encrypt_with_aad`, `encrypt_into`, `encrypt_with_aad_into`,
+  `decrypt`, `decrypt_with_aad`, `decrypt_zeroizing`, `decrypt_into`,
+  `decrypt_with_aad_into`, `seal`, `seal_with_aad`, `open`,
+  `open_with_aad`). Its bytes are the single-shot and sealed formats
+  above; its `open` refuses a buffer sealed under another algorithm.
+- `kdf::hkdf_sha256_zeroizing`, `kdf::hkdf_sha512_zeroizing`
+  *(features `kdf-hkdf` + `zeroize`)*.
+- `StreamDecryptor::update_zeroizing`, `finalize_zeroizing`
+  *(feature `zeroize`)*.
+- `Argon2Policy::with_max_work`, `Argon2Policy::max_work`.
+- Feature `aead-aws-lc` (same bytes, AWS-LC engine).
+
+### Changed in 1.6.0 (tighter limits on untrusted input)
+
+These follow the rule in [What can change in 1.x](#what-can-change-in-1x)
+for limits that protect against hostile input. No wire format changed.
+
+- The default `Argon2Policy` caps `m` at 256 MiB (was 1 GiB) and adds a
+  total-work cap, `m * t` at most 1 GiB-pass. A stored hash above them
+  needs a policy with higher caps (`with_max_cost`).
+- `argon2_hash_with_params` refuses parameters that fail
+  `Argon2Params::validate`. Use `argon2_hash_with_policy` for tests
+  with tiny parameters.
+- `pbkdf2_hmac_sha256` caps total work (iterations times 32-byte output
+  blocks) at `PBKDF2_MAX_ITERATIONS`, not iterations alone. 32-byte
+  outputs, the SCRAM case, are unaffected.
+- COSE Ed25519 keys of small order are refused.
+- `preset-minimal` includes `zeroize`.
+
 ### Deprecated in 1.1.0 (kept for all of 1.x)
 
 - `mac::hmac_sha256_verify`, `mac::hmac_sha512_verify`,
@@ -264,6 +296,11 @@ Frozen free functions and types (feature-gated as documented in
 - **New `*_into` / `*_with_aad` variants** — additive ergonomics.
 - **Performance** — `1.x.0` may improve throughput, allocation
   count, or memory usage. Will not reduce them.
+- **Tighter resource limits on untrusted input** — a minor release
+  may lower a default cap (Argon2 or PBKDF2 cost, buffer sizes) when
+  the old one let hostile input cost too much. Each change is listed
+  in the release notes with the setting that restores the old
+  behaviour, where one exists.
 - **Dependency versions** — minor bumps of upstream RustCrypto
   crates may land in patch releases (they're security-relevant
   and version-pinning would block urgent fixes). Major bumps of

@@ -322,6 +322,47 @@ mod webauthn {
         );
     }
 
+    /// A small-order Ed25519 key makes one signature check for many
+    /// messages. The passkey path refuses such keys (1.6.0); the direct
+    /// constructor keeps accepting them (documented).
+    #[cfg(feature = "sign-ed25519")]
+    #[test]
+    fn small_order_eddsa_cose_keys_are_refused() {
+        use crypt_io::sign::Ed25519PublicKey;
+        // a4 01 01 03 27 20 06 21 58 20 <x>: kty OKP, alg EdDSA, crv Ed25519.
+        let cose = |x: [u8; 32]| {
+            let mut k = vec![0xa4, 0x01, 0x01, 0x03, 0x27, 0x20, 0x06, 0x21, 0x58, 0x20];
+            k.extend_from_slice(&x);
+            k
+        };
+        let mut identity = [0u8; 32];
+        identity[0] = 1;
+        let mut identity_sign_bit = identity;
+        identity_sign_bit[31] |= 0x80;
+        // Order-4 point (0, -1)... encoded as y = p - 1.
+        let mut order4 = [0xffu8; 32];
+        order4[0] = 0xec;
+        order4[31] = 0x7f;
+        for x in [identity, identity_sign_bit, [0u8; 32], order4] {
+            assert_eq!(
+                CosePublicKey::from_cose_key(&cose(x)).unwrap_err(),
+                Error::Sign("COSE key: Ed25519 key of small order"),
+                "{x:02x?}"
+            );
+        }
+        assert!(Ed25519PublicKey::from_bytes(&identity).is_ok());
+        // An ordinary key still parses.
+        let real = crypt_io::sign::Ed25519SigningKey::from_seed(&[5u8; 32])
+            .unwrap()
+            .public_key();
+        assert_eq!(
+            CosePublicKey::from_cose_key(&cose(real))
+                .unwrap()
+                .algorithm(),
+            -8
+        );
+    }
+
     #[cfg(feature = "sign-rsa")]
     #[test]
     fn rsa_components_match_der() {

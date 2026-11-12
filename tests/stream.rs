@@ -439,3 +439,19 @@ fn file_round_trip_aes() {
     let _ = std::fs::remove_file(&enc_path);
     let _ = std::fs::remove_file(&dec_path);
 }
+
+/// 1.6.0: the zeroizing forms return what `update` / `finalize` return.
+#[cfg(feature = "zeroize")]
+#[test]
+fn zeroizing_decryptor_forms_match_the_plain_ones() {
+    let key = [0x24u8; 32];
+    let pt: Vec<u8> = (0..5000u32).map(|i| i as u8).collect();
+    let (mut enc, header) =
+        StreamEncryptor::new_with_chunk_size(&key, Algorithm::Aes256Gcm, 10).unwrap();
+    let mut wire = enc.update(&pt).unwrap();
+    wire.extend(enc.finalize().unwrap());
+    let mut dec = StreamDecryptor::new(&key, &header).unwrap();
+    let mut back = dec.update_zeroizing(&wire).unwrap().to_vec();
+    back.extend_from_slice(&dec.finalize_zeroizing().unwrap());
+    assert_eq!(back, pt);
+}

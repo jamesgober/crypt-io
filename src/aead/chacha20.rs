@@ -17,7 +17,9 @@ mod tests {
     use chacha20poly1305::aead::{Aead, KeyInit, Payload};
     use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce, XChaCha20Poly1305, XNonce};
 
+    use super::super::Algorithm;
     use super::super::backend::{decrypt, encrypt};
+    use super::super::engine::Engine;
     use super::super::{CHACHA20_NONCE_LEN, CHACHA20_TAG_LEN};
 
     // RFC 8439 §2.8.2 (Poly1305 Construction) test vector for the
@@ -106,7 +108,12 @@ mod tests {
         // The same vector through crypt-io's wire format.
         let mut wire = nonce.clone();
         wire.extend_from_slice(&expected);
-        let recovered = decrypt::<XChaCha20Poly1305>(&key, &wire, &aad).unwrap();
+        let recovered = decrypt(
+            &Engine::new(Algorithm::XChaCha20Poly1305, &key).unwrap(),
+            &wire,
+            &aad,
+        )
+        .unwrap();
         assert_eq!(recovered, plaintext);
     }
 
@@ -114,10 +121,21 @@ mod tests {
     fn round_trip_via_module_wrapper() {
         let key = [0xa1u8; 32];
         let pt = b"the wrapper layers nonce-prepend on top of the upstream primitive";
-        let wire = encrypt::<ChaCha20Poly1305>(&key, pt, &[], &[]).unwrap();
+        let wire = encrypt(
+            &Engine::new(Algorithm::ChaCha20Poly1305, &key).unwrap(),
+            pt,
+            &[],
+            &[],
+        )
+        .unwrap();
         // Wire layout sanity: nonce + ciphertext + tag.
         assert_eq!(wire.len(), CHACHA20_NONCE_LEN + pt.len() + CHACHA20_TAG_LEN);
-        let recovered = decrypt::<ChaCha20Poly1305>(&key, &wire, &[]).unwrap();
+        let recovered = decrypt(
+            &Engine::new(Algorithm::ChaCha20Poly1305, &key).unwrap(),
+            &wire,
+            &[],
+        )
+        .unwrap();
         assert_eq!(recovered, pt);
     }
 

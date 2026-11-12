@@ -37,7 +37,9 @@ mod tests {
     use aes_gcm::aead::{Aead, KeyInit, Payload};
     use aes_gcm::{Aes256Gcm, Key, Nonce};
 
+    use super::super::Algorithm;
     use super::super::backend::{decrypt, encrypt};
+    use super::super::engine::Engine;
     use super::super::{AES_GCM_NONCE_LEN, AES_GCM_TAG_LEN};
 
     // NIST GCM test vectors. The canonical reference is "The Galois/Counter
@@ -137,11 +139,22 @@ mod tests {
     fn round_trip_via_module_wrapper() {
         let key = [0xb2u8; 32];
         let pt = b"the wrapper layers nonce-prepend on top of the upstream primitive";
-        let wire = encrypt::<Aes256Gcm>(&key, pt, &[], &[]).unwrap();
+        let wire = encrypt(
+            &Engine::new(Algorithm::Aes256Gcm, &key).unwrap(),
+            pt,
+            &[],
+            &[],
+        )
+        .unwrap();
         // Wire layout sanity: nonce + ciphertext + tag, identical to the
         // ChaCha20-Poly1305 backend.
         assert_eq!(wire.len(), AES_GCM_NONCE_LEN + pt.len() + AES_GCM_TAG_LEN);
-        let recovered = decrypt::<Aes256Gcm>(&key, &wire, &[]).unwrap();
+        let recovered = decrypt(
+            &Engine::new(Algorithm::Aes256Gcm, &key).unwrap(),
+            &wire,
+            &[],
+        )
+        .unwrap();
         assert_eq!(recovered, pt);
     }
 

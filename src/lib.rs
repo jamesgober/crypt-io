@@ -4,8 +4,9 @@
 //!
 //! AEAD encryption (ChaCha20-Poly1305, XChaCha20-Poly1305, AES-256-GCM), hashing (BLAKE3, SHA-2), MAC
 //! (HMAC, BLAKE3 keyed), KDF (HKDF, Argon2id, PBKDF2) and, behind features, signatures
-//! (Ed25519, RSA PKCS#1 v1.5). Algorithm-agile. RustCrypto-backed primitives with REPS
-//! discipline. Simple API. Sub-microsecond throughput.
+//! (Ed25519, RSA PKCS#1 v1.5, ECDSA P-256 checks), WebAuthn COSE keys and one-time
+//! passwords (HOTP, TOTP). Algorithm-agile. RustCrypto-backed primitives, with an optional
+//! AWS-LC AEAD backend, and REPS discipline. Simple API. Sub-microsecond throughput.
 //!
 //! # Design philosophy
 //!
@@ -106,6 +107,9 @@
 // published crate. CI carries `RUSTFLAGS="-D warnings"` instead so the
 // gate is enforced where the lint surface is pinned to the toolchain
 // matrix.
+// No `unsafe` in library code; the tests read dropped memory to check
+// wiping and need it there. 1.6.0.
+#![cfg_attr(not(test), forbid(unsafe_code))]
 #![deny(missing_docs)]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(unused_must_use)]
@@ -165,7 +169,7 @@ pub use crate::tag::Tag;
 pub use crate::wipe::{wipe, wipe_vec};
 
 #[cfg(any(feature = "aead-chacha20", feature = "aead-aes-gcm"))]
-pub use crate::aead::{Algorithm, Crypt};
+pub use crate::aead::{Algorithm, Crypt, KeyedCrypt};
 
 #[cfg(all(
     any(feature = "aead-chacha20", feature = "aead-aes-gcm"),

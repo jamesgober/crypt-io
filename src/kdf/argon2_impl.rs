@@ -42,8 +42,14 @@ pub const ARGON2_DEFAULT_OUTPUT_LEN: usize = 32;
 /// PHC-recommended minimum).
 pub const ARGON2_DEFAULT_SALT_LEN: usize = 16;
 
-/// Default upper bound on `m_cost` (KiB): 1 GiB.
-const MAX_M_COST_KIB: u32 = 1024 * 1024;
+/// Default upper bound on `m_cost` (KiB): 256 MiB (1 GiB before 1.6.0).
+const MAX_M_COST_KIB: u32 = 256 * 1024;
+
+/// Default upper bound on total work, `m_cost * t_cost`, in KiB-passes:
+/// 2^20, about 1 GiB of memory passes, 27 times the default hash
+/// (19 MiB, 2 passes). New in 1.6.0; before it each parameter was
+/// capped on its own, which let one string ask for 64 GiB of passes.
+const MAX_WORK_KIB_PASSES: u64 = 1 << 20;
 
 /// Default upper bound on `t_cost`.
 const MAX_T_COST: u32 = 64;
@@ -56,7 +62,10 @@ const MAX_P_COST: u32 = 16;
 ///
 /// The cost parameters of a PHC string come from the string itself, so
 /// a hostile or corrupted hash could otherwise demand gigabytes of
-/// memory (`m`), minutes of CPU (`t`), or switch to a weaker variant.
+/// memory (`m`), minutes of CPU (`m * t`), or switch to a weaker
+/// variant. The policy caps memory, passes and lanes, and since 1.6.0
+/// also the total work `m * t`, which is what bounds the time one check
+/// takes.
 /// [`argon2_check`] applies [`Argon2Policy::new`]; pass your own policy
 /// to [`argon2_check_with_policy`] to change the limits, for example to
 /// keep verifying hashes made before crypt-io 1.0.1 with costs above
@@ -65,9 +74,10 @@ const MAX_P_COST: u32 = 16;
 ///
 /// | Setting            | Default (`new()`) |
 /// |--------------------|-------------------|
-/// | max `m_cost`       | 1,048,576 KiB (1 GiB) |
+/// | max `m_cost`       | 262,144 KiB (256 MiB; 1 GiB before 1.6.0) |
 /// | max `t_cost`       | 64                |
 /// | max `p_cost`       | 16                |
+/// | max work, `m_cost * t_cost` | 1,048,576 KiB-passes (1.6.0) |
 /// | min `m_cost`       | none              |
 /// | min `t_cost`       | none              |
 /// | `argon2i` allowed  | no                |
@@ -81,10 +91,11 @@ const MAX_P_COST: u32 = 16;
 /// # #[cfg(feature = "kdf-argon2")] {
 /// use crypt_io::kdf::{self, Argon2Params, Argon2Policy};
 ///
-/// // Accept the 2 GiB hashes an older deployment produced.
-/// let policy = Argon2Policy::new().with_max_cost(2 * 1024 * 1024, 64, 16);
+/// // Accept the 2 GiB, 3-pass hashes an older deployment produced.
+/// let policy = Argon2Policy::new().with_max_cost(2 * 1024 * 1024, 3, 1);
 /// assert_eq!(policy.max_m_cost(), 2 * 1024 * 1024);
-/// # let phc = kdf::argon2_hash_with_params(b"pw", Argon2Params::new(8, 1, 1, 32))?;
+/// assert_eq!(policy.max_work(), 6 * 1024 * 1024);   // raised with the caps
+/// # let phc = kdf::argon2_hash_with_policy(b"pw", Argon2Params::new(8, 1, 1, 32), &policy)?;
 /// kdf::argon2_check_with_policy(&phc, b"pw", &policy)?;
 /// # }
 /// # Ok::<(), crypt_io::Error>(())
@@ -94,6 +105,7 @@ pub struct Argon2Policy {
     max_m_cost: u32,
     max_t_cost: u32,
     max_p_cost: u32,
+    max_work: u64,
     min_m_cost: u32,
     min_t_cost: u32,
     allow_argon2i: bool,
@@ -101,15 +113,16 @@ pub struct Argon2Policy {
 }
 
 impl Argon2Policy {
-    /// The default policy: `argon2id` only, `m` up to 1 GiB, `t` up to
-    /// 64, `p` up to 16, no minimums. These are the limits 1.0.1
-    /// introduced.
+    /// The default policy: `argon2id` only, `m` up to 256 MiB, `t` up to
+    /// 64, `p` up to 16, `m * t` up to 2^20 KiB-passes, no minimums.
+    /// (1.0.1 to 1.5.x allowed `m` up to 1 GiB and had no work cap.)
     #[must_use]
     pub const fn new() -> Self {
         Self {
             max_m_cost: MAX_M_COST_KIB,
             max_t_cost: MAX_T_COST,
             max_p_cost: MAX_P_COST,
+            max_work: MAX_WORK_KIB_PASSES,
             min_m_cost: 0,
             min_t_cost: 0,
             allow_argon2i: false,
@@ -120,12 +133,34 @@ impl Argon2Policy {
     /// Set the upper bounds on memory cost (KiB), time cost and
     /// parallelism. Raising them lets hashes with higher costs verify,
     /// at the price of letting a hostile PHC string cost that much.
+    ///
+    /// The total-work cap is set to `m_cost * t_cost`, so the hashes you
+    /// allow here verify; lower it afterwards with
+    /// [`with_max_work`](Self::with_max_work) to keep a tighter bound
+    /// on the time one check takes.
     #[must_use]
     pub const fn with_max_cost(mut self, m_cost: u32, t_cost: u32, p_cost: u32) -> Self {
         self.max_m_cost = m_cost;
         self.max_t_cost = t_cost;
         self.max_p_cost = p_cost;
+        self.max_work = m_cost as u64 * t_cost as u64;
         self
+    }
+
+    /// Set the upper bound on total work, `m_cost * t_cost` in
+    /// KiB-passes. Check time grows with it (the default 2^20 is about
+    /// 1 GiB of memory passes). New in 1.6.0.
+    #[must_use]
+    pub const fn with_max_work(mut self, kib_passes: u64) -> Self {
+        self.max_work = kib_passes;
+        self
+    }
+
+    /// Upper bound on total work, `m_cost * t_cost`, in KiB-passes. New
+    /// in 1.6.0.
+    #[must_use]
+    pub const fn max_work(&self) -> u64 {
+        self.max_work
     }
 
     /// Set lower bounds on memory cost (KiB) and time cost. Hashes
@@ -202,6 +237,9 @@ impl Argon2Policy {
         if m_cost > self.max_m_cost || t_cost > self.max_t_cost || p_cost > self.max_p_cost {
             return Err(Error::Kdf("argon2 params exceed limits"));
         }
+        if u64::from(m_cost) * u64::from(t_cost) > self.max_work {
+            return Err(Error::Kdf("argon2 params exceed the work limit"));
+        }
         if m_cost < self.min_m_cost || t_cost < self.min_t_cost {
             return Err(Error::Kdf("argon2 params below policy minimum"));
         }
@@ -270,14 +308,14 @@ impl Argon2Params {
     ///
     #[cfg_attr(
         any(feature = "std", feature = "getrandom"),
-        doc = " [`argon2_hash_with_params`] does not call this, so that tests and"
+        doc = " [`argon2_hash_with_params`] calls this since 1.6.0;"
     )]
     #[cfg_attr(
         not(any(feature = "std", feature = "getrandom")),
-        doc = " `argon2_hash_with_params` does not call this, so that tests and"
+        doc = " `argon2_hash_with_params` calls this since 1.6.0;"
     )]
-    /// existing callers with small parameters keep working; call it
-    /// yourself when the values come from configuration. New in 1.1.0.
+    /// `argon2_hash_with_policy` does not, for tests that need cheap
+    /// parameters. New in 1.1.0.
     ///
     /// # Errors
     ///
@@ -356,27 +394,32 @@ pub fn argon2_hash(password: &[u8]) -> Result<String> {
     argon2_hash_with_params(password, Argon2Params::default())
 }
 
-/// Like [`argon2_hash`] but uses caller-supplied parameters.
+/// Like [`argon2_hash`] but uses caller-supplied parameters, checked
+/// with [`Argon2Params::validate`] first: since 1.6.0 parameters below
+/// the OWASP minimum (for example a test value that reached a
+/// configuration file) are refused instead of producing a hash that is
+/// cheap to brute-force. They must also stay within the default
+/// [`Argon2Policy`] caps, so every hash produced here verifies with
+/// [`argon2_check`].
 ///
-/// The parameters must stay within the default [`Argon2Policy`] caps
-/// (`m_cost` at most 1 GiB, `t_cost` at most 64, `p_cost` at most 16),
-/// so that every hash produced here verifies with [`argon2_check`]. To
-/// hash with higher costs, use [`argon2_hash_with_policy`]. Use
-/// [`Argon2Params::validate`] to check that custom parameters are not
-/// too weak.
+/// To hash with costs outside those bounds, deliberately (tests,
+/// higher-cost hashes), use [`argon2_hash_with_policy`].
 ///
 /// # Errors
 ///
-/// Same as [`argon2_hash`]; [`Error::Kdf`] also when a parameter is
-/// above those limits.
+/// Same as [`argon2_hash`]; [`Error::Kdf`] also when the parameters fail
+/// [`Argon2Params::validate`].
 #[cfg(any(feature = "std", feature = "getrandom"))]
 pub fn argon2_hash_with_params(password: &[u8], params: Argon2Params) -> Result<String> {
+    params.validate()?;
     argon2_hash_with_policy(password, params, &Argon2Policy::new())
 }
 
 /// Like [`argon2_hash_with_params`], but checks `params` against
-/// `policy` instead of the default caps: both its maximums and its
-/// minimums apply. Always produces an Argon2id hash. New in 1.1.0.
+/// `policy` instead of the default caps and the OWASP minimum: both the
+/// policy's maximums and its minimums apply, nothing else. This is the
+/// form for tests that need cheap parameters, and for hashes above the
+/// default caps. Always produces an Argon2id hash. New in 1.1.0.
 ///
 /// # Errors
 ///
@@ -416,7 +459,8 @@ pub fn argon2_hash_with_policy(
 /// `Err(`[`Error::AuthenticationFailed`]`)` if it does not, so
 /// `argon2_check(..)?;` does the right thing. The PHC string is checked
 /// against the default [`Argon2Policy`] first: `argon2id` only, `m` at
-/// most 1 GiB, `t` at most 64, `p` at most 16. Use
+/// most 256 MiB, `t` at most 64, `p` at most 16, and `m * t` at most
+/// 1 GiB-pass (1.6.0). Use
 /// [`argon2_check_with_policy`] to change those limits.
 ///
 /// Verification re-derives the hash under the encoded parameters and
@@ -522,6 +566,12 @@ mod tests {
     // The functional contract (round-trip, wrong-password rejection,
     // tampered-hash rejection, parse-failure surfacing) is identical;
     // only the runtime cost changes.
+    /// Hash with test parameters (below the OWASP minimum, so through
+    /// the policy form, which does not apply it).
+    fn hash_fast(password: &[u8], params: Argon2Params) -> Result<String> {
+        argon2_hash_with_policy(password, params, &Argon2Policy::new())
+    }
+
     fn fast_params() -> Argon2Params {
         Argon2Params {
             m_cost: 8,
@@ -533,14 +583,14 @@ mod tests {
 
     #[test]
     fn hash_then_verify_round_trip() {
-        let phc = argon2_hash_with_params(b"hunter2", fast_params()).unwrap();
+        let phc = hash_fast(b"hunter2", fast_params()).unwrap();
         assert!(phc.starts_with("$argon2id$"));
         assert!(argon2_verify(&phc, b"hunter2").unwrap());
     }
 
     #[test]
     fn verify_rejects_wrong_password() {
-        let phc = argon2_hash_with_params(b"correct", fast_params()).unwrap();
+        let phc = hash_fast(b"correct", fast_params()).unwrap();
         assert!(!argon2_verify(&phc, b"wrong").unwrap());
     }
 
@@ -549,8 +599,8 @@ mod tests {
         // Different salts → different PHC strings, even for identical
         // password + params. Verifies salt randomisation is wired up.
         let p = fast_params();
-        let a = argon2_hash_with_params(b"same", p).unwrap();
-        let b = argon2_hash_with_params(b"same", p).unwrap();
+        let a = hash_fast(b"same", p).unwrap();
+        let b = hash_fast(b"same", p).unwrap();
         assert_ne!(a, b);
         assert!(argon2_verify(&a, b"same").unwrap());
         assert!(argon2_verify(&b, b"same").unwrap());
@@ -564,7 +614,7 @@ mod tests {
 
     #[test]
     fn verify_rejects_tampered_phc() {
-        let phc = argon2_hash_with_params(b"hunter2", fast_params()).unwrap();
+        let phc = hash_fast(b"hunter2", fast_params()).unwrap();
         // Tamper a character in the **middle of the salt** portion.
         // The salt sits between the second-to-last and the last '$'.
         // A mid-base64 char is always a full-6-bit character — any
@@ -591,7 +641,7 @@ mod tests {
     #[test]
     fn empty_password_round_trips() {
         // Edge case: empty password should hash and verify cleanly.
-        let phc = argon2_hash_with_params(b"", fast_params()).unwrap();
+        let phc = hash_fast(b"", fast_params()).unwrap();
         assert!(argon2_verify(&phc, b"").unwrap());
         assert!(!argon2_verify(&phc, b"not-empty").unwrap());
     }
@@ -599,7 +649,7 @@ mod tests {
     #[test]
     fn long_password_round_trips() {
         let password = [b'x'; 1024];
-        let phc = argon2_hash_with_params(&password, fast_params()).unwrap();
+        let phc = hash_fast(&password, fast_params()).unwrap();
         assert!(argon2_verify(&phc, &password).unwrap());
     }
 
@@ -607,7 +657,7 @@ mod tests {
     fn custom_params_are_honoured() {
         // Encode params into the PHC string and check they round-trip.
         let params = Argon2Params::new(16, 2, 1, 32);
-        let phc = argon2_hash_with_params(b"pw", params).unwrap();
+        let phc = hash_fast(b"pw", params).unwrap();
         // PHC encodes as `$argon2id$v=19$m=16,t=2,p=1$...$...`.
         assert!(phc.contains("m=16"));
         assert!(phc.contains("t=2"));
@@ -664,7 +714,7 @@ mod tests {
     fn verify_accepts_parameters_at_the_limits() {
         // t and p exactly at the caps (m kept small so the test is fast).
         let params = Argon2Params::new(8 * MAX_P_COST, MAX_T_COST, MAX_P_COST, 32);
-        let phc = argon2_hash_with_params(b"pw", params).unwrap();
+        let phc = hash_fast(b"pw", params).unwrap();
         assert!(argon2_verify(&phc, b"pw").unwrap());
     }
 
@@ -707,7 +757,7 @@ mod tests {
 
     #[test]
     fn check_matches_verify() {
-        let phc = argon2_hash_with_params(b"pw", fast_params()).unwrap();
+        let phc = hash_fast(b"pw", fast_params()).unwrap();
         assert_eq!(argon2_check(&phc, b"pw"), Ok(()));
         assert_eq!(
             argon2_check(&phc, b"nope"),
@@ -729,7 +779,7 @@ mod tests {
 
     #[test]
     fn policy_can_lower_the_caps_and_set_minimums() {
-        let phc = argon2_hash_with_params(b"pw", Argon2Params::new(64, 2, 1, 32)).unwrap();
+        let phc = hash_fast(b"pw", Argon2Params::new(64, 2, 1, 32)).unwrap();
         let tight = Argon2Policy::new().with_max_cost(32, 64, 16);
         assert!(matches!(
             argon2_check_with_policy(&phc, b"pw", &tight),
@@ -810,5 +860,50 @@ mod tests {
         ] {
             assert!(matches!(bad.validate(), Err(Error::Kdf(_))), "{bad:?}");
         }
+    }
+
+    // ---- 1.6.0: total-work cap, weak custom parameters ----
+
+    #[test]
+    fn default_policy_refuses_the_old_ceiling_before_doing_work() {
+        // Passed the 1.0.1 to 1.5.x caps: 1 GiB, 64 passes, 16 lanes.
+        let phc = format!("$argon2id$v=19$m=1048576,t=64,p=16{SALT_HASH}");
+        let started = std::time::Instant::now();
+        assert!(matches!(argon2_check(&phc, b"guess"), Err(Error::Kdf(_))));
+        // Refused from the header alone, long before any hashing.
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(Argon2Policy::new().max_m_cost(), 256 * 1024);
+    }
+
+    #[test]
+    fn work_cap_bounds_memory_times_passes() {
+        let p = Argon2Policy::new();
+        // At the cap: 256 MiB x 4 passes = 2^20 KiB-passes.
+        assert!(p.check_costs(256 * 1024, 4, 1).is_ok());
+        assert_eq!(
+            p.check_costs(256 * 1024, 5, 1),
+            Err(Error::Kdf("argon2 params exceed the work limit"))
+        );
+        // Small memory, many passes: still bounded by t <= 64.
+        assert!(p.check_costs(16 * 1024, 64, 1).is_ok());
+        assert!(p.check_costs(16 * 1024 + 1, 64, 1).is_err());
+        let wide = p.with_max_cost(1024 * 1024, 64, 16);
+        assert_eq!(wide.max_work(), 64 * 1024 * 1024);
+        assert!(wide.check_costs(1024 * 1024, 64, 16).is_ok());
+        assert!(
+            wide.with_max_work(1 << 20)
+                .check_costs(1024 * 1024, 2, 1)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn hash_with_params_refuses_weak_parameters() {
+        assert_eq!(
+            argon2_hash_with_params(b"pw", fast_params()),
+            Err(Error::Kdf("argon2 params below the OWASP minimum"))
+        );
+        // The explicit policy form still takes them (tests, migrations).
+        assert!(hash_fast(b"pw", fast_params()).is_ok());
     }
 }

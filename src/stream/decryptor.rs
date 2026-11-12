@@ -12,6 +12,7 @@ use super::frame::{
     HEADER_LEN, MAX_AAD_LEN, MAX_NONCE_LEN, NONCE_PREFIX_LEN, SALT_LEN, StreamFormat, TAG_LEN,
     chunk_nonce, chunk_size_from_log2, derive_v2, parse_header,
 };
+use crate::aead::engine::Engine;
 
 #[cfg_attr(
     any(feature = "std", feature = "getrandom"),
@@ -64,6 +65,9 @@ pub struct StreamDecryptor {
     /// v1: the caller's key. v2: the caller's key until the salt has
     /// arrived, then the per-stream subkey.
     key: [u8; 32],
+    /// `key`, scheduled once (1.6.0; earlier releases rebuilt the
+    /// cipher for every chunk). Rebuilt when the v2 subkey arrives.
+    engine: alloc::boxed::Box<Engine>,
     nonce_base: [u8; MAX_NONCE_LEN],
     nonce_len: usize,
     /// `header` (v1) or `header || salt` (v2).
@@ -108,6 +112,7 @@ impl StreamDecryptor {
             algorithm: parsed.algorithm,
             format: parsed.format,
             key: [0u8; 32],
+            engine: alloc::boxed::Box::new(Engine::new(parsed.algorithm, key)?),
             nonce_base: [0u8; MAX_NONCE_LEN],
             nonce_len: parsed.algorithm.nonce_len(),
             aad: [0u8; MAX_AAD_LEN],
@@ -116,8 +121,10 @@ impl StreamDecryptor {
             counter: 0,
             chunk_size,
             chunk_size_log2: parsed.chunk_size_log2,
-            // capacity = one non-final chunk's worth
-            buffer: Vec::with_capacity(chunk_size + TAG_LEN),
+            // Empty: the chunk size comes from a header that is not
+            // authenticated until the first chunk opens, so memory grows
+            // with the bytes actually received (at most one frame).
+            buffer: Vec::new(),
             buffer_high_water: 0,
         };
         dec.key.copy_from_slice(key);
@@ -220,6 +227,34 @@ impl StreamDecryptor {
         Ok(out)
     }
 
+    /// [`update`](Self::update), returning the plaintext in a buffer
+    /// that is wiped when it is dropped (the plain `Vec` from `update`
+    /// is freed without wiping). The plaintext is written into that
+    /// buffer directly; there is no other copy.
+    ///
+    /// Requires the `zeroize` feature. New in 1.6.0.
+    ///
+    /// # Errors
+    ///
+    /// As [`update`](Self::update).
+    #[cfg(feature = "zeroize")]
+    pub fn update_zeroizing(&mut self, data: &[u8]) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+        self.update(data).map(zeroize::Zeroizing::new)
+    }
+
+    /// [`finalize`](Self::finalize), returning the plaintext in a buffer
+    /// that is wiped when it is dropped.
+    ///
+    /// Requires the `zeroize` feature. New in 1.6.0.
+    ///
+    /// # Errors
+    ///
+    /// As [`finalize`](Self::finalize).
+    #[cfg(feature = "zeroize")]
+    pub fn finalize_zeroizing(self) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+        self.finalize().map(zeroize::Zeroizing::new)
+    }
+
     /// Zero-allocation [`update`](Self::update) — appends decrypted
     /// plaintext to `out` instead of returning a new `Vec`. Reusing
     /// the same `out` buffer across calls amortises the allocation
@@ -261,7 +296,7 @@ impl StreamDecryptor {
     /// v2: collect salt bytes from the front of `data`; once all 32
     /// have arrived, swap the caller's key for the stream subkey.
     /// Returns the bytes of `data` that follow the salt.
-    fn take_salt<'a>(&mut self, data: &'a [u8]) -> &'a [u8] {
+    fn take_salt<'a>(&mut self, data: &'a [u8]) -> Result<&'a [u8]> {
         let need = SALT_LEN - self.salt_have;
         let take = need.min(data.len());
         let at = HEADER_LEN + self.salt_have;
@@ -280,8 +315,9 @@ impl StreamDecryptor {
                 &mut self.nonce_base,
             );
             wipe(&mut master);
+            *self.engine = Engine::new(self.algorithm, &self.key)?;
         }
-        &data[take..]
+        Ok(&data[take..])
     }
 
     /// Shared body of `update` / `update_into`. Appends plaintext to
@@ -290,7 +326,7 @@ impl StreamDecryptor {
     /// encryptor guarantees the final chunk is strictly shorter.
     fn process(&mut self, mut data: &[u8], out: &mut Vec<u8>) -> Result<()> {
         if self.salt_have < SALT_LEN {
-            data = self.take_salt(data);
+            data = self.take_salt(data)?;
         }
         let frame = self.chunk_size + TAG_LEN;
 
@@ -328,8 +364,7 @@ impl StreamDecryptor {
     fn open_chunk(&self, chunk: &[u8], is_final: bool, out: &mut Vec<u8>) -> Result<()> {
         let nonce = chunk_nonce(&self.nonce_base, self.nonce_len, self.counter, is_final);
         decrypt_chunk_append(
-            self.algorithm,
-            &self.key,
+            &self.engine,
             &nonce[..self.nonce_len],
             chunk,
             &self.aad[..self.aad_len],

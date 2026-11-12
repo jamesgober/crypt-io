@@ -21,6 +21,12 @@ pub const P256_FIXED_SIGNATURE_LEN: usize = 64;
 ///
 /// The point is checked to be on the curve when the key is parsed, and
 /// the key is parsed once, so each check costs only the verification.
+///
+/// **Signatures are not unique.** ECDSA is malleable: when `(r, s)`
+/// checks, so does `(r, n - s)`, and both are valid (this type, like
+/// AWS-LC and Wycheproof, does not require low `s`). Never use signature
+/// bytes as a replay or deduplication key; key replays on the signed
+/// data instead (for WebAuthn, the challenge).
 /// The key is public: it is `Clone`, and `Debug` prints only the type
 /// name. The type is `Send` and `Sync`.
 ///

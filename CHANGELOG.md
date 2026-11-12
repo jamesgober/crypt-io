@@ -19,6 +19,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.6.0] - 2026-11-11
+
+Minor release from an independent review of 1.5.0: tighter limits on
+untrusted input, fewer unwiped plaintext copies, a faster keyed AEAD
+handle and an optional AWS-LC AEAD engine. No wire-format change: every
+ciphertext, sealed buffer and stream is byte for byte what 1.5.0
+produces and reads. MSRV stays 1.85; no new third-party dependency.
+
+Release notes: [`docs/release/v1.6.0.md`](docs/release/v1.6.0.md).
+
+### Added
+
+- **`Crypt::keyed(key)` and `KeyedCrypt`**: the key is set up for its
+  cipher once (AES key expansion and GHASH key, or the ChaCha20 key)
+  and reused for every message. Same methods as `Crypt` without the key
+  argument, same bytes both ways. Its `open` / `open_with_aad` accept
+  only buffers sealed under its own algorithm, so it also pins the
+  algorithm on the read side. `Send + Sync`; `Debug` prints only the
+  algorithm.
+- **Feature `aead-aws-lc`**: runs ChaCha20-Poly1305 and AES-256-GCM on
+  AWS-LC (through `aws-lc-rs`, already used by the `sign-*` features)
+  instead of RustCrypto. Same bytes on the wire, checked against the
+  RustCrypto engine and every known-answer test. XChaCha20-Poly1305
+  stays on RustCrypto. Needs `std` and a C compiler (NASM or
+  `prebuilt-nasm` on Windows x86-64); off by default, so the default
+  build stays pure Rust.
+- `kdf::hkdf_sha256_zeroizing` / `hkdf_sha512_zeroizing` (features
+  `kdf-hkdf` + `zeroize`): derived keys in a buffer wiped on drop.
+- `StreamDecryptor::update_zeroizing` / `finalize_zeroizing` (feature
+  `zeroize`).
+- `Argon2Policy::with_max_work` / `max_work`: a cap on total Argon2 work
+  (memory times passes).
+- `#![forbid(unsafe_code)]` for the library (it had none; this keeps it
+  that way).
+- CI: a feature set without `zeroize`, the `aead-aws-lc` engine, and
+  `preset-minimal` run their own clippy and test jobs.
+
+### Changed
+
+- **Argon2 default limits.** The default `Argon2Policy` (used by
+  `argon2_check`) caps memory at 256 MiB (was 1 GiB) and memory times
+  passes at 1 GiB-pass (new). Hashes above either need
+  `argon2_check_with_policy` with a policy that allows them
+  (`Argon2Policy::new().with_max_cost(..)` keeps the 1.5 behaviour for
+  the caps you pass).
+- **`argon2_hash_with_params` checks its parameters** with
+  `Argon2Params::validate` (OWASP minimums and the default caps) and
+  returns `Error::Kdf` for weak ones. Tests that hash with tiny
+  parameters should call `argon2_hash_with_policy`.
+- **PBKDF2 total work.** `pbkdf2_hmac_sha256` applies
+  `PBKDF2_MAX_ITERATIONS` to iterations times 32-byte output blocks,
+  not iterations alone. 32-byte outputs (SCRAM) are unaffected.
+- **COSE Ed25519 keys of small order are refused** by
+  `CosePublicKey::from_cose_key`. `Ed25519PublicKey::from_bytes`
+  still accepts them (documented).
+- **`preset-minimal` includes `zeroize`**, so volatile wiping stays on.
+- `StreamDecryptor::new` no longer reserves a chunk-sized buffer up
+  front; memory grows with the data fed in.
+- `Crypt`, the stream types and the file helpers set the key up once
+  per stream or call through one internal engine (the generic
+  `with_cipher!` dispatch is gone). Stream encryption and decryption
+  reuse the scheduled key for every chunk.
+
+### Fixed
+
+- `stream::encrypt_file` and `decrypt_file` no longer leave a copy of
+  file plaintext in freed `BufReader` / `BufWriter` buffers; their own
+  buffers are wiped on every exit.
+- Documentation: allocation counts and stream numbers in
+  `PERFORMANCE.md`, the BLAKE3 comparison and test-coverage table in
+  `SECURITY.md`, the crate-level summary, and the Windows random source
+  named in `rng.rs` now match the code. ECDSA signature malleability,
+  small-order Ed25519 keys and the 128-bit OTP secret minimum are
+  documented.
+
+### Security
+
+- Lower default resource limits for attacker-supplied Argon2 hashes,
+  PBKDF2 parameters and stream headers (see Changed).
+- Fewer unwiped copies of plaintext and derived keys (see Added and
+  Fixed).
+
+---
+
 ## [1.5.0] - 2026-11-08
 
 Minor release, for passkeys and authenticator apps (nex-db's MFA):
@@ -67,6 +151,7 @@ Release notes: [`docs/release/v1.5.0.md`](docs/release/v1.5.0.md).
   partial-feature doc builds; the fuzz build now compiles the signing
   and OTP targets.
 
+[1.6.0]: https://github.com/jamesgober/crypt-io/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/jamesgober/crypt-io/compare/v1.4.0...v1.5.0
 
 ---
@@ -1528,5 +1613,5 @@ the deliberate stable cut.
 - Feature flags for AEAD (chacha20, aes-gcm), hashing (blake3, sha2), MAC (hmac, blake3 keyed), KDF (hkdf, argon2), stream encryption.
 - Dependencies wired: `mod-rand` for CSPRNG, `error-forge` for errors, optional `log-io` and `metrics-lib`.
 
-[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v1.6.0...HEAD
 [0.1.0]: https://github.com/jamesgober/crypt-io/releases/tag/v0.1.0

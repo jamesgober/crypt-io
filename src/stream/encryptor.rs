@@ -13,6 +13,7 @@ use super::frame::{
     StreamFormat, TAG_LEN, build_header_v1, build_header_v2, chunk_nonce, chunk_size_from_log2,
     chunk_size_log2_in_range, derive_v2,
 };
+use crate::aead::engine::Engine;
 
 /// Streaming AEAD encryptor. Buffers caller-supplied plaintext into
 /// fixed-size chunks, encrypts each chunk with a STREAM-construction
@@ -83,6 +84,9 @@ pub struct StreamEncryptor {
     format: StreamFormat,
     /// Chunk key: the caller's key (v1) or the per-stream subkey (v2).
     key: [u8; 32],
+    /// `key`, scheduled once for `algorithm` (1.6.0; earlier releases
+    /// rebuilt the cipher for every chunk).
+    engine: alloc::boxed::Box<Engine>,
     /// Nonce prefix in the first `nonce_len - 5` bytes.
     nonce_base: [u8; MAX_NONCE_LEN],
     nonce_len: usize,
@@ -183,6 +187,7 @@ impl StreamEncryptor {
             algorithm,
             format,
             key: [0u8; 32],
+            engine: alloc::boxed::Box::new(Engine::new(algorithm, &key_arr)?),
             nonce_base,
             nonce_len,
             aad,
@@ -222,6 +227,10 @@ impl StreamEncryptor {
         aad[..HEADER_LEN].copy_from_slice(&header);
         enc.aad = aad;
         enc.nonce_base = nonce_base;
+        if format == StreamFormat::V2 {
+            // Reschedule for the per-stream subkey.
+            *enc.engine = Engine::new(algorithm, &enc.key)?;
+        }
         // `[u8; 32]` is `Copy`: wipe the stack temporary as well.
         wipe(&mut key_arr);
         Ok((enc, header))
@@ -354,8 +363,7 @@ impl StreamEncryptor {
     fn seal_chunk(&self, plaintext: &[u8], is_final: bool, out: &mut Vec<u8>) -> Result<()> {
         let nonce = chunk_nonce(&self.nonce_base, self.nonce_len, self.counter, is_final);
         encrypt_chunk_append(
-            self.algorithm,
-            &self.key,
+            &self.engine,
             &nonce[..self.nonce_len],
             plaintext,
             &self.aad[..self.aad_len],

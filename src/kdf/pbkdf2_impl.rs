@@ -17,14 +17,18 @@ use crate::error::{Error, Result};
 use crate::hmac_core::Hmac;
 use crate::wipe::wipe;
 
-/// Highest iteration count [`pbkdf2_hmac_sha256`] accepts.
+/// Highest total work [`pbkdf2_hmac_sha256`] accepts: the iteration
+/// count times the number of 32-byte output blocks.
 ///
-/// Ten million iterations take about 0.65 s per 32-byte output block
-/// on a Ryzen 9 9950X3D (measured: 600,000 in 38.9 ms), about 17 times
-/// OWASP's 2023 recommendation of 600,000. A count above this is rejected with
-/// [`Error::LimitExceeded`] before any work is done, so a peer that
-/// chooses the count (a SCRAM server, a stored hash) cannot make one
-/// call run for minutes. Apply your own, tighter policy on top.
+/// For the usual 32-byte output that is ten million iterations, about
+/// 0.65 s on a Ryzen 9 9950X3D (measured: 600,000 in 38.9 ms) and 17
+/// times OWASP's 2023 recommendation of 600,000. A 64-byte output
+/// allows half as many iterations, and so on. Anything above is
+/// rejected with [`Error::LimitExceeded`] before any work is done, so a
+/// peer that chooses the count (a SCRAM server, a stored hash) cannot
+/// make one call run for minutes, whatever the output length. (Before
+/// 1.6.0 the cap applied per block, so a long output multiplied it.)
+/// Apply your own, tighter policy on top.
 pub const PBKDF2_MAX_ITERATIONS: u32 = 10_000_000;
 
 /// Output length of one PBKDF2-HMAC-SHA256 block, and the usual key
@@ -65,9 +69,9 @@ const IV: [u32; 8] = [
 /// # Errors
 ///
 /// - [`Error::InvalidInput`] if `iterations` is 0 or `out` is empty.
-/// - [`Error::LimitExceeded`] if `iterations` is above
-///   [`PBKDF2_MAX_ITERATIONS`], or `out` is longer than RFC 8018
-///   allows (`(2^32 - 1) * 32` bytes).
+/// - [`Error::LimitExceeded`] if `iterations` times the number of
+///   32-byte blocks in `out` is above [`PBKDF2_MAX_ITERATIONS`], or
+///   `out` is longer than RFC 8018 allows (`(2^32 - 1) * 32` bytes).
 ///
 /// `out` is left untouched on error.
 ///
@@ -92,17 +96,19 @@ pub fn pbkdf2_hmac_sha256(
             "PBKDF2 iteration count must be at least 1",
         ));
     }
-    if iterations > PBKDF2_MAX_ITERATIONS {
-        return Err(Error::LimitExceeded(
-            "PBKDF2 iteration count above PBKDF2_MAX_ITERATIONS",
-        ));
-    }
     if out.is_empty() {
         return Err(Error::InvalidInput("PBKDF2 output must not be empty"));
     }
-    if u32::try_from(out.len().div_ceil(PBKDF2_SHA256_OUTPUT_LEN)).is_err() {
+    let Ok(blocks) = u32::try_from(out.len().div_ceil(PBKDF2_SHA256_OUTPUT_LEN)) else {
         return Err(Error::LimitExceeded(
             "PBKDF2 output longer than (2^32 - 1) blocks",
+        ));
+    };
+    // Total work, not the per-block count: a long output must not
+    // multiply the cap.
+    if u64::from(iterations) * u64::from(blocks) > u64::from(PBKDF2_MAX_ITERATIONS) {
+        return Err(Error::LimitExceeded(
+            "PBKDF2 iterations times output blocks above PBKDF2_MAX_ITERATIONS",
         ));
     }
 
@@ -335,6 +341,26 @@ mod tests {
             pbkdf2_hmac_sha256(b"p", b"s", 1, &mut []),
             Err(Error::InvalidInput(_))
         ));
+    }
+
+    #[test]
+    fn work_cap_counts_every_output_block() {
+        // 1.6.0: the cap is iterations x blocks. Each of these would have
+        // run for minutes under the old per-block cap; now refused before
+        // any work.
+        let mut two_blocks = [0u8; 64];
+        assert!(matches!(
+            pbkdf2_hmac_sha256(b"p", b"s", PBKDF2_MAX_ITERATIONS / 2 + 1, &mut two_blocks),
+            Err(Error::LimitExceeded(_))
+        ));
+        let mut long = alloc::vec![0u8; 64 * 1024];
+        assert!(matches!(
+            pbkdf2_hmac_sha256(b"p", b"s", 10_000, &mut long),
+            Err(Error::LimitExceeded(_))
+        ));
+        assert_eq!(two_blocks, [0u8; 64]);
+        // Within the budget still works.
+        assert!(pbkdf2_hmac_sha256(b"p", b"s", 3, &mut two_blocks).is_ok());
     }
 
     #[test]

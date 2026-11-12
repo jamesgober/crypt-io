@@ -7,7 +7,9 @@
 //! - with the `getrandom` feature: the [`getrandom`] crate
 //!   (`getrandom(2)` on Linux, `getentropy` on macOS, `ProcessPrng` on
 //!   Windows, and a caller-registered backend on bare-metal targets);
-//! - otherwise, with `std`: `mod_rand::tier3` (the same OS calls).
+//! - otherwise, with `std`: `mod_rand::tier3` (`getrandom(2)` on Linux,
+//!   `getentropy` on macOS, `BCryptGenRandom` on Windows, and
+//!   `/dev/urandom` only where the system call is missing).
 //!
 //! A build with neither has no random source, and the APIs that need
 //! one are not compiled.

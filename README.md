@@ -98,6 +98,22 @@ let record = Crypt::new().open(&*key, &sealed)?;
 # Ok::<(), crypt_io::Error>(())
 ```
 
+### One key, many messages (1.6.0)
+
+```rust
+use crypt_io::Crypt;
+
+let key = [0x42u8; 32];
+let keyed = Crypt::new().keyed(&key)?;        // key set up once
+for record in [&b"a"[..], b"b", b"c"] {
+    let ct = keyed.encrypt(record)?;          // same bytes as Crypt::encrypt
+    assert_eq!(keyed.decrypt(&ct)?, record);
+}
+# Ok::<(), crypt_io::Error>(())
+```
+
+`KeyedCrypt` skips the per-call key setup (AES key expansion, GHASH key), which is most of the cost of a short message. Its `open` accepts only buffers sealed under its own algorithm. For more speed, the `aead-aws-lc` feature runs ChaCha20-Poly1305 and AES-256-GCM on AWS-LC with the same bytes on the wire (it needs a C compiler; see [`docs/API.md`](docs/API.md#cargo-features)).
+
 ### Hashing
 
 ```rust
@@ -155,8 +171,8 @@ Deriving a subkey from a master:
 use crypt_io::kdf;
 
 let master = [0x42u8; 32];
-let session_key = kdf::hkdf_sha256(&master, Some(b"salt"), b"app:session:v1", 32)?;
-assert_eq!(session_key.len(), 32);
+let session_key = kdf::hkdf_sha256_zeroizing(&master, Some(b"salt"), b"app:session:v1", 32)?;
+assert_eq!(session_key.len(), 32);                    // wiped when dropped (1.6.0)
 # Ok::<(), crypt_io::Error>(())
 ```
 
@@ -170,7 +186,7 @@ kdf::argon2_check(&phc, b"correct horse battery staple")?;   // Err(Authenticati
 # Ok::<(), crypt_io::Error>(())
 ```
 
-The PHC string's variant and costs are checked against a limit before any work is done; use `kdf::argon2_check_with_policy` with an `Argon2Policy` to raise or lower those limits.
+The PHC string's variant and costs are checked against a limit before any work is done (by default at most 256 MiB, and memory times passes at most 1 GiB); use `kdf::argon2_check_with_policy` with an `Argon2Policy` to raise or lower those limits. `kdf::argon2_hash_with_params` refuses parameters below the OWASP minimums.
 
 PBKDF2-HMAC-SHA256 where a protocol fixes it, such as SCRAM-SHA-256 (feature `kdf-pbkdf2`, pure Rust, 1.3.0):
 
@@ -178,7 +194,7 @@ PBKDF2-HMAC-SHA256 where a protocol fixes it, such as SCRAM-SHA-256 (feature `kd
 use crypt_io::kdf;
 
 let mut salted_password = [0u8; 32];
-kdf::pbkdf2_hmac_sha256(b"pencil", &salt, 4096, &mut salted_password)?;   // at most kdf::PBKDF2_MAX_ITERATIONS
+kdf::pbkdf2_hmac_sha256(b"pencil", &salt, 4096, &mut salted_password)?;   // iterations x blocks at most kdf::PBKDF2_MAX_ITERATIONS
 ```
 
 ### Encrypt a file
@@ -212,7 +228,7 @@ With the default `zeroize` feature the writes are volatile, so the compiler cann
 
 ```toml
 [dependencies]
-crypt-io = { version = "1.5", features = ["sign-ed25519", "sign-rsa", "sign-p256"] }
+crypt-io = { version = "1.6", features = ["sign-ed25519", "sign-rsa", "sign-p256"] }
 ```
 
 ```rust,ignore
@@ -249,9 +265,9 @@ let code = otp::totp(&secret, unix_seconds, 6)?;                    // what the 
 let step = otp::totp_check(&secret, "492039", unix_seconds, 6, 1)?;  // ±30 s; store `step`
 ```
 
-HOTP (RFC 4226) and TOTP (RFC 6238) with HMAC-SHA1, which every authenticator app uses (feature `otp`, AWS-LC like the signing features). Checks are constant time and return the matched step, so a replay guard is one comparison. HMAC-SHA1 is legacy and exists only in this module.
+HOTP (RFC 4226) and TOTP (RFC 6238) with HMAC-SHA1, which every authenticator app uses (feature `otp`, AWS-LC like the signing features). Checks are constant time and return the matched step, so a replay guard is one comparison. HMAC-SHA1 is legacy and exists only in this module. Secrets must be at least 16 bytes (128 bits, as RFC 4226 requires); older 10-byte (80-bit) enrolments are refused on purpose, so re-enrol those users.
 
-The signing features use AWS-LC (through `aws-lc-rs`, the backend tls-net uses), which is C and assembly: they need a C compiler, and on Windows x86-64 either NASM or the `prebuilt-nasm` feature. The first build takes about 15 to 25 seconds longer. The default build does not include them and stays pure Rust. Private keys are cleansed when dropped, `Debug` never prints them, and RSA keys below 2048 bits are refused.
+The signing features, `otp` and `aead-aws-lc` use AWS-LC (through `aws-lc-rs`, the backend tls-net uses), which is C and assembly: they need a C compiler, and on Windows x86-64 either NASM or the `prebuilt-nasm` feature. The first build takes about 15 to 25 seconds longer. The default build does not include them and stays pure Rust. Private keys are cleansed when dropped, `Debug` never prints them, and RSA keys below 2048 bits are refused.
 
 ### Usage limits
 
