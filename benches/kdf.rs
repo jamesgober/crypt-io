@@ -95,12 +95,17 @@ fn bench_argon2_fast(c: &mut Criterion) {
         p_cost: 1,
         output_len: 32,
     };
+    // Test parameters are below the OWASP minimum, so they go through
+    // the explicit policy form (1.6.0: `argon2_hash_with_params` refuses them).
+    let policy = kdf::Argon2Policy::new();
     let mut group = c.benchmark_group("argon2id_fast_params");
     group.sample_size(20);
     group.bench_function("hash", |b| {
-        b.iter(|| kdf::argon2_hash_with_params(black_box(b"hunter2"), black_box(fast)).unwrap());
+        b.iter(|| {
+            kdf::argon2_hash_with_policy(black_box(b"hunter2"), black_box(fast), &policy).unwrap()
+        });
     });
-    let phc = kdf::argon2_hash_with_params(b"hunter2", fast).unwrap();
+    let phc = kdf::argon2_hash_with_policy(b"hunter2", fast, &policy).unwrap();
     group.bench_function("verify", |b| {
         b.iter(|| kdf::argon2_check(black_box(&phc), black_box(b"hunter2")).unwrap());
     });

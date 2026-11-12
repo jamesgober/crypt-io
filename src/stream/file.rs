@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use crate::aead::Algorithm;
 use crate::error::{Error, Result};
 
-use super::frame::HEADER_LEN;
+use super::frame::{HEADER_LEN, TAG_LEN};
 use super::{StreamDecryptor, StreamEncryptor};
 
 /// I/O read buffer for `encrypt_file` / `decrypt_file`. Sized at 64 KiB
@@ -74,35 +74,42 @@ pub fn encrypt_file(
     // output path.
     let (mut enc, header) = StreamEncryptor::new(key, algorithm)?;
     let output = File::create(output_path).map_err(|_| Error::Io("stream: create output"))?;
-    let mut reader = BufReader::with_capacity(IO_BUFFER_LEN, input);
+    // The output only ever holds ciphertext, so it can be buffered. The
+    // input is read straight into `io_buf` (no `BufReader`, whose buffer
+    // would keep a plaintext copy that is freed unwiped), and `io_buf`
+    // is wiped on every exit.
+    let mut input = input;
     let mut writer = BufWriter::with_capacity(IO_BUFFER_LEN, output);
-
-    writer
-        .write_all(&header)
-        .map_err(|_| Error::Io("stream: write header"))?;
-
     let mut io_buf = alloc::vec![0u8; IO_BUFFER_LEN];
-    loop {
-        let n = reader
-            .read(&mut io_buf)
-            .map_err(|_| Error::Io("stream: read input"))?;
-        if n == 0 {
-            break;
-        }
-        let encrypted = enc.update(&io_buf[..n])?;
+    let result = (|| {
         writer
-            .write_all(&encrypted)
-            .map_err(|_| Error::Io("stream: write chunk"))?;
-    }
-
-    let tail = enc.finalize()?;
-    writer
-        .write_all(&tail)
-        .map_err(|_| Error::Io("stream: write final chunk"))?;
-    writer
-        .flush()
-        .map_err(|_| Error::Io("stream: flush output"))?;
-    Ok(())
+            .write_all(&header)
+            .map_err(|_| Error::Io("stream: write header"))?;
+        let mut ciphertext = alloc::vec::Vec::with_capacity(IO_BUFFER_LEN + 2 * TAG_LEN);
+        loop {
+            let n = input
+                .read(&mut io_buf)
+                .map_err(|_| Error::Io("stream: read input"))?;
+            if n == 0 {
+                break;
+            }
+            ciphertext.clear();
+            enc.update_into(&io_buf[..n], &mut ciphertext)?;
+            writer
+                .write_all(&ciphertext)
+                .map_err(|_| Error::Io("stream: write chunk"))?;
+        }
+        ciphertext.clear();
+        enc.finalize_into(&mut ciphertext)?;
+        writer
+            .write_all(&ciphertext)
+            .map_err(|_| Error::Io("stream: write final chunk"))?;
+        writer
+            .flush()
+            .map_err(|_| Error::Io("stream: flush output"))
+    })();
+    crate::wipe::wipe_vec(&mut io_buf);
+    result
 }
 
 /// Decrypt the file at `input_path` into `output_path` using `key`. The
@@ -185,8 +192,12 @@ pub fn decrypt_file(
 /// Decrypt everything after the header from `reader` into `file`, then
 /// flush and `fsync` it. The file is only complete when this returns
 /// `Ok`.
-fn decrypt_body(mut dec: StreamDecryptor, reader: &mut impl Read, file: File) -> Result<()> {
-    let mut writer = BufWriter::with_capacity(IO_BUFFER_LEN, file);
+///
+/// Plaintext is written straight from `plaintext` (which batches up to
+/// one read's worth) to the file, without a `BufWriter`, whose buffer
+/// would keep a plaintext copy that is freed unwiped; `plaintext` is
+/// wiped on every exit.
+fn decrypt_body(mut dec: StreamDecryptor, reader: &mut impl Read, mut file: File) -> Result<()> {
     let mut io_buf = alloc::vec![0u8; IO_BUFFER_LEN];
     let mut plaintext = alloc::vec::Vec::with_capacity(IO_BUFFER_LEN + dec.chunk_size());
     let result = (|| {
@@ -199,18 +210,13 @@ fn decrypt_body(mut dec: StreamDecryptor, reader: &mut impl Read, file: File) ->
             }
             plaintext.clear();
             dec.update_into(&io_buf[..n], &mut plaintext)?;
-            writer
-                .write_all(&plaintext)
+            file.write_all(&plaintext)
                 .map_err(|_| Error::Io("stream: write plaintext"))?;
         }
         plaintext.clear();
         dec.finalize_into(&mut plaintext)?;
-        writer
-            .write_all(&plaintext)
+        file.write_all(&plaintext)
             .map_err(|_| Error::Io("stream: write final plaintext"))?;
-        let file = writer
-            .into_inner()
-            .map_err(|_| Error::Io("stream: flush output"))?;
         file.sync_all()
             .map_err(|_| Error::Io("stream: sync output"))
     })();

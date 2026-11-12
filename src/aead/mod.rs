@@ -131,6 +131,9 @@
 //! ```
 
 use alloc::vec::Vec;
+use core::fmt;
+
+use self::engine::Engine;
 
 #[cfg_attr(
     any(feature = "aead-chacha20", feature = "aead-aes-gcm"),
@@ -143,6 +146,7 @@ mod aes_gcm;
 pub(crate) mod backend;
 #[cfg(feature = "aead-chacha20")]
 mod chacha20;
+pub(crate) mod engine;
 
 /// Length of a ChaCha20-Poly1305 nonce, in bytes. Equal to `12`.
 pub const CHACHA20_NONCE_LEN: usize = 12;
@@ -276,52 +280,6 @@ impl Algorithm {
         }
     }
 }
-
-/// Run `$body` with `$C` bound to the cipher type for `$alg`, or return
-/// [`Error::AlgorithmNotEnabled`] when its feature is off.
-macro_rules! with_cipher {
-    ($alg:expr, $C:ident => $body:expr) => {
-        match $alg {
-            Algorithm::ChaCha20Poly1305 => {
-                #[cfg(feature = "aead-chacha20")]
-                {
-                    type $C = ::chacha20poly1305::ChaCha20Poly1305;
-                    $body
-                }
-                #[cfg(not(feature = "aead-chacha20"))]
-                {
-                    Err(Error::AlgorithmNotEnabled("aead-chacha20"))
-                }
-            }
-            Algorithm::XChaCha20Poly1305 => {
-                #[cfg(feature = "aead-chacha20")]
-                {
-                    type $C = ::chacha20poly1305::XChaCha20Poly1305;
-                    $body
-                }
-                #[cfg(not(feature = "aead-chacha20"))]
-                {
-                    Err(Error::AlgorithmNotEnabled("aead-chacha20"))
-                }
-            }
-            Algorithm::Aes256Gcm => {
-                #[cfg(feature = "aead-aes-gcm")]
-                {
-                    type $C = ::aes_gcm::Aes256Gcm;
-                    $body
-                }
-                #[cfg(not(feature = "aead-aes-gcm"))]
-                {
-                    Err(Error::AlgorithmNotEnabled("aead-aes-gcm"))
-                }
-            }
-        }
-    };
-}
-// Used by the stream module.
-#[allow(unused_imports)]
-pub(crate) use with_cipher;
-
 /// Build the associated data for the sealed format, `header || aad`,
 /// and pass it to `f`. Short AAD (the common case) stays on the stack.
 fn with_sealed_aad<R>(
@@ -500,7 +458,9 @@ impl Crypt {
     /// Same as [`encrypt`](Self::encrypt).
     #[cfg(any(feature = "std", feature = "getrandom"))]
     pub fn encrypt_with_aad(&self, key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
-        with_cipher!(self.algorithm, C => backend::encrypt::<C>(key, plaintext, aad, &[]))
+        Engine::with(self.algorithm, key, |e| {
+            backend::encrypt(e, plaintext, aad, &[])
+        })
     }
 
     #[cfg_attr(
@@ -576,7 +536,9 @@ impl Crypt {
     ///
     /// Same as [`decrypt`](Self::decrypt).
     pub fn decrypt_with_aad(&self, key: &[u8], ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
-        with_cipher!(self.algorithm, C => backend::decrypt::<C>(key, ciphertext, aad))
+        Engine::with(self.algorithm, key, |e| {
+            backend::decrypt(e, ciphertext, aad)
+        })
     }
 
     /// Like [`decrypt`](Self::decrypt), but the plaintext is returned in
@@ -668,7 +630,7 @@ impl Crypt {
         out: &mut Vec<u8>,
     ) -> Result<()> {
         out.clear();
-        with_cipher!(self.algorithm, C => backend::encrypt_into::<C>(key, plaintext, aad, &[], out))
+        backend::encrypt_into_key(self.algorithm, key, plaintext, aad, &[], out)
     }
 
     /// Zero-allocation decrypt — writes the recovered plaintext into
@@ -730,7 +692,7 @@ impl Crypt {
         // Clear before anything can fail, so no error path returns the
         // caller's previous contents.
         out.clear();
-        with_cipher!(self.algorithm, C => backend::decrypt_into::<C>(key, ciphertext, aad, out))
+        backend::decrypt_into_key(self.algorithm, key, ciphertext, aad, out)
     }
 
     /// Encrypt into the **sealed** format, which records the format
@@ -779,11 +741,11 @@ impl Crypt {
     #[cfg(any(feature = "std", feature = "getrandom"))]
     pub fn seal_with_aad(&self, key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
         let header = [SEALED_VERSION, self.algorithm.id()];
-        with_sealed_aad(
-            header,
-            aad,
-            |full_aad| with_cipher!(self.algorithm, C => backend::encrypt::<C>(key, plaintext, full_aad, &header)),
-        )
+        with_sealed_aad(header, aad, |full_aad| {
+            Engine::with(self.algorithm, key, |e| {
+                backend::encrypt(e, plaintext, full_aad, &header)
+            })
+        })
     }
 
     #[cfg_attr(
@@ -819,11 +781,9 @@ impl Crypt {
         let algorithm = Self::sealed_algorithm(sealed)?;
         let header = [SEALED_VERSION, algorithm.id()];
         let body = &sealed[SEALED_HEADER_LEN..];
-        with_sealed_aad(
-            header,
-            aad,
-            |full_aad| with_cipher!(algorithm, C => backend::decrypt::<C>(key, body, full_aad)),
-        )
+        with_sealed_aad(header, aad, |full_aad| {
+            Engine::with(algorithm, key, |e| backend::decrypt(e, body, full_aad))
+        })
     }
 
     /// Read the algorithm recorded in a sealed buffer's header, without
@@ -854,6 +814,240 @@ impl Crypt {
 impl Default for Crypt {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Crypt {
+    /// Schedule `key` once and return a [`KeyedCrypt`] that encrypts and
+    /// decrypts many messages with it.
+    ///
+    /// Every [`Crypt`] call builds the cipher from the key bytes again
+    /// (AES key expansion and the GHASH key, or the ChaCha20 key setup).
+    /// A `KeyedCrypt` does that once, so a hot path that uses one key for
+    /// many messages skips it on every call. The output is byte for byte
+    /// what [`Crypt`] produces: either side decrypts the other. New in
+    /// 1.6.0.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::InvalidKey`] if `key` is not 32 bytes.
+    /// - [`Error::AlgorithmNotEnabled`] if this handle's algorithm is
+    ///   disabled at compile time.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "aead-chacha20", any(feature = "std", feature = "getrandom")))] {
+    /// use crypt_io::Crypt;
+    ///
+    /// let key = [0x42u8; 32];
+    /// let keyed = Crypt::new().keyed(&key)?;
+    /// let ct = keyed.encrypt(b"record 1")?;
+    /// assert_eq!(keyed.decrypt(&ct)?, b"record 1");
+    /// // Same wire format as the per-call API.
+    /// assert_eq!(Crypt::new().decrypt(&key, &ct)?, b"record 1");
+    /// # }
+    /// # Ok::<(), crypt_io::Error>(())
+    /// ```
+    pub fn keyed(&self, key: &[u8]) -> Result<KeyedCrypt> {
+        Ok(KeyedCrypt {
+            engine: alloc::boxed::Box::new(Engine::new(self.algorithm, key)?),
+        })
+    }
+}
+
+/// One AEAD key, scheduled once for one algorithm: the hot-path form of
+/// [`Crypt`]. Build it with [`Crypt::keyed`].
+///
+/// It has the same methods as [`Crypt`] without the `key` argument, and
+/// produces and accepts exactly the same bytes. The difference is cost:
+/// the cipher is set up when the `KeyedCrypt` is built, not on every
+/// call.
+///
+/// The scheduled key is wiped when the value is dropped (RustCrypto
+/// wipes the ChaCha20 key, and with `zeroize` the AES round keys;
+/// AWS-LC cleanses its memory with `aead-aws-lc`; the GHASH key inside
+/// `polyval` is not wiped, see `SECURITY.md`). `Debug` prints only the
+/// algorithm. The type is `Send` and `Sync`.
+///
+/// [`open`](Self::open) accepts only buffers sealed under this
+/// handle's algorithm, so a `KeyedCrypt` also pins the algorithm on the
+/// read side (`Crypt::open` takes it from the header).
+///
+/// New in 1.6.0.
+pub struct KeyedCrypt {
+    // Boxed so moving a `KeyedCrypt` never copies the key schedule.
+    engine: alloc::boxed::Box<Engine>,
+}
+
+impl KeyedCrypt {
+    /// The algorithm this key was scheduled for.
+    #[must_use]
+    pub fn algorithm(&self) -> Algorithm {
+        self.engine.algorithm()
+    }
+
+    /// [`Crypt::encrypt`] with this key.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RandomFailure`] or [`Error::LimitExceeded`], as for
+    /// [`Crypt::encrypt`].
+    #[cfg(any(feature = "std", feature = "getrandom"))]
+    pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
+        backend::encrypt(&self.engine, plaintext, &[], &[])
+    }
+
+    /// [`Crypt::encrypt_with_aad`] with this key.
+    ///
+    /// # Errors
+    ///
+    /// As [`encrypt`](Self::encrypt).
+    #[cfg(any(feature = "std", feature = "getrandom"))]
+    pub fn encrypt_with_aad(&self, plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
+        backend::encrypt(&self.engine, plaintext, aad, &[])
+    }
+
+    /// [`Crypt::encrypt_into`] with this key: no allocation once `out`
+    /// is large enough.
+    ///
+    /// # Errors
+    ///
+    /// As [`encrypt`](Self::encrypt).
+    #[cfg(any(feature = "std", feature = "getrandom"))]
+    pub fn encrypt_into(&self, plaintext: &[u8], out: &mut Vec<u8>) -> Result<()> {
+        backend::encrypt_into(&self.engine, plaintext, &[], &[], out)
+    }
+
+    /// [`Crypt::encrypt_with_aad_into`] with this key.
+    ///
+    /// # Errors
+    ///
+    /// As [`encrypt`](Self::encrypt).
+    #[cfg(any(feature = "std", feature = "getrandom"))]
+    pub fn encrypt_with_aad_into(
+        &self,
+        plaintext: &[u8],
+        aad: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<()> {
+        backend::encrypt_into(&self.engine, plaintext, aad, &[], out)
+    }
+
+    /// [`Crypt::decrypt`] with this key.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidCiphertext`] or [`Error::AuthenticationFailed`],
+    /// as for [`Crypt::decrypt`].
+    pub fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>> {
+        backend::decrypt(&self.engine, ciphertext, &[])
+    }
+
+    /// [`Crypt::decrypt_with_aad`] with this key.
+    ///
+    /// # Errors
+    ///
+    /// As [`decrypt`](Self::decrypt).
+    pub fn decrypt_with_aad(&self, ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
+        backend::decrypt(&self.engine, ciphertext, aad)
+    }
+
+    /// [`Crypt::decrypt_zeroizing`] with this key: the plaintext comes
+    /// back in a buffer that is wiped when dropped. Requires the
+    /// `zeroize` feature.
+    ///
+    /// # Errors
+    ///
+    /// As [`decrypt`](Self::decrypt).
+    #[cfg(feature = "zeroize")]
+    pub fn decrypt_zeroizing(&self, ciphertext: &[u8]) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+        self.decrypt(ciphertext).map(zeroize::Zeroizing::new)
+    }
+
+    /// [`Crypt::decrypt_into`] with this key.
+    ///
+    /// # Errors
+    ///
+    /// As [`decrypt`](Self::decrypt). `out` is empty on error and wiped
+    /// on authentication failure.
+    pub fn decrypt_into(&self, ciphertext: &[u8], out: &mut Vec<u8>) -> Result<()> {
+        backend::decrypt_into(&self.engine, ciphertext, &[], out)
+    }
+
+    /// [`Crypt::decrypt_with_aad_into`] with this key.
+    ///
+    /// # Errors
+    ///
+    /// As [`decrypt_into`](Self::decrypt_into).
+    pub fn decrypt_with_aad_into(
+        &self,
+        ciphertext: &[u8],
+        aad: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<()> {
+        backend::decrypt_into(&self.engine, ciphertext, aad, out)
+    }
+
+    /// [`Crypt::seal`] with this key.
+    ///
+    /// # Errors
+    ///
+    /// As [`encrypt`](Self::encrypt).
+    #[cfg(any(feature = "std", feature = "getrandom"))]
+    pub fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
+        self.seal_with_aad(plaintext, &[])
+    }
+
+    /// [`Crypt::seal_with_aad`] with this key.
+    ///
+    /// # Errors
+    ///
+    /// As [`encrypt`](Self::encrypt).
+    #[cfg(any(feature = "std", feature = "getrandom"))]
+    pub fn seal_with_aad(&self, plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
+        let header = [SEALED_VERSION, self.algorithm().id()];
+        with_sealed_aad(header, aad, |full_aad| {
+            backend::encrypt(&self.engine, plaintext, full_aad, &header)
+        })
+    }
+
+    /// Open a buffer produced by `seal` (on this type or on [`Crypt`]),
+    /// **only if it was sealed under this key's algorithm**.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::InvalidCiphertext`] if the header is malformed, or
+    ///   names a different algorithm than this key's.
+    /// - [`Error::AuthenticationFailed`] as for [`Crypt::open`].
+    pub fn open(&self, sealed: &[u8]) -> Result<Vec<u8>> {
+        self.open_with_aad(sealed, &[])
+    }
+
+    /// [`open`](Self::open) with associated data.
+    ///
+    /// # Errors
+    ///
+    /// As [`open`](Self::open).
+    pub fn open_with_aad(&self, sealed: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
+        let algorithm = Crypt::sealed_algorithm(sealed)?;
+        if algorithm != self.algorithm() {
+            return Err(Error::InvalidCiphertext(alloc::string::String::from(
+                "sealed buffer uses a different algorithm than this key",
+            )));
+        }
+        let header = [SEALED_VERSION, algorithm.id()];
+        with_sealed_aad(header, aad, |full_aad| {
+            backend::decrypt(&self.engine, &sealed[SEALED_HEADER_LEN..], full_aad)
+        })
+    }
+}
+
+impl fmt::Debug for KeyedCrypt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KeyedCrypt")
+            .field("algorithm", &self.algorithm())
+            .finish_non_exhaustive()
     }
 }
 

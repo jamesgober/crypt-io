@@ -45,6 +45,11 @@ pub const COSE_ALG_RS256: i64 = -257;
 /// # Ok::<(), crypt_io::Error>(())
 /// ```
 ///
+/// `ES256` signatures are malleable (see [`EcdsaP256PublicKey`](super)),
+/// so never treat the signature bytes as a replay key; key replays on the
+/// challenge. Ed25519 keys of small order, with which one signature
+/// checks for every message, are refused here (1.6.0).
+///
 /// New in 1.5.0. Requires at least one of `sign-p256`, `sign-ed25519`,
 /// `sign-rsa`.
 #[derive(Clone)]
@@ -180,6 +185,11 @@ fn es256(_: [u8; 32], _: [u8; 32]) -> Result<CosePublicKey> {
 
 #[cfg(feature = "sign-ed25519")]
 fn eddsa(x: [u8; 32]) -> Result<CosePublicKey> {
+    // A small-order key lets one signature check for every message; no
+    // authenticator produces one (1.6.0).
+    if super::ed25519::is_small_order(x) {
+        return Err(Error::Sign("COSE key: Ed25519 key of small order"));
+    }
     super::Ed25519PublicKey::from_bytes(&x).map(CosePublicKey::Ed25519)
 }
 #[cfg(not(feature = "sign-ed25519"))]

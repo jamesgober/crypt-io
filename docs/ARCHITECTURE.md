@@ -23,8 +23,9 @@ crypt-io/
 │   ├── wipe.rs           ← buffer wiping: public wipe / wipe_vec, internal helpers
 │   ├── otp.rs            ← HOTP / TOTP and legacy HMAC-SHA1 (1.5.0, opt-in)
 │   ├── aead/             ← Algorithm-agile AEAD surface
-│   │   ├── mod.rs        ← Crypt + Algorithm + dispatch + sealed format + generate_key
-│   │   ├── backend.rs    ← one implementation, generic over the cipher type
+│   │   ├── mod.rs        ← Crypt + KeyedCrypt + Algorithm + sealed format + generate_key
+│   │   ├── engine.rs     ← a key set up for one cipher: RustCrypto, or AWS-LC (1.6.0)
+│   │   ├── backend.rs    ← wire layout, nonces and error mapping over an engine
 │   │   ├── chacha20.rs   ← ChaCha20 / XChaCha20-Poly1305 known-answer tests
 │   │   └── aes_gcm.rs    ← AES-256-GCM known-answer tests
 │   ├── hash/             ← Hash functions
@@ -73,19 +74,19 @@ never key bytes. Per-call:
 
 1. `Crypt::encrypt(key, plaintext)` calls
    `Crypt::encrypt_with_aad(key, plaintext, &[])`.
-2. Dispatch matches on `self.algorithm` and calls
-   `backend::encrypt::<C>` with `C` = `ChaCha20Poly1305`,
-   `XChaCha20Poly1305` or `Aes256Gcm`.
-3. `backend` (one generic implementation for every cipher):
-   - check key length (must be 32 bytes)
+2. `Engine::new(algorithm, key)` checks the key length (must be
+   32 bytes) and sets the key up for the cipher (see
+   [Algorithm dispatch](#algorithm-dispatch)).
+3. `backend` (one implementation for every cipher):
    - draw a fresh nonce of the cipher's length (12 or 24 bytes)
      from the OS CSPRNG (`rng::fill`)
    - write `nonce || plaintext` into one buffer and encrypt in
-     place with `encrypt_in_place_detached`
+     place with the engine
    - append the tag and return `nonce || ciphertext || tag`
 
 The `_into` variants write into a caller-supplied buffer instead
-of a fresh `Vec`. `seal` / `open` use the same backend with a
+of a fresh `Vec`. `KeyedCrypt` (1.6.0) keeps the engine from step 2
+and runs only step 3 per call. `seal` / `open` use the same backend with a
 2-byte `version || algorithm` prefix that is also fed into the
 associated data. See
 [`PERFORMANCE.md`](PERFORMANCE.md) for the measured impact.
@@ -184,20 +185,24 @@ hot loop.
 ## Algorithm dispatch
 
 `Algorithm` is a `#[non_exhaustive]` enum with three variants in
-1.1 (`XChaCha20Poly1305` was added in 1.1.0). Dispatch goes
-through one macro, `with_cipher!`, which binds a type name to the
-cipher for the algorithm (or returns `AlgorithmNotEnabled` when its
+1.1 (`XChaCha20Poly1305` was added in 1.1.0). Since 1.6.0 dispatch
+goes through `aead::engine::Engine`, an enum holding a key already
+set up for its cipher (or `AlgorithmNotEnabled` when the algorithm's
 feature is off):
 
-```rust
-with_cipher!(self.algorithm, C => backend::encrypt::<C>(key, plaintext, aad, &[]))
-```
+- RustCrypto `ChaCha20Poly1305`, `XChaCha20Poly1305` or `Aes256Gcm`
+  by default;
+- with `aead-aws-lc`, an AWS-LC `LessSafeKey` for ChaCha20-Poly1305
+  and AES-256-GCM (XChaCha20-Poly1305 stays on RustCrypto; AWS-LC
+  does not offer it).
 
-`backend` is generic over any RustCrypto `aead` 0.5 cipher
-(`KeyInit + AeadInPlace`), so a new algorithm in 1.x needs a new
-`Algorithm` variant, one arm in `with_cipher!`, an algorithm byte,
+Both produce standard AEAD bytes, so the choice never changes the
+wire format; tests run every engine against the RustCrypto reference
+and every KAT. `Crypt` builds an engine per call; `KeyedCrypt` and
+the stream types build one and reuse it. A new algorithm in 1.x needs
+a new `Algorithm` variant, one `Engine` variant, an algorithm byte,
 and KAT tests. The stream module's per-chunk primitives
-(`src/stream/aead.rs`) use the same macro.
+(`src/stream/aead.rs`) use the same engine.
 
 <hr>
 
@@ -259,7 +264,7 @@ Every dependency is a deliberate choice. The full list:
 | `subtle` | Constant-time equality for `Tag` and the HMAC checks. |
 | `mod-rand` *(with `std`)* | Portfolio CSPRNG (Tier 3 = OS-backed). |
 | `getrandom` *(opt)* | OS CSPRNG for `no_std` builds, or in place of `mod-rand`. |
-| `aws-lc-rs` *(opt, `sign-*`)* | Ed25519 and RSA signing (AWS-LC, the backend tls-net uses). Default features off; `aws-lc-sys` on, plus `ring-io` (pure Rust, `untrusted`) for `sign-rsa` so the modulus size is exact. Rust 1.71. Needs a C compiler, and NASM or `prebuilt-nasm` on Windows x86-64. |
+| `aws-lc-rs` *(opt, `sign-*`, `otp`, `aead-aws-lc`)* | Signatures, OTP HMAC-SHA1 and (1.6.0, `aead-aws-lc`) the faster AEAD engine (AWS-LC, the backend tls-net uses). Default features off; `aws-lc-sys` on, plus `ring-io` (pure Rust, `untrusted`) for `sign-rsa` so the modulus size is exact. Rust 1.71. Needs a C compiler, and NASM or `prebuilt-nasm` on Windows x86-64. |
 | `zeroize` *(opt)* | Volatile writes for `wipe` / `wipe_vec`; wiping of the stream types' key copy and buffer, the BLAKE3 keyed MAC state and `_into` failure buffers; enables upstream `zeroize` in `aes`, `aes-gcm`, `sha2`, `argon2`, `blake3` (default on). |
 
 All RustCrypto and BLAKE3 dependencies have their default
@@ -314,8 +319,12 @@ Documented elsewhere but worth restating in one place:
 - **No general RNG surface**. Use `mod-rand` or `getrandom`
   directly. The only randomness crypt-io hands out is
   `generate_key()` for 256-bit keys.
-- **No `Crypt::with_key`** that stores a key. Keys are per-call
-  arguments by design; key storage is `key-vault`'s job.
+- **No key storage.** `Crypt` takes the key on every call. Since
+  1.6.0 `Crypt::keyed` returns a `KeyedCrypt` that holds one key
+  already set up for its cipher, for hot paths that use one key for
+  many messages; it is a cache of the key schedule, not a key store.
+  Keeping keys (rotation, sealing at rest, access control) is
+  `key-vault`'s job.
 - **No `hash::*::with_key`**. Keyed hashing lives in `mac::*`.
 - **No "raw" / "unauthenticated" cipher modes** (CTR, CBC).
   Authentication is non-negotiable.

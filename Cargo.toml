@@ -1,6 +1,6 @@
 [package]
 name = "crypt-io"
-version = "1.5.0"
+version = "1.6.0"
 edition = "2024"
 rust-version = "1.85"
 readme = "README.md"
@@ -85,6 +85,14 @@ zeroize = [
 aead-chacha20 = ["dep:chacha20poly1305"]  # ChaCha20-Poly1305 and XChaCha20-Poly1305 (default)
 aead-aes-gcm = ["dep:aes-gcm", "dep:aes"] # AES-256-GCM (hw-accel)
 aead-all = ["aead-chacha20", "aead-aes-gcm"]
+# Run ChaCha20-Poly1305 and AES-256-GCM through AWS-LC instead of
+# RustCrypto (1.6.0): about twice the throughput from 1 KiB up, the same
+# bytes on the wire (both implement RFC 8439 and SP 800-38D; pinned by
+# cross-backend tests). XChaCha20-Poly1305 stays on RustCrypto. Needs
+# `std`, a C compiler and, on Windows x86-64, NASM or `prebuilt-nasm`,
+# like the `sign-*` features. Off by default: the default build stays
+# pure Rust.
+aead-aws-lc = ["std", "dep:aws-lc-rs"]
 
 # Hashing algorithms
 hash-blake3 = ["dep:blake3"]          # BLAKE3 (default - fastest; 32-byte + XOF)
@@ -135,7 +143,8 @@ async-trait = []
 
 # Convenience presets
 preset-all = ["std", "zeroize", "aead-all", "hash-all", "mac-all", "kdf-all", "stream"]
-preset-minimal = ["std", "aead-chacha20"]
+# `zeroize` since 1.6.0: without it, wiping is best effort only.
+preset-minimal = ["std", "zeroize", "aead-chacha20"]
 
 [dependencies]
 # Cryptographic primitives (RustCrypto + BLAKE3). Default features are

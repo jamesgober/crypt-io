@@ -44,6 +44,7 @@
     - [`Crypt::encrypt_into` / `decrypt_into` (zero-alloc, 0.10.0)](#zero-alloc-into-paths)
     - [`Crypt::decrypt_zeroizing` (1.1.0)](#cryptdecrypt_zeroizing)
     - [`Crypt::seal` / `open` (sealed format, 1.1.0)](#cryptseal--open)
+    - [`KeyedCrypt` (key set up once, 1.6.0)](#keyedcrypt)
     - [`generate_key` (1.1.0)](#generate_key)
   - [`Algorithm`](#algorithm)
     - [`Algorithm::name`](#algorithmname)
@@ -118,7 +119,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-crypt-io = "1.5"
+crypt-io = "1.6"
 ```
 
 ### Install via terminal
@@ -148,6 +149,7 @@ surface. Defaults give the full toolkit.
 | `aead-chacha20` | ✅ | ChaCha20-Poly1305 and XChaCha20-Poly1305 + [`Crypt::new`](#cryptnew). |
 | `aead-aes-gcm` | ✅ | AES-256-GCM backend + [`Crypt::aes_256_gcm`](#cryptaes_256_gcm). |
 | `aead-all` |  | Both AEADs (already in the 0.3.0+ default). |
+| `aead-aws-lc` |  | 1.6.0. Run ChaCha20-Poly1305 and AES-256-GCM on AWS-LC (XChaCha20-Poly1305 stays on RustCrypto). Same bytes on the wire, faster (see [`PERFORMANCE.md`](PERFORMANCE.md#160-aws-lc-aead-backend-and-keyedcrypt)); needs `std`, a C compiler, and on Windows x86-64 NASM or `prebuilt-nasm`. The `aead-chacha20` / `aead-aes-gcm` features still choose which algorithms exist. |
 | `hash-blake3` | ✅ | BLAKE3 hashing + [`Blake3Hasher`](#blake3hasher) + XOF. |
 | `hash-sha2` | ✅ | SHA-256 + SHA-512 hashing + matching streaming hashers. |
 | `hash-all` |  | Both hash families (already in the 0.4.0+ default). |
@@ -163,9 +165,9 @@ surface. Defaults give the full toolkit.
 | `sign-p256` |  | 1.5.0. [`sign::EcdsaP256PublicKey`](#ecdsap256publickey) (verify only) and the `ES256` case of [`sign::CosePublicKey`](#cosepublickey). Same cost as `sign-ed25519`. |
 | `sign-all` |  | 1.3.0. Every signature feature (`sign-ed25519`, `sign-rsa`, and since 1.5.0 `sign-p256`). |
 | `otp` |  | 1.5.0. [`otp`](#otp-module): HOTP, TOTP, legacy HMAC-SHA1. AWS-LC, like the `sign-*` features. |
-| `prebuilt-nasm` |  | 1.3.0. Windows x86-64 without NASM: use the assembled objects shipped with `aws-lc-sys`. Does nothing without a `sign-*` feature. |
+| `prebuilt-nasm` |  | 1.3.0. Windows x86-64 without NASM: use the assembled objects shipped with `aws-lc-sys`. Does nothing without a feature that pulls AWS-LC (`sign-*`, `otp`, `aead-aws-lc`). |
 | `stream` | ✅ | [`StreamEncryptor`](#streamencryptor) / [`StreamDecryptor`](#streamdecryptor) + [`encrypt_file`](#streamencrypt_file) / [`decrypt_file`](#streamdecrypt_file). Pulls both AEAD backends and HKDF-SHA256 (format v2 key schedule). |
-| `preset-minimal` |  | `std` + `aead-chacha20` only — the 0.2.0 surface. |
+| `preset-minimal` |  | `std` + `zeroize` + `aead-chacha20`: the 0.2.0 surface. 1.6.0 added `zeroize`; before, this preset turned off volatile wiping. |
 | `preset-all` |  | Every pure-Rust feature (`std`, `zeroize`, all AEAD, hash, MAC and KDF families, `stream`). Not the `sign-*` features, which need a C toolchain. |
 | `metrics`, `logging`, `async-trait` |  | Reserved. They enable nothing; 1.0.1 removed the unused dependencies they used to pull in. |
 
@@ -572,6 +574,63 @@ let key = [7u8; 32];
 let sealed = Crypt::xchacha20_poly1305().seal(&key, b"hi")?;
 assert_eq!(Crypt::sealed_algorithm(&sealed)?, Algorithm::XChaCha20Poly1305);
 assert_eq!(Crypt::new().open(&key, &sealed)?, b"hi");
+# }
+# Ok::<(), crypt_io::Error>(())
+```
+
+<a href="#top">↑ TOP</a>
+
+#### `KeyedCrypt`
+
+```rust
+impl Crypt {
+    pub fn keyed(&self, key: &[u8]) -> Result<KeyedCrypt>;
+}
+
+pub struct KeyedCrypt { /* private */ }   // Send + Sync, Debug prints the algorithm only
+
+impl KeyedCrypt {
+    pub fn algorithm(&self) -> Algorithm;
+    pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>>;
+    pub fn encrypt_with_aad(&self, plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>>;
+    pub fn encrypt_into(&self, plaintext: &[u8], out: &mut Vec<u8>) -> Result<()>;
+    pub fn encrypt_with_aad_into(&self, plaintext: &[u8], aad: &[u8], out: &mut Vec<u8>) -> Result<()>;
+    pub fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>>;
+    pub fn decrypt_with_aad(&self, ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>>;
+    pub fn decrypt_zeroizing(&self, ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>>; // zeroize
+    pub fn decrypt_into(&self, ciphertext: &[u8], out: &mut Vec<u8>) -> Result<()>;
+    pub fn decrypt_with_aad_into(&self, ciphertext: &[u8], aad: &[u8], out: &mut Vec<u8>) -> Result<()>;
+    pub fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>>;
+    pub fn seal_with_aad(&self, plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>>;
+    pub fn open(&self, sealed: &[u8]) -> Result<Vec<u8>>;
+    pub fn open_with_aad(&self, sealed: &[u8], aad: &[u8]) -> Result<Vec<u8>>;
+}
+```
+
+New in 1.6.0. One key, set up once. Every `Crypt` call builds the
+cipher from the key bytes (AES key expansion and the GHASH key, or the
+ChaCha20 key setup); a `KeyedCrypt` does it when it is built, so a hot
+path that uses one key for many messages skips it. The methods are the
+`Crypt` methods without the `key` argument, and the bytes are the same
+both ways: `Crypt` decrypts what a `KeyedCrypt` encrypts and the other
+way round.
+
+`open` is strict: it accepts only buffers sealed under the
+`KeyedCrypt`'s own algorithm and returns `InvalidCiphertext` for any
+other, where `Crypt::open` follows the header. Use it to pin the
+algorithm on the read side.
+
+**Errors.** `keyed`: `InvalidKey` if the key is not 32 bytes,
+`AlgorithmNotEnabled` for a disabled algorithm. The methods: as their
+`Crypt` counterparts.
+
+```rust
+# #[cfg(feature = "aead-chacha20")] {
+use crypt_io::Crypt;
+let key = [7u8; 32];
+let keyed = Crypt::new().keyed(&key)?;
+let ct = keyed.encrypt(b"record")?;
+assert_eq!(Crypt::new().decrypt(&key, &ct)?, b"record");
 # }
 # Ok::<(), crypt_io::Error>(())
 ```
@@ -1273,6 +1332,10 @@ key material: derive straight into a `[u8; 32]` or a `Zeroizing`
 buffer and no unwiped copy is left on the heap. Errors: `Kdf` if
 `out` is longer than `255 * HashLen`.
 
+`hkdf_sha256_zeroizing` / `hkdf_sha512_zeroizing` (1.6.0, features
+`kdf-hkdf` + `zeroize`) take a length like `hkdf_sha256` and return
+`Zeroizing<Vec<u8>>`, wiped on drop.
+
 ```rust
 # #[cfg(feature = "kdf-hkdf")] {
 let mut subkey = [0u8; 32];
@@ -1323,9 +1386,17 @@ pub fn argon2_hash_with_params(password: &[u8], params: Argon2Params) -> Result<
 
 Like [`kdf::argon2_hash`](#kdfargon2_hash) but with caller-supplied
 [`Argon2Params`](#argon2params). Use this for machine-to-machine
-credentials (higher memory cost) or for tests (very low cost).
+credentials (higher memory cost).
 
-**Errors.** Same as [`kdf::argon2_hash`](#kdfargon2_hash).
+Since 1.6.0 the parameters must pass
+[`Argon2Params::validate`](#argon2params) (the OWASP minimums and the
+default policy caps), so a configuration typo cannot produce weak
+hashes. For tests with tiny parameters, or hashing above the default
+caps, use `argon2_hash_with_policy` with an
+[`Argon2Policy`](#argon2policy).
+
+**Errors.** Same as [`kdf::argon2_hash`](#kdfargon2_hash), plus `Kdf`
+for parameters that fail `validate`.
 
 ```rust,no_run
 # #[cfg(feature = "kdf-argon2")] {
@@ -1352,8 +1423,9 @@ so `argon2_check(..)?;` rejects it.
 
 The cost parameters come from the PHC string, so before any work
 the string is checked against a policy: [`Argon2Policy::new()`](#argon2policy)
-for `argon2_check` (`argon2id` only, `m` at most 1 GiB, `t` at most
-64, `p` at most 16 — the 1.0.1 limits), or the one you pass to
+for `argon2_check` (`argon2id` only, `m` at most 256 MiB, `t` at most
+64, `p` at most 16, `m * t` at most 1 GiB-pass; 1.6.0 lowered `m` from
+1 GiB and added the total), or the one you pass to
 `argon2_check_with_policy`. crypt-io has only ever produced
 `$argon2id$v=19$` strings.
 
@@ -1391,19 +1463,25 @@ pub struct Argon2Policy { /* private */ }
 impl Argon2Policy {
     pub const fn new() -> Self;                                   // = Default
     pub const fn with_max_cost(self, m_cost: u32, t_cost: u32, p_cost: u32) -> Self;
+    pub const fn with_max_work(self, kib_passes: u64) -> Self;     // 1.6.0
     pub const fn with_min_cost(self, m_cost: u32, t_cost: u32) -> Self;
     pub const fn allow_argon2i(self, allow: bool) -> Self;
     pub const fn allow_argon2d(self, allow: bool) -> Self;
-    // getters: max_m_cost, max_t_cost, max_p_cost, min_m_cost, min_t_cost,
-    //          argon2i_allowed, argon2d_allowed
+    // getters: max_m_cost, max_t_cost, max_p_cost, max_work (1.6.0),
+    //          min_m_cost, min_t_cost, argon2i_allowed, argon2d_allowed
 }
 
 pub fn argon2_hash_with_policy(password: &[u8], params: Argon2Params, policy: &Argon2Policy) -> Result<String>;
 ```
 
 New in 1.1.0. What to accept when checking (and hashing). Defaults:
-`argon2id` only, `m` up to 1 GiB, `t` up to 64, `p` up to 16, no
-minimums.
+`argon2id` only, `m` up to 256 MiB, `t` up to 64, `p` up to 16, total
+work `m * t` up to 1 GiB-pass (2^20 KiB-passes), no minimums. Before
+1.6.0 `m` went up to 1 GiB and there was no total-work cap.
+
+`with_max_cost` also sets the total-work cap to `m * t`, so raising
+the caps works as before; `with_max_work` sets the total on its own
+(call it after `with_max_cost`).
 
 - **Raise the caps** if you stored hashes with higher costs before
   1.0.1 introduced them (1.0.1 rejects those with `Error::Kdf`), or
@@ -1483,9 +1561,9 @@ Reducing any parameter reduces resistance to brute force.
 `output_len` is at least 16, they meet one of the OWASP minimums for
 Argon2id (`m_cost` ≥ 47,104 KiB with `t_cost` 1, 19,456 with 2,
 12,288 with 3, 9,216 with 4, 7,168 with 5+), and they are within the
-default `Argon2Policy` caps. `argon2_hash_with_params` does not call
-it (tests use tiny parameters); call it on values that come from
-configuration.
+default `Argon2Policy` caps. Since 1.6.0 `argon2_hash_with_params`
+calls it; `argon2_hash_with_policy` does not (it applies only the
+policy's caps), for tests and migrations.
 
 <a href="#top">↑ TOP</a>
 
@@ -1508,12 +1586,13 @@ New in 1.3.0. PBKDF2 with HMAC-SHA256 (RFC 8018 section 5.2), the
 `Hi()` of SCRAM-SHA-256 (RFC 7677). Fills `out` (usually 32 bytes;
 each further 32 bytes costs another `iterations` rounds).
 
-- `iterations` must be 1 to `PBKDF2_MAX_ITERATIONS`. 0 is
+- `iterations` must be at least 1, and `iterations` times the number
+  of 32-byte output blocks at most `PBKDF2_MAX_ITERATIONS` (1.6.0;
+  before, the cap applied to `iterations` alone). 0 is
   `Error::InvalidInput`; above the ceiling is `Error::LimitExceeded`,
   returned before any work, so a peer that picks the count (a SCRAM
   server, a stored hash) cannot make one call run for long. 10 million
-  iterations take about 0.65 s per 32-byte block on the reference
-  machine. Apply your own, tighter policy on top (smtp-net accepts
+  rounds take about 0.65 s on the reference machine. Apply your own, tighter policy on top (smtp-net accepts
   4,096 to 1,000,000).
 - An empty `out` is `Error::InvalidInput`. `out` is untouched on any
   error.
@@ -1701,8 +1780,14 @@ impl StreamDecryptor {
     pub fn finalize(self) -> Result<Vec<u8>>;
     pub fn update_into(&mut self, data: &[u8], out: &mut Vec<u8>) -> Result<()>;
     pub fn finalize_into(self, out: &mut Vec<u8>) -> Result<()>;
+    pub fn update_zeroizing(&mut self, data: &[u8]) -> Result<Zeroizing<Vec<u8>>>; // 1.6.0, zeroize
+    pub fn finalize_zeroizing(self) -> Result<Zeroizing<Vec<u8>>>;                  // 1.6.0, zeroize
 }
 ```
+
+Since 1.6.0 `new` reserves no chunk buffer: memory follows the bytes
+actually fed in, so a header announcing 16 MiB chunks costs nothing
+until that much data arrives.
 
 Reads both stream formats; works without `std` or a random source.
 Pass the first 24 bytes to `new` and everything after them (the v2
@@ -1930,6 +2015,9 @@ backend, like the `sign-*` features.
   there only for OTP variants these functions do not cover.
 - `secret` must be at least 16 bytes (RFC 4226 requires 128 bits; apps
   usually use 20). `digits` is 6 to 8. Otherwise `Error::InvalidInput`.
+  Some older enrolments use 10-byte (80-bit) secrets, 16 base32
+  characters; crypt-io refuses them on purpose and has no legacy
+  switch. Re-enrol those users with a new secret.
 - `totp_check` / `hotp_check` take the code as typed (exactly `digits`
   ASCII digits, leading zeros included), compute every candidate in the
   window (`window` steps either side, or `look_ahead` counters ahead, at
@@ -2248,6 +2336,16 @@ P-256 and 32-byte `x` / `y`, `EdDSA` `crv` Ed25519 and a 32-byte `x`,
 algorithm")`; a supported one whose feature is off is
 `Error::AlgorithmNotEnabled`. All WebAuthn Level 3 test vectors (section
 16) check, and the parser is fuzzed (`fuzz/fuzz_targets/cose_key.rs`).
+
+Since 1.6.0 an Ed25519 key of small order is refused
+(`Error::Sign("COSE key: Ed25519 key of small order")`): with such a
+key one signature checks for every message, and no authenticator makes
+one. `Ed25519PublicKey::from_bytes` still accepts them, as RFC 8032
+allows.
+
+ES256 signatures are not unique: if `(r, s)` checks, `(r, n - s)` does
+too. Never detect replays by signature bytes; use the challenge and
+the signature counter.
 
 <a href="#top">↑ TOP</a>
 

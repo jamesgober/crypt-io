@@ -8,13 +8,13 @@
 //! We intentionally do NOT fuzz `argon2_hash` directly — at OWASP
 //! defaults each iteration is ~50-150 ms, which makes the fuzzer
 //! useless. The parameter-validation path is exercised through
-//! `argon2_hash_with_params` indirectly.
+//! `argon2_hash_with_policy` (the form that takes cheap parameters).
 
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
 use arbitrary::Arbitrary;
-use crypt_io::kdf::{argon2_check, argon2_hash_with_params, Argon2Params};
+use crypt_io::kdf::{argon2_check, argon2_hash_with_policy, Argon2Params, Argon2Policy};
 
 #[derive(Arbitrary, Debug)]
 struct Input {
@@ -43,7 +43,7 @@ fuzz_target!(|input: Input| {
         p_cost: input.p_cost.max(1) as u32,
         output_len: ((input.output_len as usize).max(4)).min(64),
     };
-    if let Ok(phc) = argon2_hash_with_params(&input.password, params) {
+    if let Ok(phc) = argon2_hash_with_policy(&input.password, params, &Argon2Policy::new()) {
         assert!(argon2_check(&phc, &input.password).is_ok());
     }
 });

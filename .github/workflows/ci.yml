@@ -119,6 +119,7 @@ jobs:
       - run: cargo build --no-default-features --features std,zeroize,stream
       - run: cargo build --no-default-features --features std,getrandom,aead-chacha20
       - run: cargo build --no-default-features --features zeroize,mac-blake3
+      - run: cargo build --no-default-features --features aead-aws-lc,aead-chacha20,aead-aes-gcm
 
   docs-features:
     name: Docs (partial feature sets)
@@ -146,17 +147,20 @@ jobs:
       - run: cargo doc --no-deps --no-default-features --features sign-rsa
       - run: cargo doc --no-deps --no-default-features --features sign-p256
       - run: cargo doc --no-deps --no-default-features --features otp
+      - run: cargo doc --no-deps --no-default-features --features aead-aws-lc,aead-aes-gcm,stream
 
-  # 1.3.0 feature sets on their own: catches a `cfg` that only holds
-  # because another feature happens to be on in `--all-features`.
+  # Feature sets on their own: catches a `cfg` that only holds because
+  # another feature happens to be on in `--all-features`. 1.6.0 adds a
+  # set without `zeroize` (the wipe code must work without it), the
+  # AWS-LC AEAD backend, and `preset-minimal`.
   feature-sets:
-    name: Feature sets (sign, pbkdf2)
+    name: Feature sets
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         rust: [stable, "1.85.0"]
-        features: ["sign-ed25519", "sign-rsa", "sign-p256", "sign-all,hash-sha2", "otp", "kdf-pbkdf2", "kdf-pbkdf2,zeroize,mac-hmac"]
+        features: ["sign-ed25519", "sign-rsa", "sign-p256", "sign-all,hash-sha2", "otp", "kdf-pbkdf2", "kdf-pbkdf2,zeroize,mac-hmac", "std,aead-chacha20,stream", "std,aead-chacha20,aead-aes-gcm,hash-sha2,mac-hmac,kdf-hkdf,kdf-argon2,stream", "aead-aws-lc,aead-chacha20,aead-aes-gcm,stream,zeroize", "preset-minimal"]
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master

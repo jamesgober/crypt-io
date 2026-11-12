@@ -66,8 +66,8 @@ shipped in `crypt_io::stream` defeats:
 
 - **MAC verification** uses constant-time comparators:
   `subtle::ConstantTimeEq` for HMAC (crypt-io's own HMAC since
-  1.2.2) and `blake3::Hash::eq` for BLAKE3 keyed, which also routes
-  through `subtle`.
+  1.2.2) and `blake3::Hash::eq` for BLAKE3 keyed, which compares in
+  constant time with the `constant_time_eq` crate.
 - **`Tag<N>`** (1.1.0) wraps a tag with a constant-time `==`
   (`subtle::ConstantTimeEq`), for callers who compare tags
   themselves.
@@ -138,9 +138,23 @@ note in `hash` both explicitly forbid `tag == expected` /
   `Crypt::decrypt_zeroizing`, `kdf::hkdf_sha256_into` /
   `hkdf_sha512_into` (derive into a buffer you own),
   `hash::blake3_long_into`, `StreamDecryptor::update_into`, and
-  `generate_key()` (returns `Zeroizing<[u8; 32]>`). For buffers of
-  your own, `crypt_io::wipe` / `wipe_vec` (1.2.0) do the same
-  volatile wipe crypt-io uses internally.
+  `generate_key()` (returns `Zeroizing<[u8; 32]>`). 1.6.0 adds
+  more forms that return a wiped type: `KeyedCrypt::decrypt_zeroizing`,
+  `kdf::hkdf_sha256_zeroizing` / `hkdf_sha512_zeroizing` and
+  `StreamDecryptor::update_zeroizing` / `finalize_zeroizing`. For
+  buffers of your own, `crypt_io::wipe` / `wipe_vec` (1.2.0) do the
+  same volatile wipe crypt-io uses internally.
+- **File helpers (1.6.0).** `stream::encrypt_file` reads the input
+  straight into one buffer that it wipes on every exit, and
+  `stream::decrypt_file` writes plaintext straight from one wiped
+  buffer to the temporary file, so neither leaves a plaintext copy in
+  freed memory (before 1.6.0 their `BufReader` / `BufWriter` buffers
+  did). The page cache and the files themselves are outside
+  crypt-io's reach. Verified by `tests/wipe_on_free.rs`.
+- **`KeyedCrypt` (1.6.0)** holds a scheduled key. It is wiped on drop
+  like the stream types' keys (RustCrypto wipes the ChaCha20 key and,
+  with `zeroize`, the AES round keys; AWS-LC cleanses its own memory),
+  with the same `polyval` GHASH exception as above.
 - **No secrets in `Debug`.** The stream types print only the
   algorithm, chunk size, counter and buffered length (1.0.0 printed
   the raw key and buffered plaintext).
@@ -194,12 +208,13 @@ note in `hash` both explicitly forbid `tag == expected` /
   only where a protocol or stored format requires it: SCRAM-SHA-256
   (RFC 7677) and existing PBKDF2 hashes. It is not memory-hard, so
   GPUs brute-force it far more cheaply than Argon2id; do not choose
-  it for new password storage. The iteration count is capped at
-  `kdf::PBKDF2_MAX_ITERATIONS` (10,000,000, about 0.65 s per
-  32-byte block on the reference machine) and checked before any
-  work, so a SCRAM server or a stored hash cannot pick a count that
-  ties up a thread for minutes. Callers should apply a tighter
-  policy of their own.
+  it for new password storage. The total work, iterations times
+  32-byte output blocks, is capped at `kdf::PBKDF2_MAX_ITERATIONS`
+  (10,000,000, about 0.65 s on the reference machine) and checked
+  before any work, so a SCRAM server or a stored hash cannot pick a
+  count, or a count and output length, that ties up a thread for
+  minutes. Before 1.6.0 the cap applied per block, so a long output
+  multiplied it. Callers should apply a tighter policy of their own.
 
 ### Signatures: Ed25519 + RSA PKCS#1 v1.5 (1.3.0, opt-in)
 
@@ -223,7 +238,13 @@ note in `hash` both explicitly forbid `tag == expected` /
   for any mismatch, so `?` rejects forgeries, and `Error::Sign` for a
   key that does not parse. RSA checks are strict DER (no BER padding,
   no `DigestInfo` without NULL); Ed25519 rejects non-canonical `S` and
-  accepts small-order keys, as RFC 8032 allows. Every case of
+  `Ed25519PublicKey::from_bytes` accepts small-order keys, as RFC 8032
+  allows. With such a key one signature checks for every message, so
+  a party who registers one can later deny any particular message; it
+  is not a forgery against honest keys. `CosePublicKey` refuses
+  small-order Ed25519 keys (1.6.0), since no authenticator makes
+  them; callers that accept raw Ed25519 keys from other parties and
+  need signatures to bind one message should do the same. Every case of
   Wycheproof's RSA PKCS#1 v1.5 SHA-256 (2048-bit) and Ed25519 files
   behaves as expected (`tests/verify.rs`).
 - **1024-bit RSA is check-only and opt-in.**
@@ -239,8 +260,14 @@ note in `hash` both explicitly forbid `tag == expected` /
   parses authenticator-supplied CBOR with a strict, bounded parser (no
   indefinite lengths, tags, duplicate labels or trailing bytes; at most
   16 parameters, nesting at most 4) and is fuzzed. `alg` must be present
-  and match `kty`. Signature-counter, origin and challenge checks are
-  the relying party's job, not crypt-io's.
+  and match `kty`. Small-order Ed25519 keys are refused (1.6.0).
+  Signature-counter, origin and challenge checks are the relying
+  party's job, not crypt-io's.
+- **ECDSA signatures are not unique.** If `(r, s)` checks, so does
+  `(r, n - s)`; AWS-LC, like Wycheproof, accepts both. A signature is
+  proof that the key holder signed, not an identifier: never
+  deduplicate, or detect replays, by signature bytes. Use the
+  challenge (and, for passkeys, the signature counter) for that.
 - Key generation, RSA-PSS and ECDSA signing are not provided.
 
 ### One-time passwords (1.5.0, opt-in)
@@ -333,15 +360,27 @@ and confidentiality against:
   you register. Failure to produce randomness is a `RandomFailure`
   error — we never fall back to a non-CSPRNG.
 - **PHC strings passed to `argon2_check` are not fully trusted.**
-  Their cost parameters are capped (`m` at most 1 GiB, `t` at most
-  64, `p` at most 16) and only `argon2id` is accepted, so an
-  imported or tampered hash cannot make one login allocate
-  gigabytes or burn minutes of CPU, or downgrade the variant. An
-  `Argon2Policy` (1.1.0) raises or lowers those caps (for hashes
-  made with higher costs before 1.0.1), adds minimums (so a planted
-  cheap hash is rejected), or allows `argon2i` / `argon2d` for
-  migration. `Argon2Params::validate()` checks custom hashing
-  parameters against the OWASP minimums.
+  Their cost parameters are capped by default (1.6.0: `m` at most
+  256 MiB, `t` at most 64, `p` at most 16, and total work `m * t` at
+  most 1 GiB-pass, under a second on the reference machine;
+  1.1 to 1.5 allowed `m` up to 1 GiB with no total-work cap) and only
+  `argon2id` is accepted, so an imported or tampered hash cannot make
+  one login allocate gigabytes or burn many seconds of CPU, or
+  downgrade the variant. The caps are checked before any memory is
+  allocated. An `Argon2Policy` (1.1.0) raises or lowers those caps
+  (`with_max_cost`, and `with_max_work` from 1.6.0), adds minimums (so
+  a planted cheap hash is rejected), or allows `argon2i` / `argon2d`
+  for migration. A server that checks untrusted hashes should still
+  set caps no higher than its own hashing parameters.
+- **Custom hashing parameters are checked (1.6.0).**
+  `argon2_hash_with_params` refuses parameters below the OWASP
+  minimums (`Argon2Params::validate()`); before 1.6.0 that check was
+  opt-in. `argon2_hash_with_policy` hashes under a caller-chosen
+  `Argon2Policy` instead, for tests and migrations.
+- **Rejecting a forged stream header costs no memory (1.6.0).** A
+  `StreamDecryptor` no longer reserves a chunk-sized buffer when the
+  header is parsed, so a header announcing 16 MiB chunks makes the
+  decryptor hold only as much as the peer actually sends.
 
 ### API misuse to avoid
 
@@ -367,16 +406,19 @@ and confidentiality against:
 
 ## Verification & testing posture
 
-Coverage as of 1.0:
+Coverage as of 1.6.0 (`cargo test --all-features` on Linux, stable):
 
 | Category | Count | Surface |
 |---|---:|---|
-| Unit tests | 126 | All modules |
-| Integration tests | 38 | Streaming, `_into` APIs |
-| Doctests | 33 | Every public item has a runnable example |
-| `cargo-fuzz` targets | 8 | Every algorithm + stream frame format |
-| Pre-release fuzz iterations | 4.7 M | 15-second smoke per target — 0 findings |
-| Spec-pinned KATs | 17+ | RFC 8439 (ChaCha20-Poly1305), NIST GCM TC14+15 (AES-GCM), FIPS 180-4 B.1+B.2+C.1+C.2 + empty (SHA-2), RFC 4231 TC1+TC2 × SHA-256/SHA-512 (HMAC), RFC 5869 TC1+TC3 (HKDF), BLAKE3 official + BLAKE3-keyed empty |
+| Unit tests | 202 | All modules |
+| Integration tests | 128 | Streaming, `_into` APIs, sealed format, signatures, OTP, WebAuthn, regressions, wiping and allocation bounds |
+| Doctests | 56 | Public items with runnable examples |
+| `cargo-fuzz` targets | 11 | AEAD encrypt / decrypt, stream decrypt, hashes, MACs, HKDF, Argon2 PHC parsing, COSE keys, OTP checks, `_into` differential |
+| Known-answer and conformance vectors | | RFC 8439, NIST GCM, FIPS 180-4, RFC 4231, RFC 5869, BLAKE3 official, RFC 8018 / 7677 (PBKDF2), RFC 8032, NIST CAVP (RSA SigVer15, P-256), Wycheproof (Ed25519, RSA PKCS#1 v1.5, P-256 DER and P1363), RFC 4226 / 6238, WebAuthn Level 3, frozen stream-format vectors |
+
+Each release also runs a short fuzz pass over the targets it touched
+(1.6.0: `argon2_parse`, `stream_decrypt`, `aead_decrypt`, `cose_key`,
+120 s each).
 
 Per-release [`docs/release/`](release/) notes document the
 verification matrix at each phase. The full per-suite measured
@@ -409,7 +451,9 @@ performance numbers are in [`PERFORMANCE.md`](PERFORMANCE.md).
   "modern CPU". On a Zen 5 chip we measure ~9 ms — about 11×
   faster than the design intent. **Production deployments on
   modern server hardware should raise `t_cost` to 8+ or
-  `m_cost` to 64 MiB+ via `argon2_hash_with_params`.** See
+  `m_cost` to 64 MiB+ via `argon2_hash_with_params`** (raise the
+  `Argon2Policy` caps for checking only if you go above
+  256 MiB or 1 GiB-pass). See
   [`PERFORMANCE.md`](PERFORMANCE.md) for the measurement and
   guidance.
 - **The `Crypt::encrypt` (allocating) path** allocates once per

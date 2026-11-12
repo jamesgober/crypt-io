@@ -159,6 +159,66 @@ pub fn hkdf_sha512_into(
     Ok(())
 }
 
+/// [`hkdf_sha256`], returning the key in a buffer that is wiped when it
+/// is dropped. Prefer this (or [`hkdf_sha256_into`]) when the output is
+/// key material: `hkdf_sha256`'s plain `Vec` is freed without wiping.
+///
+/// Requires the `zeroize` feature. New in 1.6.0.
+///
+/// # Errors
+///
+/// As [`hkdf_sha256`].
+///
+/// # Example
+///
+/// ```
+/// # #[cfg(all(feature = "kdf-hkdf", feature = "zeroize"))] {
+/// use crypt_io::kdf;
+/// let master = [0x42u8; 32];
+/// let key = kdf::hkdf_sha256_zeroizing(&master, Some(b"salt"), b"app:session:v1", 32)?;
+/// assert_eq!(key.len(), 32);
+/// # }
+/// # Ok::<(), crypt_io::Error>(())
+/// ```
+#[cfg(feature = "zeroize")]
+pub fn hkdf_sha256_zeroizing(
+    ikm: &[u8],
+    salt: Option<&[u8]>,
+    info: &[u8],
+    len: usize,
+) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+    if len > HKDF_MAX_OUTPUT_SHA256 {
+        return Err(Error::Kdf("hkdf-sha256 output > 255 * 32 bytes"));
+    }
+    // Allocate inside the wrapper first, so no unwiped copy exists.
+    let mut out = zeroize::Zeroizing::new(vec![0u8; len]);
+    hkdf_sha256_into(ikm, salt, info, &mut out)?;
+    Ok(out)
+}
+
+/// [`hkdf_sha512`], returning the key in a buffer that is wiped when it
+/// is dropped. See [`hkdf_sha256_zeroizing`].
+///
+/// Requires the `zeroize` feature. New in 1.6.0.
+///
+/// # Errors
+///
+/// As [`hkdf_sha512`].
+#[cfg(feature = "zeroize")]
+pub fn hkdf_sha512_zeroizing(
+    ikm: &[u8],
+    salt: Option<&[u8]>,
+    info: &[u8],
+    len: usize,
+) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+    if len > HKDF_MAX_OUTPUT_SHA512 {
+        return Err(Error::Kdf("hkdf-sha512 output > 255 * 64 bytes"));
+    }
+    let mut out = zeroize::Zeroizing::new(vec![0u8; len]);
+    hkdf_sha512_into(ikm, salt, info, &mut out)?;
+    Ok(out)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, unused_results)]
 mod tests {
@@ -283,5 +343,20 @@ mod tests {
         let a = hkdf_sha256(&master, Some(b"salt"), b"info", 32).unwrap();
         let b = hkdf_sha256(&master, Some(b"salt"), b"info", 32).unwrap();
         assert_eq!(a, b);
+    }
+
+    #[cfg(feature = "zeroize")]
+    #[test]
+    fn zeroizing_forms_match_the_plain_ones() {
+        let ikm = [9u8; 32];
+        assert_eq!(
+            *hkdf_sha256_zeroizing(&ikm, Some(b"s"), b"i", 42).unwrap(),
+            hkdf_sha256(&ikm, Some(b"s"), b"i", 42).unwrap()
+        );
+        assert_eq!(
+            *hkdf_sha512_zeroizing(&ikm, None, b"i", 100).unwrap(),
+            hkdf_sha512(&ikm, None, b"i", 100).unwrap()
+        );
+        assert!(hkdf_sha256_zeroizing(&ikm, None, b"", HKDF_MAX_OUTPUT_SHA256 + 1).is_err());
     }
 }

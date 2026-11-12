@@ -77,5 +77,7 @@ pub use self::hkdf_impl::{
     HKDF_MAX_OUTPUT_SHA256, HKDF_MAX_OUTPUT_SHA512, hkdf_sha256, hkdf_sha256_into, hkdf_sha512,
     hkdf_sha512_into,
 };
+#[cfg(all(feature = "kdf-hkdf", feature = "zeroize"))]
+pub use self::hkdf_impl::{hkdf_sha256_zeroizing, hkdf_sha512_zeroizing};
 #[cfg(feature = "kdf-pbkdf2")]
 pub use self::pbkdf2_impl::{PBKDF2_MAX_ITERATIONS, PBKDF2_SHA256_OUTPUT_LEN, pbkdf2_hmac_sha256};

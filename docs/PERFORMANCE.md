@@ -5,8 +5,10 @@
 </h1>
 
 <p align="center">
-    <i>Measured throughput for every operation in <code>crypt-io</code> 0.8.0
-    on the reference machine documented below. Reproduce locally with
+    <i>Measured throughput for the operations in <code>crypt-io</code> on
+    the reference machine documented below. The TL;DR table was measured
+    on 0.8 to 1.3 (each row says where it is newer); later sections
+    compare each release with the one before. Reproduce locally with
     <code>cargo bench --all-features</code>.</i>
 </p>
 
@@ -55,12 +57,15 @@ steady-state allocations.
 | `StreamEncryptor` ChaCha20-Poly1305 | 932 MiB/s | **1.40 GiB/s** | **+54%** |
 | `StreamEncryptor` AES-256-GCM       | 999 MiB/s | **1.54 GiB/s** | **+55%** |
 
-**Allocation count, measured via `mod-alloc` over 10,000 iterations:**
+**Allocations per call** (counting allocator; 0.10.0 measured with
+`mod-alloc` over 10,000 iterations, rechecked on 1.6.0):
 
-| Operation | Allocations / 10k iters | Per-call |
+| Operation | 0.10.0 | Since 1.1.0 |
 |---|---:|---:|
-| `Crypt::encrypt` (any algo, any size) | 20 000 | 2 |
-| `Crypt::encrypt_into` (any algo, any size) | **0** | **0 steady-state** |
+| `Crypt::encrypt` (any algo, any size) | 2 | 1 |
+| `Crypt::decrypt` | 1 | 1 |
+| `Crypt::encrypt_into` / `decrypt_into` (steady state) | **0** | **0** |
+| `KeyedCrypt::encrypt_into` / `decrypt_into` (1.6.0, steady state) | | **0** |
 
 The `_into` path is **zero-allocation in the steady state**:
 caller-supplied buffer grows once on first call, every subsequent
@@ -401,10 +406,12 @@ finalize — so framing and chunking overhead is included.
 | Decrypt 10 MiB | 555 MiB/s | 565 MiB/s |
 
 Stream throughput is ~80-95% of the underlying AEAD throughput at
-1 MiB. The ~30% gap at 10 MiB decrypt is allocation pressure: each
-chunk decrypt produces a fresh `Vec<u8>`. A future
-zero-allocation streaming path would close it; for 0.8.0 it's
-documented behaviour, not a correctness bug.
+1 MiB. These rows were measured on 0.8.0, when each chunk decrypt
+produced a fresh `Vec<u8>`, which explains the gap at 10 MiB decrypt.
+That is gone: since 1.1.0 `StreamDecryptor::update` sizes its output
+once (0.68-0.71 of the 1.0.1 time at 10 MiB, see "1.1.0 against
+1.0.1"), `update_into` reuses the caller's buffer, and since 1.6.0
+the key is set up once per stream rather than once per chunk.
 
 ### Contract check
 
@@ -418,6 +425,54 @@ caller-supplied buffer, removes the per-call `Vec` allocation, and
 pushes throughput **+54% / +55%** over the allocating path at 1 MiB
 — well over the 1 GiB/s contract target for both algorithms.
 
+### 1.6.0: AWS-LC AEAD backend and KeyedCrypt
+
+Measured with an A/B harness that links 1.5.0 and 1.6.0 into one
+binary: each case runs 41 rounds of alternating batches and reports the
+median of the per-round time ratio, repeated three times (the ranges
+below span the three). Windows 11, same reference CPU, Rust 1.99,
+release build with fat LTO, while other work kept the machine busy, so
+only the ratios are meaningful. **Above 1.0 means 1.6.0 is faster.**
+
+Default build (RustCrypto engine):
+
+| Case | 64 B | 1 KiB | 16 KiB |
+|---|---|---|---|
+| `Crypt` encrypt / decrypt, every algorithm | 0.95 – 1.03 | 0.97 – 1.07 | 0.97 – 1.05 |
+| `KeyedCrypt` AES-256-GCM encrypt / decrypt | 1.78 – 1.93 | 1.15 – 1.18 | 0.99 – 1.06 |
+| `KeyedCrypt` ChaCha20 / XChaCha20 | 0.96 – 1.05 | 0.96 – 1.05 | 0.97 – 1.04 |
+
+`KeyedCrypt` pays off for AES-GCM, whose key setup (round keys and the
+GHASH key) is most of the cost of a short message; ChaCha20's setup is
+a key copy, so there is nothing to save. Streams on the default build
+are unchanged (0.89 – 1.15 at 1 MiB, within this machine's noise).
+
+With `aead-aws-lc`:
+
+| Case | 64 B | 1 KiB | 16 KiB |
+|---|---|---|---|
+| `Crypt` ChaCha20-Poly1305 encrypt / decrypt | 3.75 – 4.69 | 2.86 – 3.03 | 2.12 – 2.24 |
+| `KeyedCrypt` ChaCha20-Poly1305 | 4.82 – 6.08 | 3.25 – 3.36 | 2.17 – 2.29 |
+| `Crypt` AES-256-GCM encrypt | **0.85 – 0.89** | 1.52 – 1.60 | 2.40 – 2.63 |
+| `Crypt` AES-256-GCM decrypt | 0.99 – 1.01 | 1.61 – 1.74 | 2.53 – 2.79 |
+| `KeyedCrypt` AES-256-GCM | 1.87 – 2.43 | 2.26 – 2.62 | 2.49 – 2.96 |
+| XChaCha20-Poly1305 (stays on RustCrypto) | 0.94 – 1.07 | 0.94 – 1.07 | 0.98 – 1.02 |
+
+| Stream, ChaCha20-Poly1305, 1 MiB | 1 KiB chunks | 64 KiB chunks |
+|---|---|---|
+| `aead-aws-lc` | 1.88 – 2.27 | 1.46 – 1.89 |
+
+AWS-LC's AES key setup costs more than RustCrypto's, so a per-call
+AES-256-GCM encrypt of a 64-byte message is slower with `aead-aws-lc`;
+use `KeyedCrypt` (about twice as fast as 1.5.0 there) when messages are
+short and the key repeats. Allocations per call are unchanged (see the
+table above; `tests/alloc_bounds.rs` checks them).
+
+Argon2id at the new default ceiling (256 MiB, 4 passes, the most the
+default policy accepts) took 0.8 to 0.9 s on the busy machine, about 10
+to 40 times the default parameters in the same run. 1.5.0's default
+ceiling allowed 64 times that much work.
+
 <a href="#top">↑ TOP</a>
 
 <hr>
@@ -430,14 +485,14 @@ crates' own benches:
 
 - [`chacha20poly1305`](https://crates.io/crates/chacha20poly1305) —
   RustCrypto's bench reports ~1.5-1.6 GiB/s at 1 MiB on similar
-  hardware. We measure 1.05 GiB/s for encrypt and 1.49 GiB/s for
-  decrypt. The encrypt-side gap is the allocation we do
-  (`Vec::with_capacity` + nonce prepend); decrypt is within
-  noise.
+  hardware. On 0.9 we measured 1.05 GiB/s for encrypt and
+  1.49 GiB/s for decrypt; the encrypt-side gap was a second
+  allocation and copy, removed in 1.1.0, and `encrypt_into`
+  measures 1.45 GiB/s. Decrypt is within noise.
 - [`aes-gcm`](https://crates.io/crates/aes-gcm) — upstream reports
   ~2 GiB/s at 1 MiB on Zen-class hardware with AES-NI. We measure
-  1.08 / 1.60 GiB/s — same encrypt-side allocation gap, decrypt
-  within noise.
+  1.08 / 1.60 GiB/s on 0.9 (same encrypt-side gap, closed since),
+  decrypt within noise.
 - [`blake3`](https://crates.io/crates/blake3) — upstream reports
   ~10-12 GiB/s on Zen 5 with AVX-512. We measure 11.83 GiB/s at
   1 MiB. Essentially zero overhead — BLAKE3's API is itself
@@ -476,9 +531,11 @@ If you're deploying on:
 
 - **Server-class x86_64 with AES-NI + SHA-NI (Intel Ice Lake+,
   AMD Zen 3+)** — pick `AES-256-GCM` for AEAD, `SHA-256` for
-  interop hashing. Both will saturate near memory bandwidth.
-  Raise Argon2id `t_cost` to maintain the ~100 ms password-hash
-  budget.
+  interop hashing. Both run on the dedicated instructions, at about
+  1.6 GiB/s (AES-256-GCM) and 2.5 GiB/s (SHA-256) on the reference
+  machine, well below memory bandwidth; `aead-aws-lc` (1.6.0) is
+  faster still for AEAD. Raise Argon2id `t_cost` to maintain the
+  ~100 ms password-hash budget.
 - **Server-class x86_64 without SHA-NI (older Xeon, AMD Zen 1/2)**
   — same AEAD pick (`AES-256-GCM`), but use **BLAKE3** for
   hashing — SHA-256 will be ~3× slower without SHA-NI.
