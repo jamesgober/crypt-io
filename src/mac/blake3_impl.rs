@@ -295,6 +295,74 @@ mod tests {
         assert!(!blake3_keyed_verify(&key, b"message", &oversized));
     }
 
+    /// With `zeroize`, dropping a `Blake3Mac` wipes the key and the
+    /// buffered input. Unlike the HMAC types, the `blake3` hasher keeps a
+    /// few non-secret bytes (flags, platform) after its wipe, so this
+    /// looks for the secrets rather than for an all-zero value.
+    #[cfg(feature = "zeroize")]
+    #[test]
+    #[cfg_attr(miri, ignore = "reads bytes of the hasher that were never written")]
+    fn drop_wipes_blake3_mac_state() {
+        use alloc::boxed::Box;
+        use alloc::vec::Vec;
+        use core::mem::{MaybeUninit, size_of};
+
+        fn bytes_of(slot: &MaybeUninit<Blake3Mac>) -> Vec<u8> {
+            let ptr = slot.as_ptr().cast::<u8>();
+            let mut bytes = Vec::with_capacity(size_of::<Blake3Mac>());
+            for i in 0..size_of::<Blake3Mac>() {
+                // SAFETY: the allocation is live and `size_of::<Blake3Mac>()`
+                // bytes long. Bytes the hasher never wrote (unused chaining
+                // value slots) are only compared, never interpreted.
+                bytes.push(unsafe { ptr.add(i).read_volatile() });
+            }
+            bytes
+        }
+
+        fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+            haystack.windows(needle.len()).any(|w| w == needle)
+        }
+
+        // The hasher holds the key as eight little-endian words.
+        let mut key_in_memory = [0u8; 32];
+        for (out, word) in key_in_memory
+            .chunks_exact_mut(4)
+            .zip(ELVISH_KEY.chunks_exact(4))
+        {
+            out.copy_from_slice(
+                &u32::from_le_bytes([word[0], word[1], word[2], word[3]]).to_ne_bytes(),
+            );
+        }
+        // Less than one block, so it stays in the hasher's buffer.
+        let data = [0xc3u8; 40];
+
+        let mut mac = Blake3Mac::new(ELVISH_KEY);
+        mac.update(&data);
+        let mut slot: Box<MaybeUninit<Blake3Mac>> = Box::new(MaybeUninit::new(mac));
+
+        // Both secrets are in the live value, so the checks after the drop
+        // cannot pass by looking in the wrong place.
+        let before = bytes_of(&slot);
+        assert!(
+            contains(&before, &key_in_memory),
+            "key not found before drop"
+        );
+        assert!(
+            contains(&before, &data),
+            "buffered input not found before drop"
+        );
+
+        // SAFETY: `slot` holds an initialised value; it is dropped
+        // exactly once here and never used as a `Blake3Mac` again.
+        unsafe { slot.assume_init_drop() };
+        let after = bytes_of(&slot);
+        assert!(
+            !contains(&after, &key_in_memory),
+            "BLAKE3 key survived drop"
+        );
+        assert!(!contains(&after, &data), "buffered input survived drop");
+    }
+
     // --- Streaming-equivalence + verify tests ---
 
     #[test]

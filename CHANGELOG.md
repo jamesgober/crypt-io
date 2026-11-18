@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A memory test that a dropped `Blake3Mac` no longer holds its key or
+  its buffered input (feature `zeroize`). `docs/SECURITY.md` states the
+  wipe; only the HMAC types had a test for it.
+
 ### Changed
 
 ### Fixed
