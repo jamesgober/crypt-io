@@ -228,7 +228,7 @@ With the default `zeroize` feature the writes are volatile, so the compiler cann
 
 ```toml
 [dependencies]
-crypt-io = { version = "1.6", features = ["sign-ed25519", "sign-rsa", "sign-p256"] }
+crypt-io = { version = "1.7", features = ["sign-ed25519", "sign-rsa", "sign-p256"] }
 ```
 
 ```rust,ignore
@@ -265,9 +265,9 @@ let code = otp::totp(&secret, unix_seconds, 6)?;                    // what the 
 let step = otp::totp_check(&secret, "492039", unix_seconds, 6, 1)?;  // ±30 s; store `step`
 ```
 
-HOTP (RFC 4226) and TOTP (RFC 6238) with HMAC-SHA1, which every authenticator app uses (feature `otp`, AWS-LC like the signing features). Checks are constant time and return the matched step, so a replay guard is one comparison. HMAC-SHA1 is legacy and exists only in this module. Secrets must be at least 16 bytes (128 bits, as RFC 4226 requires); older 10-byte (80-bit) enrolments are refused on purpose, so re-enrol those users.
+HOTP (RFC 4226) and TOTP (RFC 6238) with HMAC-SHA1, which every authenticator app uses (feature `otp`; pure Rust since 1.7.0, before that AWS-LC). Checks are constant time and return the matched step, so a replay guard is one comparison. HMAC-SHA1 is legacy and exists only in this module. Secrets must be at least 16 bytes (128 bits, as RFC 4226 requires); older 10-byte (80-bit) enrolments are refused on purpose, so re-enrol those users.
 
-The signing features, `otp` and `aead-aws-lc` use AWS-LC (through `aws-lc-rs`, the backend tls-net uses), which is C and assembly: they need a C compiler, and on Windows x86-64 either NASM or the `prebuilt-nasm` feature. The first build takes about 15 to 25 seconds longer. The default build does not include them and stays pure Rust. Private keys are cleansed when dropped, `Debug` never prints them, and RSA keys below 2048 bits are refused.
+The signing features and `aead-aws-lc` use AWS-LC (through `aws-lc-rs`, the backend tls-net uses), which is C and assembly: they need a C compiler, and on Windows x86-64 either NASM or the `prebuilt-nasm` feature. The first build takes about 15 to 25 seconds longer. The default build does not include them and stays pure Rust. Private keys are cleansed when dropped, `Debug` never prints them, and RSA keys below 2048 bits are refused.
 
 ### Usage limits
 

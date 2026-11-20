@@ -160,7 +160,7 @@ jobs:
       fail-fast: false
       matrix:
         rust: [stable, "1.85.0"]
-        features: ["sign-ed25519", "sign-rsa", "sign-p256", "sign-all,hash-sha2", "otp", "kdf-pbkdf2", "kdf-pbkdf2,zeroize,mac-hmac", "std,aead-chacha20,stream", "std,aead-chacha20,aead-aes-gcm,hash-sha2,mac-hmac,kdf-hkdf,kdf-argon2,stream", "aead-aws-lc,aead-chacha20,aead-aes-gcm,stream,zeroize", "preset-minimal"]
+        features: ["sign-ed25519", "sign-rsa", "sign-p256", "sign-all,hash-sha2", "otp", "otp,zeroize", "kdf-pbkdf2", "kdf-pbkdf2,zeroize,mac-hmac", "std,aead-chacha20,stream", "std,aead-chacha20,aead-aes-gcm,hash-sha2,mac-hmac,kdf-hkdf,kdf-argon2,stream", "aead-aws-lc,aead-chacha20,aead-aes-gcm,stream,zeroize", "preset-minimal"]
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
@@ -171,6 +171,15 @@ jobs:
       - run: cargo clippy --lib --tests --no-default-features --features ${{ matrix.features }} -- -D warnings
       - run: cargo test --lib --tests --no-default-features --features ${{ matrix.features }}
       - run: cargo test --doc --no-default-features --features ${{ matrix.features }}
+      # AWS-LC (C) comes only with a `sign-*` or `aead-aws-lc` feature.
+      # `otp` is pure Rust since 1.7.0.
+      - name: No C backend unless asked for
+        if: ${{ !contains(matrix.features, 'sign-') && !contains(matrix.features, 'aead-aws-lc') }}
+        run: |
+          if cargo tree --no-default-features --features ${{ matrix.features }} -e normal,build --prefix none | grep -E '^aws-lc'; then
+            echo "::error::features '${{ matrix.features }}' pull AWS-LC"
+            exit 1
+          fi
 
   no-std:
     name: no_std (thumbv7em-none-eabihf)
@@ -232,6 +241,11 @@ jobs:
       - run: >-
           cargo miri test --features preset-all --test regressions --test kat --
           --skip update_and_update_into_agree
+      # HMAC-SHA1 over sha1 and the OTP truncation (1.7.0), and the
+      # word-wise constant-time compare behind `Tag`.
+      - run: >-
+          cargo miri test --no-default-features --features otp,hash-sha2,mac-hmac --lib --
+          otp:: ct:: tag::
 
   fuzz-build:
     name: Fuzz targets build

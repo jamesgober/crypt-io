@@ -17,6 +17,9 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
+# Reference HMAC-SHA1 for the `otp_check` differential check (crypt-io
+# 1.6 used it; 1.7 has its own). Already in the tree through `sign-all`.
+aws-lc-rs = { version = "1.19", default-features = false, features = ["aws-lc-sys"] }
 
 [dependencies.crypt-io]
 path = ".."

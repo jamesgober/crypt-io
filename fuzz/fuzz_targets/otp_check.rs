@@ -1,10 +1,13 @@
 //! Fuzz `otp::totp_check` / `otp::hotp_check` with arbitrary codes,
 //! times, counters and parameters. The code string comes from a user.
 //! **Never panic**, and a code computed by `totp` / `hotp` must check.
+//! Since 1.7.0 HMAC-SHA1 is crypt-io's own; it must match AWS-LC (the
+//! 1.5 / 1.6 backend) for every key and message.
 
 #![no_main]
 
 use arbitrary::Arbitrary;
+use aws_lc_rs::hmac;
 use crypt_io::otp;
 use libfuzzer_sys::fuzz_target;
 
@@ -27,4 +30,10 @@ fuzz_target!(|input: Input| {
         let step = input.time_or_counter / otp::TOTP_STEP_SECONDS;
         assert_eq!(otp::totp_check(&input.secret, &typed, input.time_or_counter, digits, 0), Ok(step));
     }
+    let key = hmac::Key::new(hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, &input.secret);
+    let reference = hmac::sign(&key, input.code.as_bytes());
+    assert_eq!(
+        otp::hmac_sha1_legacy(&input.secret, input.code.as_bytes()).as_slice(),
+        reference.as_ref()
+    );
 });

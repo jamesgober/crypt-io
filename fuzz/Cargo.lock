@@ -237,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "crypt-io"
-version = "1.5.0"
+version = "1.7.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -247,6 +247,7 @@ dependencies = [
  "chacha20poly1305",
  "getrandom 0.4.3",
  "mod-rand",
+ "sha1",
  "sha2",
  "subtle",
  "zeroize",
@@ -257,6 +258,7 @@ name = "crypt-io-fuzz"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
+ "aws-lc-rs",
  "crypt-io",
  "libfuzzer-sys",
 ]
@@ -527,6 +529,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 dependencies = [
  "getrandom 0.2.17",
+]
+
+[[package]]
+name = "sha1"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.0",
+ "digest 0.11.3",
 ]
 
 [[package]]
