@@ -243,7 +243,9 @@ jobs:
           --skip update_and_update_into_agree
       # HMAC-SHA1 over sha1 and the OTP truncation (1.7.0), and the
       # word-wise constant-time compare behind `Tag`.
-      - run: cargo miri test --no-default-features --features otp,hash-sha2,mac-hmac --lib -- otp:: ct:: tag::
+      - run: >-
+          cargo miri test --no-default-features --features otp,hash-sha2,mac-hmac --lib --
+          otp:: ct:: tag::
 
   fuzz-build:
     name: Fuzz targets build
