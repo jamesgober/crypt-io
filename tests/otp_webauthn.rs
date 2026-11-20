@@ -2,6 +2,7 @@
 //! against published vectors.
 //!
 //! - HOTP: RFC 4226 appendix D, codes and HMAC-SHA1 intermediates.
+//! - HMAC-SHA1: RFC 2202 section 3 (1.7.0).
 //! - TOTP: RFC 6238 appendix B, the SHA-1 rows.
 //! - ECDSA P-256 SHA-256: NIST CAVP 186-4 SigVer (P-256, SHA-256) with
 //!   NIST's verdicts; Wycheproof DER and IEEE P1363 files.
@@ -57,6 +58,59 @@ mod otp {
                     Err(Error::AuthenticationFailed)
                 );
             }
+        }
+    }
+
+    /// RFC 2202 section 3: HMAC-SHA1 with keys shorter than, equal to
+    /// and longer than the 64-byte block (1.7.0 moved HMAC-SHA1 from
+    /// AWS-LC to crypt-io's own HMAC).
+    #[test]
+    fn rfc2202_hmac_sha1() {
+        let cases: [(Vec<u8>, Vec<u8>, &str); 7] = [
+            (
+                vec![0x0b; 20],
+                b"Hi There".to_vec(),
+                "b617318655057264e28bc0b6fb378c8ef146be00",
+            ),
+            (
+                b"Jefe".to_vec(),
+                b"what do ya want for nothing?".to_vec(),
+                "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79",
+            ),
+            (
+                vec![0xaa; 20],
+                vec![0xdd; 50],
+                "125d7342b9ac11cd91a39af48aa17b4f63f175d3",
+            ),
+            (
+                (1u8..=25).collect(),
+                vec![0xcd; 50],
+                "4c9007f4026250c6bc8414f9bf50c86c2d7235da",
+            ),
+            (
+                vec![0x0c; 20],
+                b"Test With Truncation".to_vec(),
+                "4c1a03424b55e07fe7f27be1d58bb9324a9a5a04",
+            ),
+            (
+                vec![0xaa; 80],
+                b"Test Using Larger Than Block-Size Key - Hash Key First".to_vec(),
+                "aa4ae5e15272d00e95705637ce8a3b55ed402112",
+            ),
+            (
+                vec![0xaa; 80],
+                b"Test Using Larger Than Block-Size Key and Larger Than One Block-Size Data"
+                    .to_vec(),
+                "e8e99d0f45237d786d6bbaa7965c7808bbff1a91",
+            ),
+        ];
+        for (i, (key, data, mac)) in cases.iter().enumerate() {
+            assert_eq!(
+                otp::hmac_sha1_legacy(key, data).as_slice(),
+                h(mac),
+                "case {}",
+                i + 1
+            );
         }
     }
 

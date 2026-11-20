@@ -1,6 +1,6 @@
 [package]
 name = "crypt-io"
-version = "1.6.0"
+version = "1.7.0"
 edition = "2024"
 rust-version = "1.85"
 readme = "README.md"
@@ -70,13 +70,14 @@ getrandom = ["dep:getrandom"]
 # Wipe key copies and plaintext scratch buffers held by crypt-io types
 # (stream encryptor/decryptor, `_into` failure paths, BLAKE3 keyed MAC)
 # with volatile writes, and turn on the upstream `zeroize` support in
-# aes-gcm, aes (round keys), sha2 (hash and HMAC state), argon2 and
-# blake3. Default on.
+# aes-gcm, aes (round keys), sha2 and sha1 (hash and HMAC state),
+# argon2 and blake3. Default on.
 zeroize = [
     "dep:zeroize",
     "aes-gcm?/zeroize",
     "aes?/zeroize",
     "sha2?/zeroize",
+    "sha1?/zeroize",
     "argon2?/zeroize",
     "blake3?/zeroize",
 ]
@@ -122,11 +123,12 @@ sign-all = ["sign-ed25519", "sign-rsa", "sign-p256"]
 
 # One-time passwords (1.5.0): HOTP (RFC 4226) and TOTP (RFC 6238) with
 # HMAC-SHA1, which every authenticator app uses. Legacy HMAC-SHA1 lives
-# only in the `otp` module. Same backend and build cost as `sign-*`.
-otp = ["std", "dep:aws-lc-rs"]
+# only in the `otp` module. Pure Rust since 1.7.0 (crypt-io's own HMAC
+# over `sha1`); 1.5 and 1.6 used AWS-LC.
+otp = ["std", "dep:sha1"]
 # Windows x86-64 without NASM: use the assembly objects that ship with
 # aws-lc-sys instead of assembling them. Does nothing without a `sign-*`
-# feature.
+# or `aead-aws-lc` feature.
 prebuilt-nasm = ["aws-lc-rs?/prebuilt-nasm"]
 
 # Stream/file encryption (chunked AEAD with STREAM-construction).
@@ -159,6 +161,8 @@ aes-gcm = { version = "0.10.3", optional = true, default-features = false, featu
 aes = { version = "0.8.4", optional = true, default-features = false }
 blake3 = { version = "1.5", optional = true, default-features = false }   # 1.5 is the first release with a `zeroize` feature
 sha2 = { version = "0.11", optional = true, default-features = false }
+# SHA-1, only for HMAC-SHA1 in the `otp` module (1.7.0).
+sha1 = { version = "0.11", optional = true, default-features = false }
 # HMAC and HKDF are built in crypt-io over `sha2` (src/hmac_core.rs),
 # not taken from the `hmac` / `hkdf` crates: `hmac` 0.13 pulls in
 # `ctutils`, and every `ctutils` release that fixes RUSTSEC-2026-0385

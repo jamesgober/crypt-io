@@ -119,7 +119,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-crypt-io = "1.6"
+crypt-io = "1.7"
 ```
 
 ### Install via terminal
@@ -164,8 +164,8 @@ surface. Defaults give the full toolkit.
 | `sign-rsa` |  | 1.3.0. [`sign::RsaSigningKey`](#rsasigningkey) (PKCS#1 v1.5, SHA-256, 2048 to 8192 bits); 1.4.0 [`sign::RsaPublicKey`](#rsapublickey). Same cost as `sign-ed25519`. |
 | `sign-p256` |  | 1.5.0. [`sign::EcdsaP256PublicKey`](#ecdsap256publickey) (verify only) and the `ES256` case of [`sign::CosePublicKey`](#cosepublickey). Same cost as `sign-ed25519`. |
 | `sign-all` |  | 1.3.0. Every signature feature (`sign-ed25519`, `sign-rsa`, and since 1.5.0 `sign-p256`). |
-| `otp` |  | 1.5.0. [`otp`](#otp-module): HOTP, TOTP, legacy HMAC-SHA1. AWS-LC, like the `sign-*` features. |
-| `prebuilt-nasm` |  | 1.3.0. Windows x86-64 without NASM: use the assembled objects shipped with `aws-lc-sys`. Does nothing without a feature that pulls AWS-LC (`sign-*`, `otp`, `aead-aws-lc`). |
+| `otp` |  | 1.5.0. [`otp`](#otp-module): HOTP, TOTP, legacy HMAC-SHA1. Pure Rust since 1.7.0 (crypt-io's HMAC over `sha1`); 1.5 and 1.6 used AWS-LC. Turns on `std`. |
+| `prebuilt-nasm` |  | 1.3.0. Windows x86-64 without NASM: use the assembled objects shipped with `aws-lc-sys`. Does nothing without a feature that pulls AWS-LC (`sign-*`, `aead-aws-lc`). |
 | `stream` | ✅ | [`StreamEncryptor`](#streamencryptor) / [`StreamDecryptor`](#streamdecryptor) + [`encrypt_file`](#streamencrypt_file) / [`decrypt_file`](#streamdecrypt_file). Pulls both AEAD backends and HKDF-SHA256 (format v2 key schedule). |
 | `preset-minimal` |  | `std` + `zeroize` + `aead-chacha20`: the 0.2.0 surface. 1.6.0 added `zeroize`; before, this preset turned off volatile wiping. |
 | `preset-all` |  | Every pure-Rust feature (`std`, `zeroize`, all AEAD, hash, MAC and KDF families, `stream`). Not the `sign-*` features, which need a C toolchain. |
@@ -2006,8 +2006,9 @@ pub const HMAC_SHA1_OUTPUT_LEN: usize = 20;
 ```
 
 New in 1.5.0. HOTP (RFC 4226) and TOTP (RFC 6238: HMAC-SHA1, 30-second
-step, T0 = 0), the codes authenticator apps show. Feature `otp`; AWS-LC
-backend, like the `sign-*` features.
+step, T0 = 0), the codes authenticator apps show. Feature `otp`. Pure
+Rust since 1.7.0: HMAC-SHA1 is crypt-io's own HMAC over the `sha1`
+crate, with the same codes as the AWS-LC backend 1.5 and 1.6 used.
 
 - **HMAC-SHA1 is legacy.** RFC 4226 / 6238 and every authenticator app
   use it; HMAC does not rely on SHA-1's broken collision resistance. It
@@ -2411,7 +2412,8 @@ impl<const N: usize> Tag<N> {
 ```
 
 New in 1.1.0. Wrap a computed tag in `Tag` and `==` becomes a
-constant-time comparison (`subtle`). A slice of a different length
+constant-time comparison, decided by one `subtle` comparison (since
+1.7.0 a 16-, 32- or 64-byte tag compares in a few nanoseconds). A slice of a different length
 compares unequal. `Tag` does not implement `Deref`, `Ord` or `Hash`,
 so it cannot be compared in variable time by accident.
 

@@ -41,8 +41,8 @@
 //!   `sign-p256` features. They
 //!   use AWS-LC, so they need a C compiler; the default build stays pure Rust.
 //! - **One-time passwords**: HOTP and TOTP with the HMAC-SHA1 authenticator
-//!   apps use, in the `otp` module (feature `otp`, 1.5.0). HMAC-SHA1 is
-//!   legacy and lives only there.
+//!   apps use, in the `otp` module (feature `otp`, 1.5.0; pure Rust since
+//!   1.7.0). HMAC-SHA1 is legacy and lives only there.
 //! - **Wiping** buffers that held secrets ([`wipe`], [`wipe_vec`])
 //!
 //! Out of scope (use other crates):
@@ -129,12 +129,14 @@
 
 extern crate alloc;
 
+mod ct;
 mod error;
 #[cfg(any(
     feature = "mac-hmac",
     feature = "kdf-hkdf",
     feature = "kdf-pbkdf2",
-    feature = "stream"
+    feature = "stream",
+    feature = "otp"
 ))]
 mod hmac_core;
 #[cfg(any(feature = "std", feature = "getrandom"))]

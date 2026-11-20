@@ -239,6 +239,14 @@ for limits that protect against hostile input. No wire format changed.
 - COSE Ed25519 keys of small order are refused.
 - `preset-minimal` includes `zeroize`.
 
+### Changed in 1.7.0 (no API change)
+
+- The `otp` feature no longer pulls AWS-LC: HMAC-SHA1 is crypt-io's own
+  HMAC over `sha1`. Same functions, same codes. `otp` still turns on
+  `std`.
+- `Tag` equality, the HMAC checks and the OTP checks share a faster
+  constant-time compare (about 15 times faster for a 16-byte tag).
+
 ### Deprecated in 1.1.0 (kept for all of 1.x)
 
 - `mac::hmac_sha256_verify`, `mac::hmac_sha512_verify`,

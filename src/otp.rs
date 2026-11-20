@@ -15,9 +15,9 @@
 //! | [`totp_check`] / [`hotp_check`] | check a code a user typed, in constant time, inside a small window; return the matched step / counter for the replay guard |
 //! | [`hmac_sha1_legacy`] | the raw HMAC-SHA1, for OTP variants this module does not cover |
 //!
-//! Requires the `otp` feature. Like the `sign-*` features it uses
-//! AWS-LC through `aws-lc-rs` (a C compiler, and NASM or `prebuilt-nasm`
-//! on Windows x86-64) and `std`.
+//! Requires the `otp` feature. Pure Rust since 1.7.0: HMAC-SHA1 is
+//! crypt-io's own HMAC over the `RustCrypto` `sha1` crate, so `otp` needs
+//! no C compiler (1.5 and 1.6 used AWS-LC). The codes are the same.
 //!
 //! # Replay
 //!
@@ -44,11 +44,14 @@
 //! # Ok::<(), crypt_io::Error>(())
 //! ```
 
-use aws_lc_rs::hmac;
-use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
+use subtle::{Choice, ConditionallySelectable};
 
 use crate::error::{Error, Result};
+use crate::hmac_core::Hmac;
 use crate::wipe::wipe;
+
+/// HMAC-SHA1 state (SHA-1 has a 64-byte block).
+type HmacSha1 = Hmac<sha1::Sha1, 64>;
 
 /// Shortest secret accepted, in bytes: RFC 4226 section 4 requires at
 /// least 128 bits (160 recommended; most apps use 20 bytes).
@@ -79,15 +82,11 @@ pub const HMAC_SHA1_OUTPUT_LEN: usize = 20;
 /// Requires the `otp` feature. New in 1.5.0.
 #[must_use]
 pub fn hmac_sha1_legacy(key: &[u8], data: &[u8]) -> [u8; HMAC_SHA1_OUTPUT_LEN] {
-    let key = hmac::Key::new(hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, key);
-    tag_of(&key, data)
-}
-
-fn tag_of(key: &hmac::Key, data: &[u8]) -> [u8; HMAC_SHA1_OUTPUT_LEN] {
-    let tag = hmac::sign(key, data);
-    let mut out = [0u8; HMAC_SHA1_OUTPUT_LEN];
-    out.copy_from_slice(tag.as_ref());
-    out
+    let mut mac = HmacSha1::new(key);
+    mac.update(data);
+    let mut tag = sha1::digest::Output::<sha1::Sha1>::default();
+    mac.finalize_into(&mut tag);
+    tag.into()
 }
 
 /// The HOTP code for `counter` (RFC 4226 section 5.3): HMAC-SHA1 of the
@@ -102,8 +101,7 @@ fn tag_of(key: &hmac::Key, data: &[u8]) -> [u8; HMAC_SHA1_OUTPUT_LEN] {
 /// [`OTP_MIN_SECRET_LEN`] or `digits` is outside 6 to 8.
 pub fn hotp(secret: &[u8], counter: u64, digits: u32) -> Result<u32> {
     check_params(secret, digits)?;
-    let key = hmac::Key::new(hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, secret);
-    Ok(code_for(&key, counter, digits))
+    Ok(code_for(&HmacSha1::new(secret), counter, digits))
 }
 
 /// The TOTP code at `unix_seconds` (RFC 6238 with HMAC-SHA1, a
@@ -210,14 +208,14 @@ fn check_code(secret: &[u8], code: &str, digits: u32, first: u64, last: u64) -> 
     if typed.len() != len || !typed.iter().all(u8::is_ascii_digit) {
         return Err(Error::AuthenticationFailed);
     }
-    let key = hmac::Key::new(hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, secret);
+    let key = HmacSha1::new(secret);
     let mut found = Choice::from(0);
     let mut matched = 0u64;
     let mut candidate = [0u8; OTP_MAX_DIGITS as usize];
     let mut c = first;
     loop {
         render(code_for(&key, c, digits), &mut candidate[..len]);
-        let eq = candidate[..len].ct_eq(typed);
+        let eq = crate::ct::ct_eq(&candidate[..len], typed);
         matched = u64::conditional_select(&matched, &c, eq & !found);
         found |= eq;
         if c == last {
@@ -233,17 +231,25 @@ fn check_code(secret: &[u8], code: &str, digits: u32, first: u64, last: u64) -> 
     }
 }
 
-/// RFC 4226 section 5.3: dynamic truncation of HMAC-SHA1(counter).
-fn code_for(key: &hmac::Key, counter: u64, digits: u32) -> u32 {
-    let mut mac = tag_of(key, &counter.to_be_bytes());
-    let offset = usize::from(mac[HMAC_SHA1_OUTPUT_LEN - 1] & 0x0f);
+/// RFC 4226 section 5.3: dynamic truncation of HMAC(counter). The
+/// offset is the low nibble of the last tag byte, which RFC 6238 keeps
+/// for its SHA-256 and SHA-512 variants (the tests pin those too).
+fn code_for<D, const B: usize>(key: &Hmac<D, B>, counter: u64, digits: u32) -> u32
+where
+    D: sha1::Digest + Clone,
+{
+    let mut mac = key.clone();
+    mac.update(&counter.to_be_bytes());
+    let mut tag = sha1::digest::Output::<D>::default();
+    mac.finalize_into(&mut tag);
+    let offset = usize::from(tag[tag.len() - 1] & 0x0f);
     let bin = u32::from_be_bytes([
-        mac[offset],
-        mac[offset + 1],
-        mac[offset + 2],
-        mac[offset + 3],
+        tag[offset],
+        tag[offset + 1],
+        tag[offset + 2],
+        tag[offset + 3],
     ]) & 0x7fff_ffff;
-    wipe(&mut mac);
+    wipe(&mut tag);
     bin % 10u32.pow(digits)
 }
 
@@ -319,5 +325,68 @@ mod tests {
         // At time 0 the window cannot go below step 0.
         let code = format!("{:06}", totp(SECRET, 0, 6).unwrap());
         assert_eq!(totp_check(SECRET, &code, 0, 6, 3), Ok(0));
+    }
+
+    /// RFC 6238 appendix B, all three hashes: time, then the 8-digit
+    /// TOTP for SHA-1, SHA-256 and SHA-512 (seeds of 20, 32 and 64
+    /// bytes). The public API is SHA-1 only; the other two run the same
+    /// truncation code over this crate's HMAC.
+    const RFC6238: &[(u64, u32, u32, u32)] = &[
+        (59, 94_287_082, 46_119_246, 90_693_936),
+        (1_111_111_109, 7_081_804, 68_084_774, 25_091_201),
+        (1_111_111_111, 14_050_471, 67_062_674, 99_943_326),
+        (1_234_567_890, 89_005_924, 91_819_424, 93_441_116),
+        (2_000_000_000, 69_279_037, 90_698_825, 38_618_901),
+        (20_000_000_000, 65_353_130, 77_737_706, 47_863_826),
+    ];
+
+    #[test]
+    fn rfc6238_sha1() {
+        for &(t, sha1, _, _) in RFC6238 {
+            assert_eq!(totp(SECRET, t, 8).unwrap(), sha1, "t={t}");
+            let step = t / TOTP_STEP_SECONDS;
+            assert_eq!(code_for(&HmacSha1::new(SECRET), step, 8), sha1);
+        }
+    }
+
+    #[cfg(feature = "hash-sha2")]
+    #[test]
+    fn rfc6238_sha256_and_sha512() {
+        let seed32 = b"12345678901234567890123456789012";
+        let seed64 = b"1234567890123456789012345678901234567890123456789012345678901234";
+        let k256 = Hmac::<sha2::Sha256, 64>::new(seed32);
+        let k512 = Hmac::<sha2::Sha512, 128>::new(seed64);
+        for &(t, _, sha256, sha512) in RFC6238 {
+            let step = t / TOTP_STEP_SECONDS;
+            assert_eq!(code_for(&k256, step, 8), sha256, "SHA-256 t={t}");
+            assert_eq!(code_for(&k512, step, 8), sha512, "SHA-512 t={t}");
+        }
+    }
+
+    /// Up to 1.6 HMAC-SHA1 came from AWS-LC. When a `sign-*` feature
+    /// brings AWS-LC into the build, check the two agree for keys
+    /// shorter than, equal to and longer than the 64-byte block.
+    #[cfg(feature = "sign-ed25519")]
+    #[test]
+    fn hmac_sha1_matches_aws_lc() {
+        use aws_lc_rs::hmac;
+        let bytes: alloc::vec::Vec<u8> = (0u32..300)
+            .map(|i| (i.wrapping_mul(131) >> 1).to_le_bytes()[0])
+            .collect();
+        for key_len in [0, 1, 16, 20, 63, 64, 65, 128, 200] {
+            for data_len in [0, 1, 8, 55, 56, 64, 100, 299] {
+                let key = &bytes[..key_len];
+                let data = &bytes[1..=data_len];
+                let theirs = hmac::sign(
+                    &hmac::Key::new(hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, key),
+                    data,
+                );
+                assert_eq!(
+                    hmac_sha1_legacy(key, data).as_slice(),
+                    theirs.as_ref(),
+                    "key {key_len} data {data_len}"
+                );
+            }
+        }
     }
 }

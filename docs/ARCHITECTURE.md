@@ -140,8 +140,10 @@ callers at the right one for their input shape.
 
 ### `otp` — one-time passwords (1.5.0, opt-in)
 
-HOTP / TOTP over `aws-lc-rs`'s legacy HMAC-SHA1. The HMAC key is set
-up once per check and reused for every candidate in the window; every
+HOTP / TOTP over HMAC-SHA1 from `src/hmac_core.rs` (the same HMAC as
+`mac-hmac`, over the `sha1` crate; 1.5 and 1.6 used `aws-lc-rs`). The
+truncation is generic over the hash, so tests pin the RFC 6238 SHA-256
+and SHA-512 rows through it too. The HMAC key is set up once per check and reused for every candidate in the window; every
 candidate is rendered as ASCII digits and compared with `subtle`, and
 the matched counter is selected without branching on the comparison.
 
@@ -259,12 +261,13 @@ Every dependency is a deliberate choice. The full list:
 | `aes-gcm` | AES-256-GCM primitive with AES-NI / ARMv8 dispatch. RustCrypto. |
 | `blake3` | BLAKE3 hash + XOF + keyed. Official BLAKE3 crate. |
 | `sha2` | SHA-256 / SHA-512 with SHA-NI dispatch. RustCrypto. Also the hash under crypt-io's own HMAC and HKDF (`src/hmac_core.rs`): the `hmac` and `hkdf` crates were dropped in 1.2.2, because `hmac` 0.13 pulls in `ctutils` and every `ctutils` release that fixes RUSTSEC-2026-0385 needs Rust 1.87, above the MSRV. |
+| `sha1` *(opt, `otp`)* | SHA-1, only under HMAC-SHA1 for HOTP / TOTP (1.7.0). RustCrypto, the same `digest` generation as `sha2`. |
 | `argon2` | Argon2id with PHC framework. RustCrypto. |
 | `aes` | Direct dependency only so `zeroize` can turn on `aes/zeroize` (AES round keys). RustCrypto. |
 | `subtle` | Constant-time equality for `Tag` and the HMAC checks. |
 | `mod-rand` *(with `std`)* | Portfolio CSPRNG (Tier 3 = OS-backed). |
 | `getrandom` *(opt)* | OS CSPRNG for `no_std` builds, or in place of `mod-rand`. |
-| `aws-lc-rs` *(opt, `sign-*`, `otp`, `aead-aws-lc`)* | Signatures, OTP HMAC-SHA1 and (1.6.0, `aead-aws-lc`) the faster AEAD engine (AWS-LC, the backend tls-net uses). Default features off; `aws-lc-sys` on, plus `ring-io` (pure Rust, `untrusted`) for `sign-rsa` so the modulus size is exact. Rust 1.71. Needs a C compiler, and NASM or `prebuilt-nasm` on Windows x86-64. |
+| `aws-lc-rs` *(opt, `sign-*`, `aead-aws-lc`)* | Signatures and (1.6.0, `aead-aws-lc`) the faster AEAD engine (AWS-LC, the backend tls-net uses). Default features off; `aws-lc-sys` on, plus `ring-io` (pure Rust, `untrusted`) for `sign-rsa` so the modulus size is exact. Rust 1.71. Needs a C compiler, and NASM or `prebuilt-nasm` on Windows x86-64. |
 | `zeroize` *(opt)* | Volatile writes for `wipe` / `wipe_vec`; wiping of the stream types' key copy and buffer, the BLAKE3 keyed MAC state and `_into` failure buffers; enables upstream `zeroize` in `aes`, `aes-gcm`, `sha2`, `argon2`, `blake3` (default on). |
 
 All RustCrypto and BLAKE3 dependencies have their default

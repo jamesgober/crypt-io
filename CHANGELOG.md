@@ -19,6 +19,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.7.0] - 2026-11-20
+
+The `otp` feature is pure Rust, and constant-time tag comparison is
+much faster. No API change and no change to any output. MSRV stays
+1.85.
+
+Release notes: [`docs/release/v1.7.0.md`](docs/release/v1.7.0.md).
+
+### Changed
+
+- **`otp` no longer needs AWS-LC.** HOTP, TOTP and `hmac_sha1_legacy`
+  run on crypt-io's own HMAC (the one behind `mac-hmac`) over the
+  RustCrypto `sha1` crate, so `otp` builds without a C compiler, NASM
+  or `prebuilt-nasm`, including for musl. The functions and the codes
+  are the same. `otp` still turns on `std`. New dependency with `otp`:
+  `sha1` 0.11 (the same `digest` generation as `sha2`).
+- **Faster constant-time compare.** `Tag` equality, the HMAC `*_check`
+  functions and the OTP checks share one compare: the XOR of the inputs
+  is ORed into an accumulator 8 bytes at a time and decided by a single
+  `subtle` comparison. A 16-byte `Tag` compares in about 3 ns, down
+  from about 50 ns, and a 32-byte one in about 3 ns, down from about
+  95 ns.
+- OTP is about 1.7 to 1.8 times faster than on AWS-LC (`totp` 121 ns,
+  `totp_check` with window 1 346 ns, on the reference machine).
+- `prebuilt-nasm` now does something only with `sign-*` or
+  `aead-aws-lc`.
+
+### Tests
+
+- RFC 2202 HMAC-SHA1 vectors; RFC 6238 appendix B rows for SHA-1,
+  SHA-256 and SHA-512 through the shared truncation code; a cross-check
+  of HMAC-SHA1 against AWS-LC for keys around the 64-byte block.
+- The `otp_check` fuzz target compares `hmac_sha1_legacy` with AWS-LC
+  on every input.
+- CI fails if a feature set without `sign-*` or `aead-aws-lc` pulls
+  AWS-LC, and Miri runs the OTP, compare and `Tag` tests.
+
+---
+
 ## [1.6.0] - 2026-11-11
 
 Minor release from an independent review of 1.5.0: tighter limits on
@@ -151,6 +190,7 @@ Release notes: [`docs/release/v1.5.0.md`](docs/release/v1.5.0.md).
   partial-feature doc builds; the fuzz build now compiles the signing
   and OTP targets.
 
+[1.7.0]: https://github.com/jamesgober/crypt-io/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/jamesgober/crypt-io/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/jamesgober/crypt-io/compare/v1.4.0...v1.5.0
 
@@ -1613,5 +1653,5 @@ the deliberate stable cut.
 - Feature flags for AEAD (chacha20, aes-gcm), hashing (blake3, sha2), MAC (hmac, blake3 keyed), KDF (hkdf, argon2), stream encryption.
 - Dependencies wired: `mod-rand` for CSPRNG, `error-forge` for errors, optional `log-io` and `metrics-lib`.
 
-[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/jamesgober/crypt-io/compare/v1.7.0...HEAD
 [0.1.0]: https://github.com/jamesgober/crypt-io/releases/tag/v0.1.0

@@ -116,7 +116,7 @@ choice. Switch when you have a reason.
 ### Windows
 
 - **`mod_rand::tier3`** sources from `BCryptGenRandom`.
-- **`sign-*` and `otp` features (1.3.0, 1.5.0)** build AWS-LC with the MSVC C
+- **`sign-*` and `aead-aws-lc` features (1.3.0, 1.6.0)** build AWS-LC with the MSVC C
   compiler and need NASM on the `PATH` for x86-64. Without NASM,
   enable `prebuilt-nasm` (crypt-io forwards it to `aws-lc-sys`, which
   then links assembly objects it ships). Without either the
@@ -167,8 +167,9 @@ crypt-io = { version = "1.2", default-features = false, features = [
 ```
 
 You need a global allocator (`alloc`). `kdf-pbkdf2` (1.3.0) works
-without `std`; the `sign-*` and `otp` features do not (AWS-LC needs `std`, and
-the features turn it on). What works without `std`:
+without `std`; the `sign-*` and `aead-aws-lc` features do not (AWS-LC needs
+`std`, and the features turn it on). `otp` is pure Rust since 1.7.0 but
+still turns `std` on, as it did before. What works without `std`:
 
 | Works with no extra setup | Needs the `getrandom` feature (fresh randomness) | Needs `std` |
 |---|---|---|

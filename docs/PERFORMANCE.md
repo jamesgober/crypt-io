@@ -473,6 +473,28 @@ default policy accepts) took 0.8 to 0.9 s on the busy machine, about 10
 to 40 times the default parameters in the same run. 1.5.0's default
 ceiling allowed 64 times that much work.
 
+### 1.7.0: pure-Rust OTP and the constant-time compare
+
+Same A/B method (1.6.0 and 1.7.0 in one binary, alternating, median of
+41 rounds, three repeats; Windows 11, Rust 1.99, fat LTO, busy
+machine). The ranges span the three repeats.
+
+| Case | 1.6.0 | 1.7.0 | 1.6.0 / 1.7.0 |
+|---|---:|---:|---:|
+| `Tag<16> == [u8; 16]` | 48 – 51 ns | 3.2 – 3.4 ns | 15.2 – 15.4 |
+| `Tag<32> == [u8; 32]` | 94 – 99 ns | 3.2 – 3.4 ns | 28.7 – 29.8 |
+| `Tag<64> == [u8; 64]` | 196 – 203 ns | 3.4 – 3.5 ns | 57.6 – 58.1 |
+| `otp::totp`, 6 digits | 221 – 223 ns | 121 – 122 ns | 1.82 – 1.84 |
+| `otp::totp_check`, window 1 | 588 – 599 ns | 345 – 346 ns | 1.69 – 1.73 |
+| `otp::hmac_sha1_legacy`, 64 B | 238 – 251 ns | 140 – 141 ns | 1.70 – 1.77 |
+
+The compare costs the same for equal and unequal inputs and no longer
+grows with the tag length: what is left is the one `subtle` barrier
+and the loop around the measurement. 1.6.0 used `subtle`'s byte-wise
+slice compare, one barrier per byte. OTP is faster on RustCrypto
+`sha1` than it was on AWS-LC, mostly because AWS-LC's HMAC key setup
+costs more than the hash of a short message.
+
 <a href="#top">↑ TOP</a>
 
 <hr>

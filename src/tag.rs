@@ -2,8 +2,6 @@
 
 use core::fmt;
 
-use subtle::ConstantTimeEq;
-
 use crate::error::{Error, Result};
 
 /// An `N`-byte authentication tag (or any other fixed-size value that
@@ -84,7 +82,7 @@ impl<const N: usize> Tag<N> {
     /// the lengths differ.
     #[must_use]
     pub fn ct_eq(&self, other: &[u8]) -> bool {
-        other.len() == N && bool::from(self.0.as_slice().ct_eq(other))
+        other.len() == N && bool::from(crate::ct::ct_eq(&self.0, other))
     }
 }
 

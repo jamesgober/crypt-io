@@ -65,12 +65,18 @@ shipped in `crypt_io::stream` defeats:
 ### Timing side channels
 
 - **MAC verification** uses constant-time comparators:
-  `subtle::ConstantTimeEq` for HMAC (crypt-io's own HMAC since
-  1.2.2) and `blake3::Hash::eq` for BLAKE3 keyed, which compares in
+  crypt-io's compare for HMAC (crypt-io's own HMAC since 1.2.2;
+  see below) and `blake3::Hash::eq` for BLAKE3 keyed, which compares in
   constant time with the `constant_time_eq` crate.
-- **`Tag<N>`** (1.1.0) wraps a tag with a constant-time `==`
-  (`subtle::ConstantTimeEq`), for callers who compare tags
-  themselves.
+- **`Tag<N>`** (1.1.0) wraps a tag with a constant-time `==`, for
+  callers who compare tags themselves.
+- **The compare** behind `Tag`, the HMAC checks and the OTP checks
+  (`src/ct.rs`, 1.7.0) XORs the two inputs 8 bytes at a time, ORs the
+  results into one accumulator that is never branched on, and decides
+  with one `subtle::ConstantTimeEq` on the accumulator, the structure
+  of the `constant_time_eq` crate. The generated code is straight-line
+  (checked on x86-64). Up to 1.6.0 `Tag` used `subtle`'s byte-wise slice
+  compare, which is also constant time but about 15 times slower.
 - **AEAD tag verification** is the upstream crate's
   responsibility (constant-time per `chacha20poly1305` and
   `aes-gcm` docs).
@@ -272,6 +278,12 @@ note in `hash` both explicitly forbid `tag == expected` /
 
 ### One-time passwords (1.5.0, opt-in)
 
+- **Pure Rust since 1.7.0.** HMAC-SHA1 is crypt-io's own HMAC (the one
+  under `mac-hmac`) over the `RustCrypto` `sha1` crate. 1.5 and 1.6
+  took it from AWS-LC. The codes are the same: RFC 4226 / 6238 / 2202
+  vectors, a cross-check against AWS-LC for keys around the block size,
+  and the `otp_check` fuzz target, which compares every input with
+  AWS-LC.
 - **HMAC-SHA1 is legacy, kept for RFC 4226 / 6238 only.** Every
   authenticator app computes HOTP / TOTP with it. HMAC's security does
   not depend on SHA-1's collision resistance (broken since 2017), so the
@@ -287,7 +299,8 @@ note in `hash` both explicitly forbid `tag == expected` /
 
 ### Explicitly NOT shipped
 
-- **No SHA-1, MD5** — broken.
+- **No SHA-1, MD5** — broken. SHA-1 is in the build only under
+  HMAC-SHA1 in `otp`; there is no SHA-1 hash function.
 - **No DES, 3DES** — deprecated.
 - **No RC4** — broken.
 - **No ECB mode** — provides no semantic security.
@@ -406,19 +419,20 @@ and confidentiality against:
 
 ## Verification & testing posture
 
-Coverage as of 1.6.0 (`cargo test --all-features` on Linux, stable):
+Coverage as of 1.7.0 (`cargo test --all-features`, stable):
 
 | Category | Count | Surface |
 |---|---:|---|
-| Unit tests | 202 | All modules |
-| Integration tests | 128 | Streaming, `_into` APIs, sealed format, signatures, OTP, WebAuthn, regressions, wiping and allocation bounds |
+| Unit tests | 205 | All modules |
+| Integration tests | 129 | Streaming, `_into` APIs, sealed format, signatures, OTP, WebAuthn, regressions, wiping and allocation bounds |
 | Doctests | 56 | Public items with runnable examples |
 | `cargo-fuzz` targets | 11 | AEAD encrypt / decrypt, stream decrypt, hashes, MACs, HKDF, Argon2 PHC parsing, COSE keys, OTP checks, `_into` differential |
-| Known-answer and conformance vectors | | RFC 8439, NIST GCM, FIPS 180-4, RFC 4231, RFC 5869, BLAKE3 official, RFC 8018 / 7677 (PBKDF2), RFC 8032, NIST CAVP (RSA SigVer15, P-256), Wycheproof (Ed25519, RSA PKCS#1 v1.5, P-256 DER and P1363), RFC 4226 / 6238, WebAuthn Level 3, frozen stream-format vectors |
+| Known-answer and conformance vectors | | RFC 8439, NIST GCM, FIPS 180-4, RFC 4231, RFC 5869, BLAKE3 official, RFC 8018 / 7677 (PBKDF2), RFC 8032, NIST CAVP (RSA SigVer15, P-256), Wycheproof (Ed25519, RSA PKCS#1 v1.5, P-256 DER and P1363), RFC 4226 / 6238 (SHA-1, SHA-256, SHA-512 rows), RFC 2202, WebAuthn Level 3, frozen stream-format vectors |
 
 Each release also runs a short fuzz pass over the targets it touched
 (1.6.0: `argon2_parse`, `stream_decrypt`, `aead_decrypt`, `cose_key`,
-120 s each).
+120 s each; 1.7.0: `otp_check`, which also compares HMAC-SHA1 with
+AWS-LC, and `mac`, 180 s each).
 
 Per-release [`docs/release/`](release/) notes document the
 verification matrix at each phase. The full per-suite measured
